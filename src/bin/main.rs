@@ -1,4 +1,5 @@
 use apvrp::*;
+
 use anyhow::Result;
 
 use instances::dataset::Dataset;
@@ -12,21 +13,24 @@ fn main() -> Result<()> {
   let pv_req_t_start : Map<_, _> = data.compat_req_passive.iter()
     .flat_map(|(&r, pvs)| {
       let data = &data;
-      let sets = &sets;
       pvs.iter()
         .map(move |&p| (
           (p,r),
           std::cmp::max(
             data.start_time[&r],
-            data.travel_time[&(sets.depot, p)] + data.travel_time[&(p, r)] + data.srv_time[&r]
+            data.travel_time[&(data.odepot, p)] + data.travel_time[&(p, r)] + data.srv_time[&r]
           )
         ))
     })
     .collect();
 
   let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
-
-  println!("{}", tasks.all.len());
+  // println!("{}", tasks.all.len());
+  println!("{:#?}",&tasks.by_id);
+  let t = &tasks.by_id[&170];
+  println!("{:#?}", t);
+  println!("Successors: {:#?}", &tasks.succ[t]);
+  println!("Predecessors: {:#?}", &tasks.pred[t]);
 
   Ok(())
 }
