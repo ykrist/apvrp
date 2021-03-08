@@ -26,11 +26,16 @@ fn main() -> Result<()> {
 
   let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
   // println!("{}", tasks.all.len());
-  println!("{:#?}",&tasks.by_id);
-  let t = &tasks.by_id[&170];
-  println!("{:#?}", t);
-  println!("Successors: {:#?}", &tasks.succ[t]);
-  println!("Predecessors: {:#?}", &tasks.pred[t]);
+  // println!("{:#?}",&tasks.by_id);
+  // let t = &tasks.by_id[&170];
+  // println!("{:#?}", t);
+  // println!("Successors: {:#?}", &tasks.succ[t]);
+  // println!("Predecessors: {:#?}", &tasks.pred[t]);
+
+  let tasks : Vec<RawTask> = tasks.all.into_iter().map(RawTask::from).collect();
+
+  let task_filename = format!("scrap/tasks/{}.json", idx);
+  std::fs::write(task_filename, serde_json::to_string_pretty(&tasks)?)?;
 
   Ok(())
 }

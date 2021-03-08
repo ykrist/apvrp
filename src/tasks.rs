@@ -1,8 +1,24 @@
 use crate::*;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
+use serde::{Serialize};
 
 pub type TaskId = u32;
+
+#[derive(Copy, Clone, Debug, Serialize)]
+pub struct RawTask {
+  pub start: Loc,
+  /// End location
+  pub end: Loc,
+  /// Passive vehicle
+  pub p: Pv,
+}
+
+impl From<Task> for RawTask {
+  fn from(task: Task) -> RawTask {
+    RawTask{ start: task.start, end: task.end, p: task.p }
+  }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct Task {
