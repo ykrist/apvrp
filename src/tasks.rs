@@ -175,10 +175,24 @@ impl Tasks {
           if r1p == r2p {
             continue;
           }
-          let r2d = r1p + data.n_req;
+          let r2d = r2p + data.n_req;
           let tt = data.travel_time[&(r1d, r2p)];
           let t_deadline = data.end_time[&r2d] - data.srv_time[&r2d] - data.srv_time[&r2p] - data.travel_time[&(r2p, r2d)];
-          let t_release = pv_req_t_start[&(po, r1p)] + data.srv_time[&r2d] + data.travel_time[&(r1p, r1d)];
+          let t_release = pv_req_t_start[&(po, r1p)] + data.travel_time[&(r1p, r1d)] + data.srv_time[&r1d];
+
+          if po == 3 && (r1d, r2p) == (25, 12) {
+            let a_p_r = pv_req_t_start[&(po, r1p)];
+            let tts = (
+                data.travel_time[&(data.odepot, po)],
+                data.travel_time[&(po, r1p)],
+                data.travel_time[&(r1p, r1d)],
+                data.travel_time[&(r1d, r2p)],
+                data.travel_time[&(r2p, r2d)],
+                data.travel_time[&(r2d, po + data.n_passive)],
+                data.travel_time[&(po + data.n_passive, data.ddepot)],
+              );
+            dbg!(t_deadline, t_release, tt, a_p_r, tts);
+          }
 
           if t_release + tt > t_deadline {
             continue;

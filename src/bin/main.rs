@@ -10,6 +10,7 @@ fn main() -> Result<()> {
   let data = DSET.load_instance(idx)?;
   let sets = Sets::new(&data);
 
+  // `pv_req_t_start` is the earliest time we can *depart* from request r's pickup with passive vehicle p
   let pv_req_t_start : Map<_, _> = data.compat_req_passive.iter()
     .flat_map(|(&r, pvs)| {
       let data = &data;
