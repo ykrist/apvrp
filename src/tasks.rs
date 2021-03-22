@@ -20,9 +20,24 @@ impl From<Task> for RawTask {
   }
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TaskType {
+  /// Move from one request to another (delivery to pickup loc)
+  Transfer,
+  /// Move from the PV origin to a request pickup
+  Start,
+  /// Move from request delivery to the PV destination
+  End,
+  /// Move from the PV origin directly to the PV destination
+  Direct,
+  /// Fulfill as a request
+  Req,
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct Task {
   id: TaskId,
+  pub ty: TaskType,
   /// Start location
   pub start: Loc,
   /// End location
@@ -56,9 +71,10 @@ impl Task {
     NEXT.fetch_add(1, Ordering::Relaxed)
   }
 
-  pub fn new(start: Loc, end: Loc, p: Pv, t_release: Time, t_deadline: Time, tt: Time) -> Task {
+  pub fn new(ty: TaskType, start: Loc, end: Loc, p: Pv, t_release: Time, t_deadline: Time, tt: Time) -> Task {
     Task {
       id: Self::next_id(),
+      ty,
       start,
       end,
       p,
@@ -104,6 +120,7 @@ impl Tasks {
     for po in sets.pv_origins() {
       let dp = data.n_passive + po;
       all.push(Task::new(
+        TaskType::Direct,
         po,
         dp,
         po,
@@ -119,6 +136,7 @@ impl Tasks {
       for &rp in &data.compat_passive_req[&po] {
         let rd = rp + data.n_req;
         all.push(Task::new(
+          TaskType::Start,
           po,
           rp,
           po,
@@ -138,6 +156,7 @@ impl Tasks {
         let av_dur = data.travel_time[&(rd, pd)];
 
         all.push(Task::new(
+          TaskType::End,
           rd,
           pd,
           po,
@@ -153,6 +172,7 @@ impl Tasks {
       for &rp in &data.compat_passive_req[&po] {
         let rd = rp + data.n_req;
         let task = Task::new(
+          TaskType::Req,
           rp,
           rd,
           po,
@@ -180,25 +200,12 @@ impl Tasks {
           let t_deadline = data.end_time[&r2d] - data.srv_time[&r2d] - data.srv_time[&r2p] - data.travel_time[&(r2p, r2d)];
           let t_release = pv_req_t_start[&(po, r1p)] + data.travel_time[&(r1p, r1d)] + data.srv_time[&r1d];
 
-          if po == 3 && (r1d, r2p) == (25, 12) {
-            let a_p_r = pv_req_t_start[&(po, r1p)];
-            let tts = (
-                data.travel_time[&(data.odepot, po)],
-                data.travel_time[&(po, r1p)],
-                data.travel_time[&(r1p, r1d)],
-                data.travel_time[&(r1d, r2p)],
-                data.travel_time[&(r2p, r2d)],
-                data.travel_time[&(r2d, po + data.n_passive)],
-                data.travel_time[&(po + data.n_passive, data.ddepot)],
-              );
-            dbg!(t_deadline, t_release, tt, a_p_r, tts);
-          }
-
           if t_release + tt > t_deadline {
             continue;
           }
 
           all.push(Task::new(
+            TaskType::Transfer,
             r1d,
             r2p,
             po,
@@ -242,7 +249,7 @@ impl Tasks {
         pred.insert(t1, t1_pred);
       }
     }
-    // FIXME instance 100 fails with key error
+
     Tasks { all, by_id, by_cover, by_end, by_start, succ, pred }
   }
 }
