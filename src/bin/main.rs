@@ -33,10 +33,20 @@ fn main() -> Result<()> {
   // println!("Successors: {:#?}", &tasks.succ[t]);
   // println!("Predecessors: {:#?}", &tasks.pred[t]);
 
-  let tasks : Vec<RawTask> = tasks.all.into_iter().map(RawTask::from).collect();
+  let mut cnt = 0;
+  for t1 in &tasks.all {
+    for t2 in &tasks.all {
+      if task_incompat(t1, t2, &data).is_none() {
+        cnt += 1;
+      }
+    }
+  }
 
-  let task_filename = format!("scrap/tasks/{}.json", idx);
-  std::fs::write(task_filename, serde_json::to_string_pretty(&tasks)?)?;
+  println!("{}", cnt);
+
+  // let tasks : Vec<RawTask> = tasks.all.into_iter().map(RawTask::from).collect();
+  // let task_filename = format!("scrap/tasks/{}.json", idx);
+  // std::fs::write(task_filename, serde_json::to_string_pretty(&tasks)?)?;
 
   Ok(())
 }

@@ -2,8 +2,11 @@ use crate::*;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use serde::{Serialize};
+use itertools::max;
 
 pub type TaskId = u32;
+mod checks;
+
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub struct RawTask {
@@ -16,7 +19,7 @@ pub struct RawTask {
 
 impl From<Task> for RawTask {
   fn from(task: Task) -> RawTask {
-    RawTask{ start: task.start, end: task.end, p: task.p }
+    RawTask { start: task.start, end: task.end, p: task.p }
   }
 }
 
@@ -44,9 +47,9 @@ pub struct Task {
   pub end: Loc,
   /// Passive vehicle
   pub p: Pv,
-  /// Earliest time the active vehicle can leave `start`
+  /// Earliest time the active vehicle can *depart* `start`
   pub t_release: Time,
-  /// Latest time the active vehicle can arrive at `end`
+  /// Latest time the active vehicle can *arrive* at `end`
   pub t_deadline: Time,
   /// Travel time between start and end of this task
   pub tt: Time,
@@ -223,8 +226,8 @@ impl Tasks {
     let mut by_start: Map<Loc, Vec<Task>> = map_with_capacity(data.n_loc);
     let mut by_end: Map<Loc, Vec<Task>> = map_with_capacity(data.n_loc);
     let mut by_id: Map<TaskId, Task> = map_with_capacity(all.len());
-    let mut succ : Map <_, _ > = map_with_capacity(all.len());
-    let mut pred : Map <_, _ > = map_with_capacity(all.len());
+    let mut succ: Map<_, _> = map_with_capacity(all.len());
+    let mut pred: Map<_, _> = map_with_capacity(all.len());
 
     for &t in &all {
       by_id.insert(t.id(), t);
@@ -235,7 +238,7 @@ impl Tasks {
     for &t1 in &all {
       if !sets.pv_dests().contains(&t1.end) {
         let t1_succ = by_start[&t1.end].iter()
-          .filter(|&t2| active_vehicle_check(&t1 ,t2))
+          .filter(|&t2| active_vehicle_check(&t1, t2))
           .copied()
           .collect();
         succ.insert(t1, t1_succ);
@@ -252,4 +255,59 @@ impl Tasks {
 
     Tasks { all, by_id, by_cover, by_end, by_start, succ, pred }
   }
+}
+
+pub enum Incompatibility {
+  Time,
+  Cover,
+}
+
+fn task_req(t: &Task, n_req: Loc) -> Req {
+  use TaskType::*;
+  match t.ty {
+    Direct | Transfer => panic!("not valid for direct or transfer tasks"),
+    Start => t.end,
+    End => t.start - n_req,
+    Req => t.start
+  }
+}
+
+fn pv_schedule(locs: &[Loc], data: &ApvrpInstance) -> Option<Vec<Time>> {
+  let mut schedule = Vec::with_capacity(locs.len());
+  let mut i = locs[0];
+  let mut t = data.travel_time[&(data.odepot, i)];
+  schedule.push(t);
+
+  for k in 1..locs.len() {
+      let j = locs[k];
+      t = data.travel_time[&(i,j)] + t + data.srv_time.get(&j).copied().unwrap_or(0);
+      t = std::cmp::max(t, data.start_time.get(&j).copied().unwrap_or(0));
+      if t > data.start_time.get(&j).copied().unwrap_or(2500) {
+        return None;
+      }
+      i = j;
+      schedule.push(t);
+  }
+
+  if t + data.travel_time[&(i, data.ddepot)] > data.tmax {
+    return None;
+  }
+
+  Some(schedule)
+}
+
+
+/// Returns `None` if it is possible to complete `t2` after task `t1`, using the same active vehicle.
+/// Otherwise, returns the reason for the incompatibility.
+pub fn task_incompat(t1: &Task, t2: &Task, data: &ApvrpInstance) -> Option<Incompatibility> {
+  if !checks::cover(t1, t2, data.n_req) {
+    return Some(Incompatibility::Cover);
+  }
+
+  // Service times may be added when the passive vehicles are the same.
+  if t1.t_release + t1.tt + data.travel_time[&(t1.start, t2.end)] + t2.tt > t2.t_deadline {
+    return Some(Incompatibility::Time);
+  }
+
+  None
 }
