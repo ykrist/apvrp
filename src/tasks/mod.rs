@@ -3,8 +3,10 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use serde::{Serialize};
 use itertools::max;
+use fnv::FnvHashSet;
 
 pub type TaskId = u32;
+pub type PVIRTaskId = u32;
 mod checks;
 
 
@@ -14,7 +16,7 @@ pub struct RawTask {
   /// End location
   pub end: Loc,
   /// Passive vehicle
-  pub p: Pv,
+  pub p: Option<Pv>,
 }
 
 impl From<Task> for RawTask {
@@ -28,13 +30,17 @@ pub enum TaskType {
   /// Move from one request to another (delivery to pickup loc)
   Transfer,
   /// Move from the PV origin to a request pickup
-  Start,
+  PvStart,
   /// Move from request delivery to the PV destination
-  End,
+  PvEnd,
   /// Move from the PV origin directly to the PV destination
   Direct,
   /// Fulfill as a request
   Req,
+  /// Av Depot null task
+  Start,
+  ///
+  End,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -45,8 +51,24 @@ pub struct Task {
   pub start: Loc,
   /// End location
   pub end: Loc,
-  /// Passive vehicle
-  pub p: Pv,
+  /// Passive vehicle, `None` only for active-vehicle depot tasks
+  pub p: Option<Pv>,
+  /// Earliest time the active vehicle can *depart* `start`
+  pub t_release: Time,
+  /// Latest time the active vehicle can *arrive* at `end`
+  pub t_deadline: Time,
+  /// Travel time between start and end of this task
+  pub tt: Time,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct PVIRTask {
+  id: PVIRTaskId,
+  pub ty: TaskType,
+  /// Start location
+  pub start: Loc,
+  /// End location
+  pub end: Loc,
   /// Earliest time the active vehicle can *depart* `start`
   pub t_release: Time,
   /// Latest time the active vehicle can *arrive* at `end`
@@ -74,7 +96,7 @@ impl Task {
     NEXT.fetch_add(1, Ordering::Relaxed)
   }
 
-  pub fn new(ty: TaskType, start: Loc, end: Loc, p: Pv, t_release: Time, t_deadline: Time, tt: Time) -> Task {
+  pub fn new(ty: TaskType, start: Loc, end: Loc, p: Option<Pv>, t_release: Time, t_deadline: Time, tt: Time) -> Task {
     Task {
       id: Self::next_id(),
       ty,
@@ -91,27 +113,20 @@ impl Task {
   pub fn id(&self) -> TaskId { self.id }
 }
 
-#[derive(Default, Debug, Clone)]
+// Optimisation(???): we could store Vec<TaskId> instead
+#[derive(Debug, Clone)]
 pub struct Tasks {
   pub all: Vec<Task>,
+  pub compat_with_av: Map<Av, FnvHashSet<TaskId>>,
   pub by_id: Map<TaskId, Task>,
-  pub by_start: Map<Loc, Vec<Task>>,
-  pub by_end: Map<Loc, Vec<Task>>,
-  pub by_cover: Map<Req, Vec<Task>>,
-  pub succ: Map<Task, Vec<Task>>,
-  pub pred: Map<Task, Vec<Task>>,
-}
-
-/// Returns true if an active vehicle can perform `t1` followed by `t2` with respect to travel time.
-#[inline(always)]
-pub fn active_vehicle_time_check(t1: &Task, t2: &Task) -> bool {
-  t1.t_release + t1.tt + t2.tt <= t2.t_deadline
-}
-
-/// Returns true if an active vehicle can perform `t1` followed by `t2` with respect to all constraints (flow, cover and time)
-#[inline(always)]
-pub fn active_vehicle_check(t1: &Task, t2: &Task) -> bool {
-  t1.end == t2.start && t1.start != t2.end && active_vehicle_time_check(t1, t2)
+  pub by_start: Map<Loc, Vec<TaskId>>,
+  pub by_end: Map<Loc, Vec<TaskId>>,
+  pub by_cover: Map<Req, Vec<TaskId>>,
+  pub by_pv: Map<Pv, FnvHashSet<TaskId>>,
+  pub succ: Map<TaskId, Vec<TaskId>>,
+  pub pred: Map<TaskId, Vec<TaskId>>,
+  pub odepot: Task,
+  pub ddepot: Task,
 }
 
 impl Tasks {
@@ -119,14 +134,36 @@ impl Tasks {
     let mut all = Vec::with_capacity(500);
     let mut by_cover = map_with_capacity(data.n_req);
 
-    // trivial tasks: PV origin to PV destination
+    // trivial tasks: AV origin and destination depots
+    let odepot = Task::new(
+      TaskType::Start,
+      data.odepot,
+      data.odepot,
+      None,
+      0,
+      data.tmax,
+      0
+    );
+    let ddepot = Task::new(
+      TaskType::End,
+      data.ddepot,
+      data.ddepot,
+      None,
+      0,
+      data.tmax,
+      0
+    );
+    all.push(odepot);
+    all.push(ddepot);
+
+    // direct tasks: PV origin to PV destination
     for po in sets.pv_origins() {
       let dp = data.n_passive + po;
       all.push(Task::new(
         TaskType::Direct,
         po,
         dp,
-        po,
+        Some(po),
         data.travel_time[&(data.odepot, po)],
         data.tmax - data.travel_time[&(dp, data.ddepot)],
         data.travel_time[&(po, dp)],
@@ -139,10 +176,10 @@ impl Tasks {
       for &rp in &data.compat_passive_req[&po] {
         let rd = rp + data.n_req;
         all.push(Task::new(
-          TaskType::Start,
+          TaskType::PvStart,
           po,
           rp,
-          po,
+          Some(po),
           data.travel_time[&(data.odepot, po)],
           data.end_time[&rd] - data.srv_time[&rp] - data.srv_time[&rd] - data.travel_time[&(rp, rd)],
           data.travel_time[&(po, rp)],
@@ -159,10 +196,10 @@ impl Tasks {
         let av_dur = data.travel_time[&(rd, pd)];
 
         all.push(Task::new(
-          TaskType::End,
+          TaskType::PvEnd,
           rd,
           pd,
-          po,
+          Some(po),
           pv_req_t_start[&(po, rp)] + data.srv_time[&rd] + data.travel_time[&(rp, rd)],
           data.tmax - data.travel_time[&(pd, data.ddepot)],
           data.travel_time[&(rd, pd)],
@@ -178,13 +215,13 @@ impl Tasks {
           TaskType::Req,
           rp,
           rd,
-          po,
+          Some(po),
           pv_req_t_start[&(po, rp)],
           data.end_time[&rd] - data.srv_time[&rd],
           data.travel_time[&(rp, rd)],
         );
         all.push(task.clone());
-        by_cover.entry(rp).or_insert_with(Vec::new).push(task);
+        by_cover.entry(rp).or_insert_with(Vec::new).push(task.id());
       }
     }
 
@@ -211,7 +248,7 @@ impl Tasks {
             TaskType::Transfer,
             r1d,
             r2p,
-            po,
+            Some(po),
             t_release,
             t_deadline,
             tt,
@@ -223,51 +260,72 @@ impl Tasks {
     all.shrink_to_fit();
 
     // Lookups
-    let mut by_start: Map<Loc, Vec<Task>> = map_with_capacity(data.n_loc);
-    let mut by_end: Map<Loc, Vec<Task>> = map_with_capacity(data.n_loc);
-    let mut by_id: Map<TaskId, Task> = map_with_capacity(all.len());
+    let mut by_start: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc);
+    let mut by_end: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc);
+    let mut by_id: Map<_, _> = map_with_capacity(all.len());
     let mut succ: Map<_, _> = map_with_capacity(all.len());
     let mut pred: Map<_, _> = map_with_capacity(all.len());
+    let mut by_pv: Map<_, _> = sets.pv_origins().map(|pv| (pv, FnvHashSet::default())).collect();
 
     for &t in &all {
       by_id.insert(t.id(), t);
-      by_start.entry(t.start).or_default().push(t);
-      by_end.entry(t.end).or_default().push(t);
+      by_start.entry(t.start).or_default().push(t.id());
+      by_end.entry(t.end).or_default().push(t.id());
+      if let Some(pv) = &t.p {
+        by_pv.get_mut(pv).unwrap().insert(t.id());
+      }
     }
 
     for &t1 in &all {
-      if !sets.pv_dests().contains(&t1.end) {
-        let t1_succ = by_start[&t1.end].iter()
-          .filter(|&t2| active_vehicle_check(&t1, t2))
-          .copied()
-          .collect();
-        succ.insert(t1, t1_succ);
+      let t1_succ : Vec<_> = all.iter()
+        .filter_map(|t2| match task_incompat(&t1, t2, data) {
+          Some(_) => None,
+          None => Some(t2.id())
+        })
+        .collect();
+
+      for &t2 in &t1_succ {
+        pred.entry(t2).or_insert_with(Vec::new).push(t1.id());
       }
-      // TODO: add some debug assertions about which tasks have predecessors and which don't
-      if !sets.pv_origins().contains(&t1.start) {
-        let t1_pred = by_end[&t1.start].iter()
-          .filter(|&t2| active_vehicle_check(t2, &t1))
-          .copied()
-          .collect();
-        pred.insert(t1, t1_pred);
+      succ.insert(t1.id(), t1_succ);
+    }
+
+    let mut compat_with_av: Map<_, _> = sets.avs()
+      .into_iter()
+      .map(|av| {
+        let mut s = FnvHashSet::default();
+        s.insert(odepot.id());
+        s.insert(ddepot.id());
+        (av, s)
+      }).collect();
+
+    for (&pv, avs) in &data.compat_passive_active {
+      for &t in &by_pv[&pv] {
+        for &av in avs {
+          compat_with_av.get_mut(&av).unwrap().insert(t);
+        }
       }
     }
 
-    Tasks { all, by_id, by_cover, by_end, by_start, succ, pred }
+    Tasks { all, by_id, by_pv, by_cover, by_end, by_start, succ, pred, odepot, compat_with_av, ddepot }
   }
 }
 
 pub enum Incompatibility {
+  /// Time-incompatibility
   Time,
+  /// Conflict, possible indirect, in cover constraint
   Cover,
+  /// Possible legal, but optimisation says no
+  Opt,
 }
 
 fn task_req(t: &Task, n_req: Loc) -> Req {
   use TaskType::*;
   match t.ty {
-    Direct | Transfer => panic!("not valid for direct or transfer tasks"),
-    Start => t.end,
-    End => t.start - n_req,
+    Direct | Transfer | Start | End => panic!("not valid for direct or transfer tasks"),
+    PvStart => t.end,
+    PvEnd => t.start - n_req,
     Req => t.start
   }
 }
@@ -304,9 +362,26 @@ pub fn task_incompat(t1: &Task, t2: &Task, data: &ApvrpInstance) -> Option<Incom
     return Some(Incompatibility::Cover);
   }
 
-  // Service times may be added when the passive vehicles are the same.
-  if t1.t_release + t1.tt + data.travel_time[&(t1.start, t2.end)] + t2.tt > t2.t_deadline {
-    return Some(Incompatibility::Time);
+  if t1.ty == TaskType::Start && t2.ty == TaskType::End {
+    return None;// TODO return Some(Optimisation)?
+  }
+
+  let t = t1.t_release + t1.tt + data.travel_time[&(t1.end, t2.start)] + t2.tt;
+
+  if t > t2.t_deadline {
+    return Some(Incompatibility::Time)
+  }
+
+  if t1.p == t2.p {
+
+    if t + data.srv_time[&t1.end] + data.srv_time[&t2.start] > t2.t_deadline {
+      return Some(Incompatibility::Time)
+    }
+
+    if t1.end != t2.start {
+      // no point in having some other active vehicle do the implied task inbetween t1 and t2
+      return Some(Incompatibility::Opt)
+    }
   }
 
   None

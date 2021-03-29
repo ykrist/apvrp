@@ -33,16 +33,20 @@ fn main() -> Result<()> {
   // println!("Successors: {:#?}", &tasks.succ[t]);
   // println!("Predecessors: {:#?}", &tasks.pred[t]);
 
-  let mut cnt = 0;
-  for t1 in &tasks.all {
-    for t2 in &tasks.all {
-      if task_incompat(t1, t2, &data).is_none() {
-        cnt += 1;
-      }
-    }
-  }
+  // let mut cnt = 0;
+  // for t1 in &tasks.all {
+  //   for t2 in &tasks.all {
+  //     if task_incompat(t1, t2, &data).is_none() {
+  //       cnt += 1;
+  //     }
+  //   }
+  // }
+  // println!("{}", cnt);
 
-  println!("{}", cnt);
+  let mut mp_model = TaskModelMaster::build(&data, &sets, &tasks)?;
+  mp_model.model.optimize()?;
+
+
 
   // let tasks : Vec<RawTask> = tasks.all.into_iter().map(RawTask::from).collect();
   // let task_filename = format!("scrap/tasks/{}.json", idx);
