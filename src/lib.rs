@@ -2,7 +2,13 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
-pub use instances::dataset::apvrp::*;
+pub use instances::dataset::apvrp::{
+  MEISEL_A,
+  TILK_AB,
+  DSET,
+  ApvrpInstance,
+  Av, Pv, Time, Cost, Loc, Req,
+};
 pub use fnv::FnvHashMap as Map;
 pub use anyhow::Result;
 
