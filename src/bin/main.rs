@@ -5,9 +5,13 @@ use anyhow::Result;
 use instances::dataset::Dataset;
 
 fn main() -> Result<()> {
-  // dbg!(std::env::args());
   let idx : usize = std::env::args().into_iter().skip(1).next().ok_or(anyhow::Error::msg("Expected integer argument"))?.parse()?;
-  let data = DSET.load_instance(idx)?;
+  let data = {
+    let mut d = DSET.load_instance(idx)?;
+    preprocess::pv_req_timing_compat(&mut d);
+    d
+  };
+  println!("Loaded instance {}", &data.id);
   let sets = Sets::new(&data);
 
   // `pv_req_t_start` is the earliest time we can *depart* from request r's pickup with passive vehicle p
@@ -26,7 +30,7 @@ fn main() -> Result<()> {
     .collect();
 
   let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
-  // println!("{}", tasks.all.len());
+  println!("{} tasks", tasks.all.len());
   // println!("{:#?}",&tasks.by_id);
   // let t = &tasks.by_id[&170];
   // println!("{:#?}", t);
@@ -43,14 +47,12 @@ fn main() -> Result<()> {
   // }
   // println!("{}", cnt);
 
-  let mut mp_model = TaskModelMaster::build(&data, &sets, &tasks)?;
-  mp_model.model.optimize()?;
+  // let mut mp_model = TaskModelMaster::build(&data, &sets, &tasks)?;
+  // mp_model.model.optimize()?;
 
-
-
-  // let tasks : Vec<RawTask> = tasks.all.into_iter().map(RawTask::from).collect();
-  // let task_filename = format!("scrap/tasks/{}.json", idx);
-  // std::fs::write(task_filename, serde_json::to_string_pretty(&tasks)?)?;
+  let tasks : Vec<RawPvTask> = tasks.all.into_iter().filter_map(RawPvTask::new).collect();
+  let task_filename = format!("scrap/tasks/{}.json", idx);
+  std::fs::write(task_filename, serde_json::to_string_pretty(&tasks)?)?;
 
   Ok(())
 }

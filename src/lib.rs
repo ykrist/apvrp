@@ -19,4 +19,6 @@ mod sets;
 pub use sets::Sets;
 
 mod model;
+pub mod preprocess;
+
 pub use model::TaskModelMaster;

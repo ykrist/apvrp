@@ -97,7 +97,7 @@ impl MpConstraints {
       cmap
     };
 
-    let num_av = { // FIXME this is only correct if there is only one vehicle in every vehicle class
+    let num_av = { // ASSUMPTION this is only correct if there is only one vehicle in every vehicle class
       let mut cmap = map_with_capacity(data.n_active);
       for (&av, av_tasks) in &tasks.compat_with_av {
         let to = tasks.odepot.id();
