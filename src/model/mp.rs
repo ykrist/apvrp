@@ -1,7 +1,7 @@
 use crate::*;
 use crate::tasks::TaskId;
 use grb::prelude::*;
-use std::env::var;
+use fnv::FnvHashSet;
 
 pub struct MpVars {
   pub x: Map<TaskId, Var>,
@@ -103,7 +103,7 @@ impl MpConstraints {
         let to = tasks.odepot.id();
         let ysum = tasks.succ[&to]
           .iter()
-          .filter_map(|t| if av_tasks.contains(t) { Some(vars.y[&(av, to, *t)]) } else { None})
+          .filter_map(|t| if av_tasks.contains(t) { Some(vars.y[&(av, to, *t)]) } else { None })
           .grb_sum();
 
         let c = model.add_constr(&format!("num_av[{}]", av), c!(ysum <= 1))?;
@@ -182,6 +182,4 @@ impl TaskModelMaster {
     Ok(TaskModelMaster { vars, cons, model })
   }
 }
-
-
 
