@@ -4,8 +4,6 @@ use grb::prelude::*;
 use fnv::FnvHashSet;
 use grb::constr::IneqExpr;
 use super::mp::MpVars;
-use std::env::var;
-use serde::__private::ser::constrain;
 
 pub struct SpConstraints {
   av_sync: Map<(TaskId, TaskId), Constr>,

@@ -18,6 +18,11 @@ pub struct Cb<'a> {
   stats: CbStats,
 }
 
+pub enum Component {
+  Path(Vec<TaskId>),
+  Cycle(Vec<TaskId>),
+}
+
 pub fn construct_av_routes() -> Vec<Vec<TaskId>>{
   todo!()
 }
