@@ -3,15 +3,16 @@ use crate::tasks::TaskId;
 use grb::prelude::*;
 use fnv::FnvHashSet;
 
+#[derive(Clone)]
 pub struct MpVars {
   pub x: Map<TaskId, Var>,
-  pub y: Map<(Av, TaskId, TaskId), Var>,
+  pub y: Map<(Av, TaskId, TaskId), Var>, /// These will be (Av, PvirTaskId, PvirTaskId)
   pub u: Map<Req, Var>,
   pub theta: Map<(Av, TaskId), Var>,
 }
 
 impl MpVars {
-  pub fn build(data: &ApvrpInstance, sets: &Sets, tasks: &Tasks, model: &mut Model) -> Result<Self> {
+  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model) -> Result<Self> {
     let mut x = map_with_capacity(tasks.all.len());
     for t in &tasks.all {
       x.insert(t.id(), add_binvar!(model, name: &format!("X[{}]", task_var_string(t)))?);
@@ -54,7 +55,7 @@ pub struct MpConstraints {
 }
 
 impl MpConstraints {
-  pub fn build(data: &ApvrpInstance, sets: &Sets, tasks: &Tasks, model: &mut Model, vars: &MpVars) -> Result<Self> {
+  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model, vars: &MpVars) -> Result<Self> {
     let req_cover = {
       let mut cmap = map_with_capacity(data.n_req);
       for r in sets.req_pickups() {
@@ -175,7 +176,7 @@ fn task_var_string(t: &Task) -> String {
 }
 
 impl TaskModelMaster {
-  pub fn build(data: &ApvrpInstance, sets: &Sets, tasks: &Tasks) -> Result<Self> {
+  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks) -> Result<Self> {
     let mut model = Model::new("Task Model MP")?;
     let vars = MpVars::build(data, sets, tasks, &mut model)?;
     let cons = MpConstraints::build(data, sets, tasks, &mut model, &vars)?;

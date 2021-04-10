@@ -72,7 +72,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // where
     // r != s OR a == b
     (PvStart, PvEnd) => {
-      ( t1.p == t2.p || t1.end != t2.start - n)
+      t1.p == t2.p || t1.end != t2.start - n
     },
 
     // o+(a), p(r) --> p(s), d(s), o-(b)

@@ -4,6 +4,7 @@ use grb::prelude::*;
 use fnv::FnvHashSet;
 use grb::constr::IneqExpr;
 use super::mp::MpVars;
+use super::cb::{AvPath, PvPath};
 
 pub struct SpConstraints {
   av_sync: Map<(TaskId, TaskId), Constr>,
@@ -14,28 +15,32 @@ pub struct SpConstraints {
 }
 
 impl SpConstraints {
-  pub fn build(data: &ApvrpInstance, tasks: &Tasks, av_routes: &[Vec<TaskId>], pv_routes: &[Vec<TaskId>], model: &mut Model, vars: &Map<TaskId, Var>) -> Result<Self> {
+  pub fn build(data: &Data, tasks: &Tasks, av_routes: &Map<Avg, Vec<AvPath>>, pv_routes: &Map<Pv, PvPath>, model: &mut Model, vars: &Map<TaskId, Var>) -> Result<Self> {
+    // Constraints (3b)
     let mut av_sync = map_with_capacity(vars.len()); // slightly too big but close enough
-    for av_tasks in av_routes {
-      for (t1, t2) in av_tasks.iter().map(|t| tasks.by_id[t]).tuple_windows() {
-        let c = c!(vars[&t1.id()] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2.id()]);
-        av_sync.insert((t1.id(), t2.id()), model.add_constr("", c)?);
+    for routes in av_routes.values() {
+      for task_pairs in routes {
+        for (t1, t2) in task_pairs {
+          let c = c!(vars[&t1.id()] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2.id()]);
+          av_sync.insert((t1.id(), t2.id()), model.add_constr("", c)?);
+        }
       }
     }
+
 
     let mut start_req = Map::default();
     let mut end_req = Map::default();
     let mut lb = map_with_capacity(vars.len());
     let mut ub = map_with_capacity(vars.len());
 
-    let mut add_bounds = |t: Task, model: &mut Model| -> Result<()> {
+    let mut add_bounds = |t: &Task, model: &mut Model| -> Result<()> {
       lb.insert(t.id(), model.add_constr("", c!(vars[&t.id()] >= t.t_release))?);
       ub.insert(t.id(), model.add_constr("", c!(vars[&t.id()] <= t.t_deadline - t.tt))?);
       Ok(())
     };
 
-    for pv_route in pv_routes {
-      let mut pv_route = pv_route.iter().map(|t| tasks.by_id[t]);
+    for pv_route in pv_routes.values() {
+      let mut pv_route = pv_route.iter();
       let mut t1 = pv_route.next().unwrap();
       add_bounds(t1, model)?;
 
@@ -175,13 +180,13 @@ impl FeasCut {
 
 
 impl TimingSubproblem {
-  pub fn build(data: &ApvrpInstance, tasks: &Tasks, av_routes: &[Vec<TaskId>], pv_routes: &[Vec<TaskId>]) -> Result<TimingSubproblem> {
+  pub fn build(data: &Data, tasks: &Tasks, av_routes: &Map<Avg, Vec<AvPath>>, pv_routes: &Map<Pv, PvPath>) -> Result<TimingSubproblem> {
     let mut model = Model::new("subproblem")?;
     let vars: Map<_, _> = {
-      let mut v = map_with_capacity(av_routes.iter().map(|av_tasks| av_tasks.len()).sum());
-      for av_tasks in av_routes {
-        for &t in av_tasks {
-          v.insert(t, add_ctsvar!(model)?);
+      let mut v = map_with_capacity(pv_routes.values().map(|tasks| tasks.len()).sum());
+      for tasks in pv_routes.values() {
+        for &t in tasks {
+          v.insert(t.id(), add_ctsvar!(model)?);
         }
       }
       v
@@ -190,10 +195,10 @@ impl TimingSubproblem {
     let cons = SpConstraints::build(data, tasks, av_routes, pv_routes, &mut model, &vars)?;
 
     let mut obj_constant = 0.0;
-    let obj = av_routes.iter()
-      .map(|av_route| {
-        let second_last_task = av_route[av_route.len() - 2];
-        let second_last_task = tasks.by_id[&second_last_task];
+    let obj = av_routes.values()
+      .flat_map(|routes| routes.iter())
+      .map(|task_pairs| {
+        let second_last_task = task_pairs.last().expect("bug: empty PV route?").0;
         obj_constant += (second_last_task.tt + data.travel_time[&(second_last_task.end, data.ddepot)]) as f64;
         vars[&second_last_task.id()]
       })
@@ -207,21 +212,21 @@ impl TimingSubproblem {
   pub fn solve(mut self, tasks: &Tasks) -> Result<Vec<BendersCut>> {
     let mut cuts = Vec::with_capacity(1);
 
-    loop {
-      self.model.optimize()?;
-      match self.model.status()? {
-        Status::Optimal => {
-          cuts.push(BendersCut::Optimality(OptCut::build(&self.model, tasks, &self.cons)?));
-        }
-        Status::Infeasible => {
-          self.model.compute_iis()?;
-          cuts.push(BendersCut::Feasibility(FeasCut::build(&self.model, &self.cons)?));
-        }
-        other => {
-          panic!("unexpected subproblem status: {:?}", other)
-        }
+
+    self.model.optimize()?;
+    match self.model.status()? {
+      Status::Optimal => {
+        cuts.push(BendersCut::Optimality(OptCut::build(&self.model, tasks, &self.cons)?));
       }
-      break; // TODO remove constraints and loop
+      Status::Infeasible => {
+        self.model.compute_iis()?;
+        cuts.push(BendersCut::Feasibility(FeasCut::build(&self.model, &self.cons)?));
+        // TODO remove constraints and loop
+      }
+
+      other => {
+        panic!("unexpected subproblem status: {:?}", other)
+      }
     }
 
     Ok(cuts)

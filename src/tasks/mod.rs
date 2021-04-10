@@ -4,6 +4,7 @@ use std::ops::Deref;
 use serde::{Serialize};
 use itertools::max;
 use fnv::FnvHashSet;
+use std::fmt;
 
 pub type TaskId = u32;
 pub type PVIRTaskId = u32;
@@ -50,7 +51,7 @@ pub enum TaskType {
   End,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct Task {
   id: TaskId,
   pub ty: TaskType,
@@ -96,6 +97,22 @@ impl Hash for Task {
   }
 }
 
+impl fmt::Debug for Task {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let mut tuple = f.debug_tuple("Task");
+
+    if let Some(p) = &self.p {
+      tuple.field(p);
+    } else {
+      tuple.field(&'-');
+    }
+    tuple
+      .field(&self.start)
+      .field(&self.end)
+      .finish()
+  }
+}
+
 impl Task {
   fn next_id() -> TaskId {
     use std::sync::atomic::{Ordering, AtomicU32};
@@ -124,7 +141,7 @@ impl Task {
 #[derive(Debug, Clone)]
 pub struct Tasks {
   pub all: Vec<Task>,
-  pub compat_with_av: Map<Av, FnvHashSet<TaskId>>,
+  pub compat_with_av: Map<Avg, FnvHashSet<TaskId>>, // FIXME is this correct?
   pub by_id: Map<TaskId, Task>,
   pub by_start: Map<Loc, Vec<TaskId>>,
   pub by_end: Map<Loc, Vec<TaskId>>,
@@ -137,7 +154,7 @@ pub struct Tasks {
 }
 
 impl Tasks {
-  pub fn generate(data: &ApvrpInstance, sets: &Sets, pv_req_t_start: &Map<(Pv, Req), Time>) -> Self {
+  pub fn generate(data: &Data, sets: &Sets, pv_req_t_start: &Map<(Pv, Req), Time>) -> Self {
     let mut all = Vec::with_capacity(500);
     let mut by_cover = map_with_capacity(data.n_req);
 
@@ -196,7 +213,6 @@ impl Tasks {
           t_deadline,
           tt,
         ))
-
       }
     }
 
@@ -259,7 +275,7 @@ impl Tasks {
           }
           let r2d = r2p + data.n_req;
           let tt = data.travel_time[&(r1d, r2p)];
-          let t_deadline = data.end_time[&r2d] - data.srv_time[&r2d] - data.travel_time[&(r2p, r2d)] - data.srv_time[&r2p] ;
+          let t_deadline = data.end_time[&r2d] - data.srv_time[&r2d] - data.travel_time[&(r2p, r2d)] - data.srv_time[&r2p];
           let t_release = pv_req_t_start[&(po, r1p)] + data.travel_time[&(r1p, r1d)] + data.srv_time[&r1d];
 
           if t_release + tt <= t_deadline {
@@ -361,7 +377,7 @@ fn task_req(t: &Task, n_req: Loc) -> Req {
   }
 }
 
-fn pv_schedule(locs: &[Loc], data: &ApvrpInstance) -> Option<Vec<Time>> {
+fn pv_schedule(locs: &[Loc], data: &Data) -> Option<Vec<Time>> {
   let mut schedule = Vec::with_capacity(locs.len());
   let mut i = locs[0];
   let mut t = data.travel_time[&(data.odepot, i)];
@@ -388,7 +404,7 @@ fn pv_schedule(locs: &[Loc], data: &ApvrpInstance) -> Option<Vec<Time>> {
 
 /// Returns `None` if it is possible to complete `t2` after task `t1`, using the same active vehicle.
 /// Otherwise, returns the reason for the incompatibility.
-pub fn task_incompat(t1: &Task, t2: &Task, data: &ApvrpInstance) -> Option<Incompatibility> {
+pub fn task_incompat(t1: &Task, t2: &Task, data: &Data) -> Option<Incompatibility> {
   if !checks::cover(t1, t2, data.n_req) {
     return Some(Incompatibility::Cover);
   }

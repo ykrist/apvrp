@@ -1,4 +1,4 @@
-use crate::{Loc, ApvrpInstance};
+use crate::{Loc, Data};
 use std::ops::Range;
 
 #[derive(Debug, Clone)]
@@ -12,7 +12,7 @@ pub struct Sets {
 }
 
 impl Sets {
-  pub fn new(data: &ApvrpInstance) -> Self {
+  pub fn new(data: &Data) -> Self {
     let pv_o_srt = 1;
     let pv_d_srt = pv_o_srt + data.n_passive;
     let r_o_srt = pv_d_srt + data.n_passive;

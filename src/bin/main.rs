@@ -1,7 +1,7 @@
 use apvrp::*;
-
 use anyhow::Result;
-use instances::dataset::Dataset;
+use instances::dataset::{Dataset, apvrp::ApvrpInstance};
+use tracing::{info, info_span};
 
 fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
   use instances::{
@@ -14,14 +14,22 @@ fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
     .finish()
 }
 
+#[tracing::instrument]
 fn main() -> Result<()> {
+  let _g = logging::init_logging(Some("log.ndjson"));
   let idx: usize = std::env::args().into_iter().skip(1).next().ok_or(anyhow::Error::msg("Expected integer argument"))?.parse()?;
+  info!(idx);
+
   let data = {
     let mut d = dataset(0.5).load_instance(idx)?;
+    let _span = info_span!("preprocess", idx, id=%d.id).entered();
+    info!("loaded instance");
     preprocess::pv_req_timing_compat(&mut d);
+    let d= preprocess::av_grouping(d);
+    info!(num_av_groups = d.av_groups.len(), num_av = d.n_active, "preprocessing finished");
     d
   };
-  println!("Loaded instance {}", &data.id);
+
   let sets = Sets::new(&data);
 
   // `pv_req_t_start` is the earliest time we can *depart* from request r's pickup with passive vehicle p
@@ -40,7 +48,8 @@ fn main() -> Result<()> {
     .collect();
 
   let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
-  println!("{} tasks", tasks.all.len());
+  info!(num_tasks=tasks.all.len(), "task generation finished");
+
   // println!("{:#?}",&tasks.by_id);
   // let t = &tasks.by_id[&170];
   // println!("{:#?}", t);
@@ -57,12 +66,15 @@ fn main() -> Result<()> {
   // }
   // println!("{}", cnt);
 
-  // let mut mp_model = TaskModelMaster::build(&data, &sets, &tasks)?;
-  // mp_model.model.optimize()?;
+  let mut mp_model = model::mp::TaskModelMaster::build(&data, &sets, &tasks)?;
+  let mut callback = model::cb::Cb::new(&data, &sets, &tasks, mp_model.vars.clone());
+  mp_model.model.optimize_with_callback(&mut callback)?;
+
 
   let tasks: Vec<RawPvTask> = tasks.all.into_iter().filter_map(RawPvTask::new).collect();
   let task_filename = format!("scrap/tasks/{}.json", idx);
   std::fs::write(task_filename, serde_json::to_string_pretty(&tasks)?)?;
+
 
   Ok(())
 }
