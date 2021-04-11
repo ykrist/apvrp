@@ -4,7 +4,9 @@ use grb::prelude::*;
 use fnv::FnvHashSet;
 use grb::constr::IneqExpr;
 use super::mp::MpVars;
-use super::cb::{AvPath, PvPath};
+use super::cb::{AvPath, PvPath, CbError};
+use tracing::{error_span, debug, trace, error};
+use crate::TaskType::ODepot;
 
 pub struct SpConstraints {
   av_sync: Map<(TaskId, TaskId), Constr>,
@@ -16,13 +18,20 @@ pub struct SpConstraints {
 
 impl SpConstraints {
   pub fn build(data: &Data, tasks: &Tasks, av_routes: &Map<Avg, Vec<AvPath>>, pv_routes: &Map<Pv, PvPath>, model: &mut Model, vars: &Map<TaskId, Var>) -> Result<Self> {
+    let _span = error_span!("sp_cons").entered();
+
     // Constraints (3b)
     let mut av_sync = map_with_capacity(vars.len()); // slightly too big but close enough
     for routes in av_routes.values() {
       for task_pairs in routes {
         for (t1, t2) in task_pairs {
-          let c = c!(vars[&t1.id()] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2.id()]);
-          av_sync.insert((t1.id(), t2.id()), model.add_constr("", c)?);
+          if t1 != &tasks.odepot && t2 != &tasks.ddepot {
+            debug!(?t1, ?t2, "av_sync");
+            vars[&t1.id()];
+            let c = c!(vars[&t1.id()] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2.id()]);
+            av_sync.insert((t1.id(), t2.id()), model.add_constr("", c)?);
+          }
+
         }
       }
     }
@@ -91,11 +100,15 @@ pub struct OptCut {
 
 impl OptCut {
   pub fn build(model: &Model, tasks: &Tasks, cons: &SpConstraints) -> Result<Self> {
+    let _span = error_span!("opt_cut").entered();
+
     let sp_obj = model.get_attr(attr::ObjVal)?;
+    debug!(?sp_obj);
     let mut task_pairs = Vec::new();
 
     for (&(t1, t2), c) in &cons.av_sync {
-      if tasks.by_id[&t2].ty == TaskType::End
+      debug!(dual=?model.get_obj_attr(attr::Pi, c));
+      if tasks.by_id[&t2].ty == TaskType::DDepot
         || model.get_obj_attr(attr::Pi, c)?.abs() > 1e-8
       {
         task_pairs.push((t1, t2));
@@ -115,7 +128,7 @@ impl OptCut {
       let t1 = tasks.by_id[&t1];
       let t2 = tasks.by_id[&t2];
 
-      if t2.ty == TaskType::End {
+      if t2.ty == TaskType::DDepot {
         for av in sets.avs() {
           if let Some(&theta) = vars.theta.get(&(av, t1.id())) {
             lhs = lhs + theta;
@@ -181,6 +194,8 @@ impl FeasCut {
 
 impl TimingSubproblem {
   pub fn build(data: &Data, tasks: &Tasks, av_routes: &Map<Avg, Vec<AvPath>>, pv_routes: &Map<Pv, PvPath>) -> Result<TimingSubproblem> {
+    let _span = error_span!("sp_build").entered();
+
     let mut model = Model::new("subproblem")?;
     let vars: Map<_, _> = {
       let mut v = map_with_capacity(pv_routes.values().map(|tasks| tasks.len()).sum());
@@ -211,12 +226,17 @@ impl TimingSubproblem {
 
   pub fn solve(mut self, tasks: &Tasks) -> Result<Vec<BendersCut>> {
     let mut cuts = Vec::with_capacity(1);
-
+    // if tracing::level_filters::STATIC_MAX_LEVEL < tracing::Level::INFO {
+      self.model.set_param(param::OutputFlag, 0)?;
+    // }
 
     self.model.optimize()?;
-    match self.model.status()? {
+    let status = self.model.status();
+    trace!(?status);
+    match status? {
       Status::Optimal => {
-        cuts.push(BendersCut::Optimality(OptCut::build(&self.model, tasks, &self.cons)?));
+        // TODO check
+        // cuts.push(BendersCut::Optimality(OptCut::build(&self.model, tasks, &self.cons)?));
       }
       Status::Infeasible => {
         self.model.compute_iis()?;
@@ -225,7 +245,9 @@ impl TimingSubproblem {
       }
 
       other => {
-        panic!("unexpected subproblem status: {:?}", other)
+        let err = CbError::Status(other);
+        error!(status=?other, "{}", err);
+        return Err(err.into())
       }
     }
 

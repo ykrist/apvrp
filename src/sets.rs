@@ -1,5 +1,6 @@
-use crate::{Loc, Data};
+use crate::{Loc, Data, Avg};
 use std::ops::Range;
+use std::iter::Iterator;
 
 #[derive(Debug, Clone)]
 pub struct Sets {
@@ -8,7 +9,7 @@ pub struct Sets {
   r_o_srt: usize,
   r_d_srt: usize,
   end: usize,
-  n_active: usize,
+  av_groups: Vec<Avg>,
 }
 
 impl Sets {
@@ -18,6 +19,8 @@ impl Sets {
     let r_o_srt = pv_d_srt + data.n_passive;
     let r_d_srt = r_o_srt + data.n_req;
     let end = r_d_srt + data.n_req;
+    let mut av_groups : Vec<_> = data.av_groups.keys().copied().collect();
+    av_groups.sort();
 
     Sets {
       pv_d_srt,
@@ -25,7 +28,7 @@ impl Sets {
       r_o_srt,
       r_d_srt,
       end,
-      n_active: data.n_active
+      av_groups
     }
   }
 
@@ -72,9 +75,9 @@ impl Sets {
     0..(self.end + 1)
   }
 
-  /// Set of active vehicles
+  // /// Set of active vehicles
   #[inline(always)]
-  pub fn avs(&self) -> Range<Loc> {
-    0..self.n_active
+  pub fn avs(&self) -> impl Iterator<Item=Avg> + '_ {
+    self.av_groups.iter().copied()
   }
 }

@@ -5,7 +5,7 @@ use grb::callback::{Callback, Where, CbResult};
 use fnv::FnvHashSet;
 use super::sp::{BendersCut, TimingSubproblem};
 use crate::graph::DecomposableDigraph;
-use tracing::{info, info_span};
+use tracing::{info, info_span, debug, trace, error_span};
 use std::fmt;
 
 #[derive(Default, Clone)]
@@ -24,13 +24,15 @@ pub struct Cb<'a> {
 
 #[derive(Debug, Clone)]
 pub enum CbError {
-  Other(String)
+  Status(grb::Status),
+  Other(String),
 }
 
 impl fmt::Display for CbError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.write_str("Callback error: ")?;
     match self {
+      CbError::Status(s) => f.write_fmt(format_args!("unexpected status: {:?}", s))?,
       CbError::Other(s) => f.write_str(s)?,
     }
     Ok(())
@@ -65,30 +67,35 @@ fn discard_edge_weights<T,W>(pairs: Vec<(T, W)>) -> Vec<T> {
 pub(super) type AvPath = Vec<(Task, Task)>;
 pub(super) type PvPath = Vec<Task>;
 
+#[tracing::instrument(skip(tasks, task_pairs))]
 pub fn construct_av_routes(tasks: &Tasks, task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvPath>) {
+  trace!(?task_pairs);
   use crate::graph::DecomposableDigraph;
-  println!("{:?}", task_pairs);
+
   struct AvGraph {
     pub odepot: Task,
     pub succ: Map<Task, Task>,
   }
 
   impl DecomposableDigraph<Task, (Task, Task), u8> for AvGraph {
-    fn is_sink(&self, node: &Task) -> bool { node.ty == TaskType::End }
+    fn is_sink(&self, node: &Task) -> bool { node.ty == TaskType::DDepot }
 
     fn next_start(&self) -> Option<Task> {
       if self.succ.contains_key(&self.odepot) { Some(self.odepot) }
       else { self.succ.keys().next().copied() }
     }
 
+    #[tracing::instrument(level="error", name="find_succ", fields(succ=?&self.succ), skip(self))]
     fn next_outgoing_arc(&self, task: &Task) -> ((Task, Task), Task, u8) {
-      dbg!(&self.succ, task);
       let next_task = self.succ[task];
+      trace!(?next_task);
       ((*task, next_task), next_task, 1)
     }
 
+    #[tracing::instrument(level="error", fields(succ=?&self.succ), skip(self))]
     fn subtract_arc(&mut self, arc: &(Task, Task), _: u8) {
       let removed = self.succ.remove(&arc.0);
+      trace!(removed_value=?removed);
       debug_assert!(removed.is_some())
     }
   }
@@ -176,7 +183,8 @@ impl<'a> Callback for Cb<'a> {
         for (&av, av_task_pairs) in &task_pairs {
           let (av_paths, av_cycles) = construct_av_routes(&self.tasks, av_task_pairs);
           if av_cycles.len() > 0 {
-            info!(num_cycles=av_cycles.len(), "AV cycles found")
+            info!(num_cycles=av_cycles.len(), "AV cycles found");
+            trace!(?av_cycles);
           }
 
           av_routes.insert(av, av_paths);
@@ -190,7 +198,10 @@ impl<'a> Callback for Cb<'a> {
           .zip(ctx.get_solution(self.mp_vars.x.values())?) {
           if val > 0.9 {
             let t = self.tasks.by_id[t];
-            x_tasks.entry(t.p.unwrap()).or_insert_with(Vec::new).push(t);
+            debug!(t=?&t);
+            if t.ty != TaskType::ODepot && t.ty != TaskType::DDepot {
+              x_tasks.entry(t.p.unwrap()).or_insert_with(Vec::new).push(t);
+            }
           }
         }
 
@@ -206,12 +217,13 @@ impl<'a> Callback for Cb<'a> {
         // let pv_routes = construct_pv_routes();
 
         if !heuristic_cut_add {
+          let _span = error_span!("mip_sp").entered();
           info!("no heuristic cuts found, building MIP subproblem");
           let sp = TimingSubproblem::build(self.data, self.tasks, &av_routes, &pv_routes)?;
           info!("solving MIP subproblem");
           let cuts = sp.solve(self.tasks)?;
-
-          debug_assert_eq!(cuts.len(), 1); // TODO remove this when multiple cuts are added
+          info!(ncuts=cuts.len(), "cuts generated");
+          // debug_assert_eq!(cuts.len(), 1); // TODO remove this when multiple cuts are added
           for cut in cuts {
             match &cut {
               BendersCut::Optimality(_) => { self.stats.n_opt_bc += 1 }

@@ -5,6 +5,8 @@ use serde::{Serialize};
 use itertools::max;
 use fnv::FnvHashSet;
 use std::fmt;
+use grb::constr::IneqExpr;
+use tracing::{error_span, trace, error};
 
 pub type TaskId = u32;
 pub type PVIRTaskId = u32;
@@ -45,10 +47,10 @@ pub enum TaskType {
   Direct,
   /// Fulfill as a request
   Req,
-  /// Av Depot null task
-  Start,
-  ///
-  End,
+  /// Av origin depot (fake task)
+  ODepot,
+  /// Av destination depot (fake task)
+  DDepot,
 }
 
 #[derive(Copy, Clone)]
@@ -99,17 +101,24 @@ impl Hash for Task {
 
 impl fmt::Debug for Task {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let mut tuple = f.debug_tuple("Task");
+    use TaskType::*;
+    use fmt::Debug;
 
-    if let Some(p) = &self.p {
-      tuple.field(p);
-    } else {
-      tuple.field(&'-');
+    match self.ty {
+      DDepot | ODepot => { return self.ty.fmt(f) }
+      _ => {}
     }
-    tuple
-      .field(&self.start)
-      .field(&self.end)
-      .finish()
+
+    // Avoid using `f.debug_tuple`, tasks are small enough that they should be printed as atomic terms.
+    match self.ty {
+      Direct => {
+        f.write_fmt(format_args!("{:?}({})", self.ty, self.p.unwrap()))
+      },
+      _ => {
+        // DDepot and ODepot are covered above, so `p` is not `None`.
+        f.write_fmt(format_args!("{:?}({},{},{})", self.ty, self.p.unwrap(), self.start, self.end))
+      }
+    }
   }
 }
 
@@ -155,12 +164,14 @@ pub struct Tasks {
 
 impl Tasks {
   pub fn generate(data: &Data, sets: &Sets, pv_req_t_start: &Map<(Pv, Req), Time>) -> Self {
+    let _span = error_span!("task generation").entered();
+
     let mut all = Vec::with_capacity(500);
     let mut by_cover = map_with_capacity(data.n_req);
 
     // trivial tasks: AV origin and destination depots
     let odepot = Task::new(
-      TaskType::Start,
+      TaskType::ODepot,
       data.odepot,
       data.odepot,
       None,
@@ -169,7 +180,7 @@ impl Tasks {
       0,
     );
     let ddepot = Task::new(
-      TaskType::End,
+      TaskType::DDepot,
       data.ddepot,
       data.ddepot,
       None,
@@ -299,8 +310,9 @@ impl Tasks {
       {
         for t in &all {
           if t.t_release + t.tt > t.t_deadline {
-            dbg!(t);
-            assert!(t.t_release + t.tt <= t.t_deadline);
+            error!(task=?t, t_release=t.t_release, tt=t.tt, t_deadline=t.t_deadline,
+              "BUG: time-impossible task: {} + {} > {}", t.t_release, t.tt, t.t_deadline);
+            panic!("critical bug")
           }
         }
       }
@@ -370,7 +382,7 @@ pub enum Incompatibility {
 fn task_req(t: &Task, n_req: Loc) -> Req {
   use TaskType::*;
   match t.ty {
-    Direct | Transfer | Start | End => panic!("not valid for direct or transfer tasks"),
+    Direct | Transfer | ODepot | DDepot => panic!("not valid for direct or transfer tasks"),
     PvStart => t.end,
     PvEnd => t.start - n_req,
     Req => t.start
@@ -409,7 +421,7 @@ pub fn task_incompat(t1: &Task, t2: &Task, data: &Data) -> Option<Incompatibilit
     return Some(Incompatibility::Cover);
   }
 
-  if t1.ty == TaskType::Start && t2.ty == TaskType::End {
+  if t1.ty == TaskType::ODepot && t2.ty == TaskType::DDepot {
     return None;// TODO return Some(Optimisation)?
   }
 

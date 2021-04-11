@@ -16,7 +16,7 @@ fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
 
 #[tracing::instrument]
 fn main() -> Result<()> {
-  let _g = logging::init_logging(Some("log.ndjson"));
+  let _g = logging::init_logging(Some("log.ndjson"), Some("apvrp.logfilter"));
   let idx: usize = std::env::args().into_iter().skip(1).next().ok_or(anyhow::Error::msg("Expected integer argument"))?.parse()?;
   info!(idx);
 
@@ -67,6 +67,9 @@ fn main() -> Result<()> {
   // println!("{}", cnt);
 
   let mut mp_model = model::mp::TaskModelMaster::build(&data, &sets, &tasks)?;
+  mp_model.model.set_param(grb::param::LazyConstraints, 1)?;
+  mp_model.model.update()?;
+  mp_model.model.write("scrap.lp")?;
   let mut callback = model::cb::Cb::new(&data, &sets, &tasks, mp_model.vars.clone());
   mp_model.model.optimize_with_callback(&mut callback)?;
 

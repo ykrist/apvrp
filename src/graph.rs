@@ -3,6 +3,7 @@ use std::hash::Hash;
 use std::ops::Sub;
 use std::rc::Rc;
 use std::fmt::Debug;
+use tracing::{error_span, trace, info, debug};
 
 #[inline]
 fn min_weights<W: Copy + PartialOrd>(weights: &[W]) -> W {
@@ -26,6 +27,8 @@ where
   fn subtract_arc(&mut self, arc: &A, weight: W);
 
   fn decompose_paths_cycles(mut self) -> (Vec<(Vec<A>, W)>, Vec<(Vec<A>, W)>) {
+    let _span = error_span!("decompose_paths_cycles").entered();
+
     let mut paths = Vec::new();
     let mut cycles = Vec::new();
 
@@ -39,20 +42,21 @@ where
       node_order.clear();
       arcs.clear();
       weights.clear();
-
+      trace!(?first_node);
       node_order.push(first_node.clone());
       visited_nodes.insert(first_node, 0usize);
       let mut current_node = node_order.last().unwrap();
-      dbg!(current_node);
 
       loop {
         let (arc, next_node, weight) = self.next_outgoing_arc(current_node);
+        trace!(node=?next_node);
         arcs.push(arc);
         weights.push(weight);
 
         if let Some(&cyc_idx) = visited_nodes.get(&next_node) {
           // cycle found
-          println!("cycle detected {:?}", &visited_nodes);
+          debug!(?cyc_idx, ?node_order, "cycle found");
+          // println!("cycle detected {:?}", &visited_nodes);
           let cycle = arcs.split_off(cyc_idx);
           let cycle_weight = min_weights(&weights[cyc_idx..]);
           weights.truncate(cyc_idx);
@@ -61,15 +65,23 @@ where
           }
           cycles.push((cycle, cycle_weight));
 
-          // backtrack to just before the start of the cycle.
-          for n in node_order.drain((cyc_idx + 1)..) {
-            visited_nodes.remove(&n);
+
+          if cyc_idx > 0 {
+            // backtrack to just before the start of the cycle.
+            for n in node_order.drain((cyc_idx + 1)..) {
+              visited_nodes.remove(&n);
+            }
+            current_node = node_order.last().unwrap();
+            continue;
+          } else {
+            // we may have remove all arcs here, so start again from scratch
+            break;
           }
-          current_node = node_order.last().unwrap();
-          continue;
+
 
         } else if self.is_sink(&next_node) {
           // path complete
+          debug!(?node_order, "path found");
           let path = arcs.split_off(0);
           let path_weight = min_weights(&weights);
           for a in &path {

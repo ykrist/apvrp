@@ -15,7 +15,7 @@ impl MpVars {
   pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model) -> Result<Self> {
     let mut x = map_with_capacity(tasks.all.len());
     for t in &tasks.all {
-      x.insert(t.id(), add_binvar!(model, name: &format!("X[{}]", task_var_string(t)))?);
+      x.insert(t.id(), add_binvar!(model, name: &format!("X[{:?}]", t))?);
     }
 
     let n_yvars: usize = tasks.succ.values().map(|s| s.len()).sum();
@@ -24,20 +24,20 @@ impl MpVars {
     for (&av, t1s) in &tasks.compat_with_av {
       for &t1 in t1s {
         for &t2 in &tasks.succ[&t1] {
-          y.insert((av, t1, t2), add_binvar!(model)?);
+          y.insert((av, t1, t2), add_binvar!(model, name: &format!("Y[{:?}-{:?}|{}]", &tasks.by_id[&t1], &tasks.by_id[&t2], av))?);
         }
       }
     }
 
     let mut u = map_with_capacity(data.n_req);
     for p in sets.req_pickups() {
-      u.insert(p, add_binvar!(model)?);
+      u.insert(p, add_binvar!(model, name: &format!("U[{}]", p))?);
     }
 
     let mut theta = map_with_capacity(data.n_active * tasks.all.len());
     for a in sets.avs() {
       for t in &tasks.all {
-        theta.insert((a, t.id()), add_ctsvar!(model)?);
+        theta.insert((a, t.id()), add_ctsvar!(model, name: &format!("Theta[{:?}|{}]", t, a))?);
       }
     }
 
@@ -143,7 +143,7 @@ impl MpConstraints {
     let xy_link = {
       let mut cmap = map_with_capacity(tasks.all.capacity());
       for t2 in &tasks.all {
-        if t2.ty == TaskType::Start || t2.ty == TaskType::End {
+        if t2.ty == TaskType::ODepot || t2.ty == TaskType::DDepot {
           continue;
         }
         let t2 = t2.id();
@@ -167,13 +167,6 @@ pub struct TaskModelMaster {
   pub model: Model,
 }
 
-fn task_var_string(t: &Task) -> String {
-  if let Some(p) = t.p {
-    format!("{:?}({}, {}, {})", t.ty, p, t.start, t.end)
-  } else {
-    format!("{:?}(-, {}, {})", t.ty, t.start, t.end)
-  }
-}
 
 impl TaskModelMaster {
   pub fn build(data: &Data, sets: &Sets, tasks: &Tasks) -> Result<Self> {

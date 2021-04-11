@@ -5,17 +5,17 @@ use crate::{Req};
 pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
   use TaskType::*;
   match (t1.ty, t2.ty) {
-    (Start, ty) => {
-      !matches!(ty, Start)
+    (ODepot, ty) => {
+      !matches!(ty, ODepot)
     },
 
-    (ty, End) => {
-      !matches!(ty, End)
+    (ty, DDepot) => {
+      !matches!(ty, DDepot)
     }
 
-    (_, Start) => { false }
+    (_, ODepot) => { false }
 
-    (End, _) => { false }
+    (DDepot, _) => { false }
 
     // o+(a), o-(a) --> o+(b), o-(b)
     // where
