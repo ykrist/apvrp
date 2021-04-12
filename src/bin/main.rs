@@ -50,18 +50,24 @@ fn main() -> Result<()> {
 
   let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
   info!(num_tasks=tasks.all.len(), "task generation finished");
+  // FIXME index 100 fails
+  //   Looks like the av_flow constraints are fucked up, see scrap.txt for the succ of av = 1
 
 
 
   let mut mp = model::mp::TaskModelMaster::build(&data, &sets, &tasks, ObjWeights::default())?;
   mp.model.set_param(grb::param::LazyConstraints, 1)?;
   mp.model.update()?;
+  mp.model.write("master_problem.lp")?;
   let mut callback = model::cb::Cb::new(&data, &sets, &tasks, mp.vars.clone());
   mp.model.optimize_with_callback(&mut callback)?;
   callback.flush_cut_cache(&mut mp.model)?;
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
 
+  for (cut_ty, num) in callback.stats.get_cut_counts() {
+    println!("Num {:?} Cuts: {}", cut_ty, num);
+  }
 
   // let tasks: Vec<RawPvTask> = tasks.all.into_iter().filter_map(RawPvTask::new).collect();
   // let task_filename = format!("scrap/tasks/{}.json", idx);

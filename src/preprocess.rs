@@ -1,7 +1,8 @@
 use crate::*;
 use instances::dataset::apvrp::ApvrpInstance;
-
+use tracing::trace;
 /// Group active vehicles into groups based on PV-AV compatibilities.
+#[tracing::instrument(skip(data), fields(?data.id))]
 pub fn av_grouping(data: ApvrpInstance) -> Data {
   let mut compat_active_passive = map_with_capacity(data.n_active);
 
@@ -37,7 +38,7 @@ pub fn av_grouping(data: ApvrpInstance) -> Data {
   for avs in compat_passive_active.values_mut() {
     avs.sort()
   }
-
+  trace!(av_groups=?&av_groups);
   Data {
     id: data.id,
     odepot: data.odepot,

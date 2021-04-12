@@ -223,7 +223,7 @@ pub struct Cb<'a> {
   sets: &'a Sets,
   tasks: &'a Tasks,
   mp_vars: super::mp::MpVars, // needs to be owned to avoid mutability issues with the Model object.
-  stats: CbStats,
+  pub stats: CbStats,
   cut_cache: Vec<(String, IneqExpr)>,
 }
 

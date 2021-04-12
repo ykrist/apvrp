@@ -188,7 +188,7 @@ impl Tasks {
   pub fn generate(data: &Data, sets: &Sets, pv_req_t_start: &Map<(Pv, Req), Time>) -> Self {
     let _span = error_span!("task generation").entered();
 
-    let mut all = Vec::with_capacity(500);
+    let mut all = Vec::with_capacity(500); // TODO improve this estimate
     let mut by_cover = map_with_capacity(data.n_req);
 
     // trivial tasks: AV origin and destination depots
@@ -360,14 +360,15 @@ impl Tasks {
 
     for &t1 in &all {
       let t1_succ: Vec<_> = all.iter()
-        .filter_map(|t2| match task_incompat(&t1, t2, data) {
-          Some(_) => None,
-          None => Some(*t2)
-        })
+        .filter(|t2| task_incompat(&t1, t2, data).is_none())
+        .copied()
         .collect();
 
       for &t2 in &t1_succ {
         pred.entry(t2).or_insert_with(Vec::new).push(t1);
+      }
+      if t1.is_depot() {
+        trace!(?t1, t1_succ=?&t1_succ);
       }
       succ.insert(t1, t1_succ);
     }

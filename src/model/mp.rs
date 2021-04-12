@@ -133,6 +133,7 @@ impl MpConstraints {
     let av_flow = {
       let mut cmap = Map::default(); // TODO capacity
       for (&av, av_tasks) in &tasks.compat_with_av {
+        tracing::trace!(av, ?av_tasks);
         for &t1 in av_tasks {
           if t1.is_depot() { continue }
 
