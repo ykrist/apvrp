@@ -4,6 +4,7 @@ use std::ops::Sub;
 use std::rc::Rc;
 use std::fmt::Debug;
 use tracing::{error_span, trace, info, debug};
+use std::mem::take;
 
 #[inline]
 fn min_weights<W: Copy + PartialOrd>(weights: &[W]) -> W {

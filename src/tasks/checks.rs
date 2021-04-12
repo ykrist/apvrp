@@ -27,21 +27,21 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // o+(a), o-(a) --> o+(b), p(s), d(s), o-(b)
     // where
     // a != b
-    (Direct, PvStart) => {
+    (Direct, Start) => {
       t1.p != t2.p
     },
 
     // o+(a), o-(a) --> d(s), o-(b)
     // where
     // a != b
-    (Direct, PvEnd) => {
+    (Direct, End) => {
       t1.p != t2.p
     },
 
     // o+(a), o-(a) --> p(s), d(s), o-(b)
     // where
     // a != b
-    (Direct, Req) => {
+    (Direct, Request) => {
       t1.p != t2.p
     },
 
@@ -55,7 +55,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // o+(a), p(r) --> o+(b), o-(b)
     // where
     // a != b
-    (PvStart, Direct) => {
+    (Start, Direct) => {
       t1.p != t2.p
     },
 
@@ -63,7 +63,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // where
     // a != b
     // r != s
-    (PvStart, PvStart) => {
+    (Start, Start) => {
       t1.end != t2.end
         && t1.p != t2.p
     },
@@ -71,14 +71,14 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // o+(a), p(r) --> d(s), o-(b)
     // where
     // r != s OR a == b
-    (PvStart, PvEnd) => {
+    (Start, End) => {
       t1.p == t2.p || t1.end != t2.start - n
     },
 
     // o+(a), p(r) --> p(s), d(s), o-(b)
     // where
     // r != s
-    (PvStart, Req) => {
+    (Start, Request) => {
       t1.end != t2.start
     },
 
@@ -86,7 +86,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // where
     // r != s0 OR a == b
     // r != s1
-    (PvStart, Transfer) => {
+    (Start, Transfer) => {
       t1.end != t2.end
         && ( t1.p == t2.p || t1.end != t2.start - n)
     },
@@ -94,7 +94,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // o+(a), p(r), d(r), o-(a) --> o+(b), o-(b)
     // where
     // a != b
-    (PvEnd, Direct) => {
+    (End, Direct) => {
       t1.p != t2.p
     },
 
@@ -102,7 +102,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // where
     // a != b
     // r != s
-    (PvEnd, PvStart) => {
+    (End, Start) => {
       t1.start - n != t2.end
         && t1.p != t2.p
     },
@@ -111,7 +111,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // where
     // a != b
     // r != s
-    (PvEnd, PvEnd) => {
+    (End, End) => {
       t1.start - n != t2.start - n
         && t1.p != t2.p
     },
@@ -120,7 +120,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // where
     // a != b
     // r != s
-    (PvEnd, Req) => {
+    (End, Request) => {
       t1.start - n != t2.start
         && t1.p != t2.p
     },
@@ -130,7 +130,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // a != b
     // r != s0
     // r != s1
-    (PvEnd, Transfer) => {
+    (End, Transfer) => {
       t1.start - n != t2.start - n
         && t1.start - n != t2.end
         && t1.p != t2.p
@@ -139,7 +139,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // o+(a), p(r), d(r) --> o+(b), o-(b)
     // where
     // a != b
-    (Req, Direct) => {
+    (Request, Direct) => {
       t1.p != t2.p
     },
 
@@ -147,7 +147,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // where
     // a != b
     // r != s
-    (Req, PvStart) => {
+    (Request, Start) => {
       t1.start != t2.end
         && t1.p != t2.p
     },
@@ -155,14 +155,14 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // o+(a), p(r), d(r) --> d(s), o-(b)
     // where
     // r != s
-    (Req, PvEnd) => {
+    (Request, End) => {
       t1.start != t2.start - n
     },
 
     // o+(a), p(r), d(r) --> p(s), d(s), o-(b)
     // where
     // r != s
-    (Req, Req) => {
+    (Request, Request) => {
       t1.start != t2.start
     },
 
@@ -170,7 +170,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // where
     // r != s0
     // r != s1
-    (Req, Transfer) => {
+    (Request, Transfer) => {
       t1.start != t2.start - n
         && t1.start != t2.end
     },
@@ -187,7 +187,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // a != b
     // r0 != s
     // r1 != s
-    (Transfer, PvStart) => {
+    (Transfer, Start) => {
       t1.start - n != t2.end
         && t1.end != t2.end
         && t1.p != t2.p
@@ -197,7 +197,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // where
     // r1 != s OR a == b
     // r0 != s
-    (Transfer, PvEnd) => {
+    (Transfer, End) => {
       t1.start - n != t2.start - n
         && ( t1.p == t2.p || t1.end != t2.start - n)
     },
@@ -206,7 +206,7 @@ pub fn cover(t1: &Task, t2: &Task, n: Req) -> bool {
     // where
     // r0 != s
     // r1 != s
-    (Transfer, Req) => {
+    (Transfer, Request) => {
       t1.start - n != t2.start
         && t1.end != t2.start
     },

@@ -35,22 +35,38 @@ impl From<Task> for RawPvTask {
   }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub enum TaskType {
   /// Move from one request to another (delivery to pickup loc)
   Transfer,
   /// Move from the PV origin to a request pickup
-  PvStart,
+  Start,
   /// Move from request delivery to the PV destination
-  PvEnd,
+  End,
   /// Move from the PV origin directly to the PV destination
   Direct,
   /// Fulfill as a request
-  Req,
+  Request,
   /// Av origin depot (fake task)
   ODepot,
   /// Av destination depot (fake task)
   DDepot,
+}
+
+impl fmt::Debug for TaskType {
+  fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
+    use TaskType::*;
+    let s = match self {
+      Transfer => "Trn",
+      Start => "Srt",
+      End => "End",
+      Direct => "Dir",
+      Request => "Req",
+      ODepot => "ODp",
+      DDepot => "DDp"
+    };
+    f.write_str(s)
+  }
 }
 
 #[derive(Copy, Clone)]
@@ -144,20 +160,26 @@ impl Task {
 
   #[inline(always)]
   pub fn id(&self) -> TaskId { self.id }
+
+  #[inline(always)]
+  pub fn is_depot(&self) -> bool {
+    self.ty == TaskType::ODepot || self.ty == TaskType::DDepot
+  }
 }
 
 // Optimisation(???): we could store Vec<TaskId> instead
 #[derive(Debug, Clone)]
 pub struct Tasks {
   pub all: Vec<Task>,
-  pub compat_with_av: Map<Avg, FnvHashSet<TaskId>>, // FIXME is this correct?
+  pub compat_with_av: Map<Avg, FnvHashSet<Task>>, // FIXME is this correct?
   pub by_id: Map<TaskId, Task>,
-  pub by_start: Map<Loc, Vec<TaskId>>,
-  pub by_end: Map<Loc, Vec<TaskId>>,
-  pub by_cover: Map<Req, Vec<TaskId>>,
-  pub by_pv: Map<Pv, FnvHashSet<TaskId>>,
-  pub succ: Map<TaskId, Vec<TaskId>>,
-  pub pred: Map<TaskId, Vec<TaskId>>,
+  pub by_start: Map<Loc, Vec<Task>>,
+  pub by_end: Map<Loc, Vec<Task>>,
+  pub by_locs: Map<(Loc, Loc), Vec<Task>>,
+  pub by_cover: Map<Req, Vec<Task>>,
+  pub by_pv: Map<Pv, FnvHashSet<Task>>,
+  pub succ: Map<Task, Vec<Task>>,
+  pub pred: Map<Task, Vec<Task>>,
   pub odepot: Task,
   pub ddepot: Task,
 }
@@ -205,7 +227,6 @@ impl Tasks {
       ))
     }
 
-
     // tasks that go from PV origin to Req pickup
     for po in sets.pv_origins() {
       for &rp in &data.compat_passive_req[&po] {
@@ -214,9 +235,10 @@ impl Tasks {
         let t_deadline = data.end_time[&rd] - data.srv_time[&rp] - data.srv_time[&rd] - data.travel_time[&(rp, rd)];
         let tt = data.travel_time[&(po, rp)];
 
-        // Assumption: if po and rp are marked as compatible, they are time-compatible.  This is enforced with `preprocess::pv_req_timing_compat`
+        // Assumption: if po and rp are marked as compatible, they are time-compatible.
+        //  This is enforced with `preprocess::pv_req_timing_compat`
         all.push(Task::new(
-          TaskType::PvStart,
+          TaskType::Start,
           po,
           rp,
           Some(po),
@@ -226,7 +248,6 @@ impl Tasks {
         ))
       }
     }
-
 
     // tasks that go from Req delivery to PV dest
     for po in sets.pv_origins() {
@@ -239,7 +260,7 @@ impl Tasks {
         let tt = data.travel_time[&(rd, pd)];
         if t_release + tt <= t_deadline {
           all.push(Task::new(
-            TaskType::PvEnd,
+            TaskType::End,
             rd,
             pd,
             Some(po),
@@ -260,7 +281,7 @@ impl Tasks {
         let t_deadline = data.end_time[&rd] - data.srv_time[&rd];
         if t_release + tt <= t_deadline {
           let task = Task::new(
-            TaskType::Req,
+            TaskType::Request,
             rp,
             rd,
             Some(po),
@@ -268,8 +289,8 @@ impl Tasks {
             t_deadline,
             tt,
           );
-          all.push(task.clone());
-          by_cover.entry(rp).or_insert_with(Vec::new).push(task.id());
+          all.push(task);
+          by_cover.entry(rp).or_insert_with(Vec::new).push(task);
         }
       }
     }
@@ -321,6 +342,7 @@ impl Tasks {
     // Lookups
     let mut by_start: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc);
     let mut by_end: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc);
+    let mut by_locs: Map<(Loc, Loc), Vec<_>> = map_with_capacity(data.travel_time.len());
     let mut by_id: Map<_, _> = map_with_capacity(all.len());
     let mut succ: Map<_, _> = map_with_capacity(all.len());
     let mut pred: Map<_, _> = map_with_capacity(all.len());
@@ -328,10 +350,11 @@ impl Tasks {
 
     for &t in &all {
       by_id.insert(t.id(), t);
-      by_start.entry(t.start).or_default().push(t.id());
-      by_end.entry(t.end).or_default().push(t.id());
+      by_start.entry(t.start).or_default().push(t);
+      by_end.entry(t.end).or_default().push(t);
+      by_locs.entry((t.start, t.end)).or_default().push(t);
       if let Some(pv) = &t.p {
-        by_pv.get_mut(pv).unwrap().insert(t.id());
+        by_pv.get_mut(pv).unwrap().insert(t);
       }
     }
 
@@ -339,22 +362,22 @@ impl Tasks {
       let t1_succ: Vec<_> = all.iter()
         .filter_map(|t2| match task_incompat(&t1, t2, data) {
           Some(_) => None,
-          None => Some(t2.id())
+          None => Some(*t2)
         })
         .collect();
 
       for &t2 in &t1_succ {
-        pred.entry(t2).or_insert_with(Vec::new).push(t1.id());
+        pred.entry(t2).or_insert_with(Vec::new).push(t1);
       }
-      succ.insert(t1.id(), t1_succ);
+      succ.insert(t1, t1_succ);
     }
 
     let mut compat_with_av: Map<_, _> = sets.avs()
       .into_iter()
       .map(|av| {
         let mut s = FnvHashSet::default();
-        s.insert(odepot.id());
-        s.insert(ddepot.id());
+        s.insert(odepot);
+        s.insert(ddepot);
         (av, s)
       }).collect();
 
@@ -366,7 +389,7 @@ impl Tasks {
       }
     }
 
-    Tasks { all, by_id, by_pv, by_cover, by_end, by_start, succ, pred, odepot, compat_with_av, ddepot }
+    Tasks { all, by_id, by_pv, by_cover, by_locs, by_end, by_start, succ, pred, odepot, compat_with_av, ddepot }
   }
 }
 
@@ -383,9 +406,9 @@ fn task_req(t: &Task, n_req: Loc) -> Req {
   use TaskType::*;
   match t.ty {
     Direct | Transfer | ODepot | DDepot => panic!("not valid for direct or transfer tasks"),
-    PvStart => t.end,
-    PvEnd => t.start - n_req,
-    Req => t.start
+    Start => t.end,
+    End => t.start - n_req,
+    Request => t.start
   }
 }
 

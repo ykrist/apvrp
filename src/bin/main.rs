@@ -2,6 +2,7 @@ use apvrp::*;
 use anyhow::Result;
 use instances::dataset::{Dataset, apvrp::ApvrpInstance};
 use tracing::{info, info_span};
+use apvrp::model::mp::ObjWeights;
 
 fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
   use instances::{
@@ -50,33 +51,21 @@ fn main() -> Result<()> {
   let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
   info!(num_tasks=tasks.all.len(), "task generation finished");
 
-  // println!("{:#?}",&tasks.by_id);
-  // let t = &tasks.by_id[&170];
-  // println!("{:#?}", t);
-  // println!("Successors: {:#?}", &tasks.succ[t]);
-  // println!("Predecessors: {:#?}", &tasks.pred[t]);
-
-  // let mut cnt = 0;
-  // for t1 in &tasks.all {
-  //   for t2 in &tasks.all {
-  //     if task_incompat(t1, t2, &data).is_none() {
-  //       cnt += 1;
-  //     }
-  //   }
-  // }
-  // println!("{}", cnt);
-
-  let mut mp_model = model::mp::TaskModelMaster::build(&data, &sets, &tasks)?;
-  mp_model.model.set_param(grb::param::LazyConstraints, 1)?;
-  mp_model.model.update()?;
-  mp_model.model.write("scrap.lp")?;
-  let mut callback = model::cb::Cb::new(&data, &sets, &tasks, mp_model.vars.clone());
-  mp_model.model.optimize_with_callback(&mut callback)?;
 
 
-  let tasks: Vec<RawPvTask> = tasks.all.into_iter().filter_map(RawPvTask::new).collect();
-  let task_filename = format!("scrap/tasks/{}.json", idx);
-  std::fs::write(task_filename, serde_json::to_string_pretty(&tasks)?)?;
+  let mut mp = model::mp::TaskModelMaster::build(&data, &sets, &tasks, ObjWeights::default())?;
+  mp.model.set_param(grb::param::LazyConstraints, 1)?;
+  mp.model.update()?;
+  let mut callback = model::cb::Cb::new(&data, &sets, &tasks, mp.vars.clone());
+  mp.model.optimize_with_callback(&mut callback)?;
+  callback.flush_cut_cache(&mut mp.model)?;
+  mp.model.update()?;
+  mp.model.write("master_problem.lp")?;
+
+
+  // let tasks: Vec<RawPvTask> = tasks.all.into_iter().filter_map(RawPvTask::new).collect();
+  // let task_filename = format!("scrap/tasks/{}.json", idx);
+  // std::fs::write(task_filename, serde_json::to_string_pretty(&tasks)?)?;
 
 
   Ok(())

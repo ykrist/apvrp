@@ -9,29 +9,27 @@ use tracing::{error_span, debug, trace, error};
 use crate::TaskType::ODepot;
 
 pub struct SpConstraints {
-  av_sync: Map<(TaskId, TaskId), Constr>,
-  start_req: Map<TaskId, Constr>,
-  end_req: Map<TaskId, Constr>,
-  lb: Map<TaskId, Constr>,
-  ub: Map<TaskId, Constr>,
+  av_sync: Map<(Task, Task), Constr>,
+  start_req: Map<Task, Constr>,
+  end_req: Map<Task, Constr>,
+  lb: Map<Task, Constr>,
+  ub: Map<Task, Constr>,
 }
 
 impl SpConstraints {
-  pub fn build(data: &Data, tasks: &Tasks, av_routes: &Map<Avg, Vec<AvPath>>, pv_routes: &Map<Pv, PvPath>, model: &mut Model, vars: &Map<TaskId, Var>) -> Result<Self> {
+  pub fn build(data: &Data, tasks: &Tasks, av_routes: &Map<Avg, Vec<AvPath>>, pv_routes: &Map<Pv, PvPath>, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
     let _span = error_span!("sp_cons").entered();
 
     // Constraints (3b)
     let mut av_sync = map_with_capacity(vars.len()); // slightly too big but close enough
     for routes in av_routes.values() {
       for task_pairs in routes {
-        for (t1, t2) in task_pairs {
-          if t1 != &tasks.odepot && t2 != &tasks.ddepot {
+        for &(t1, t2) in task_pairs {
+          if t1 != tasks.odepot && t2 != tasks.ddepot {
             debug!(?t1, ?t2, "av_sync");
-            vars[&t1.id()];
-            let c = c!(vars[&t1.id()] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2.id()]);
-            av_sync.insert((t1.id(), t2.id()), model.add_constr("", c)?);
+            let c = c!(vars[&t1] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
+            av_sync.insert((t1, t2), model.add_constr("", c)?);
           }
-
         }
       }
     }
@@ -42,26 +40,29 @@ impl SpConstraints {
     let mut lb = map_with_capacity(vars.len());
     let mut ub = map_with_capacity(vars.len());
 
-    let mut add_bounds = |t: &Task, model: &mut Model| -> Result<()> {
-      lb.insert(t.id(), model.add_constr("", c!(vars[&t.id()] >= t.t_release))?);
-      ub.insert(t.id(), model.add_constr("", c!(vars[&t.id()] <= t.t_deadline - t.tt))?);
+    let mut add_bounds = |t: Task, model: &mut Model| -> Result<()> {
+      // Constraints (3e)
+      lb.insert(t, model.add_constr("", c!(vars[&t] >= t.t_release))?);
+      ub.insert(t, model.add_constr("", c!(vars[&t] <= t.t_deadline - t.tt))?);
       Ok(())
     };
 
     for pv_route in pv_routes.values() {
       let mut pv_route = pv_route.iter();
-      let mut t1 = pv_route.next().unwrap();
+      let mut t1 = *pv_route.next().unwrap();
       add_bounds(t1, model)?;
 
-      for t2 in pv_route {
-        debug_assert_ne!((t1.ty, t2.ty), (TaskType::Req, TaskType::Req));
+      for &t2 in pv_route {
+        debug_assert_ne!((t1.ty, t2.ty), (TaskType::Request, TaskType::Request));
 
-        if t2.ty == TaskType::Req {
-          let c = c!(vars[&t1.id()] + t1.tt + data.srv_time[&t2.start] <= vars[&t2.id()]);
-          start_req.insert(t1.id(), model.add_constr("", c)?);
-        } else if t1.ty == TaskType::Req {
-          let c = c!(vars[&t1.id()] + t1.tt + data.srv_time[&t1.end] <= vars[&t2.id()]);
-          end_req.insert(t2.id(), model.add_constr("", c)?);
+        if t2.ty == TaskType::Request {
+          // Constraints (3c)
+          let c = c!(vars[&t1] + t1.tt + data.srv_time[&t2.start] <= vars[&t2]);
+          start_req.insert(t1, model.add_constr("", c)?);
+        } else if t1.ty == TaskType::Request {
+          // Constraints (3d)
+          let c = c!(vars[&t1] + t1.tt + data.srv_time[&t1.end] <= vars[&t2]);
+          end_req.insert(t2, model.add_constr("", c)?);
         }
         add_bounds(t2, model)?;
         t1 = t2;
@@ -72,7 +73,7 @@ impl SpConstraints {
 }
 
 pub struct TimingSubproblem {
-  pub vars: Map<TaskId, Var>,
+  pub vars: Map<Task, Var>,
   pub cons: SpConstraints,
   pub model: Model,
 }
@@ -92,10 +93,12 @@ impl BendersCut {
   }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct OptCut {
+  /// Subproblem objective when this cut is active.
   pub sp_obj: f64,
-  pub task_pairs: Vec<(TaskId, TaskId)>,
+  /// Task-to-task pairs which must ALL be active for the cut to be active
+  pub task_pairs: Vec<(Task, Task)>,
 }
 
 impl OptCut {
@@ -105,10 +108,9 @@ impl OptCut {
     let sp_obj = model.get_attr(attr::ObjVal)?;
     debug!(?sp_obj);
     let mut task_pairs = Vec::new();
-
     for (&(t1, t2), c) in &cons.av_sync {
-      debug!(dual=?model.get_obj_attr(attr::Pi, c));
-      if tasks.by_id[&t2].ty == TaskType::DDepot
+      trace!(?t1, ?t2, dual=?model.get_obj_attr(attr::Pi, c));
+      if t2.ty == TaskType::DDepot
         || model.get_obj_attr(attr::Pi, c)?.abs() > 1e-8
       {
         task_pairs.push((t1, t2));
@@ -119,42 +121,40 @@ impl OptCut {
   }
 
   pub fn into_ineq(self, sets: &Sets, tasks: &Tasks, vars: &MpVars) -> IneqExpr {
+    let _span = error_span!("opt_cut").entered();
+
     let mut lhs = Expr::default();
     let mut ysum = Expr::default();
     let obj = self.sp_obj;
     let n_pairs = self.task_pairs.len() as isize;
 
     for (t1, t2) in self.task_pairs {
-      let t1 = tasks.by_id[&t1];
-      let t2 = tasks.by_id[&t2];
-
-      if t2.ty == TaskType::DDepot {
-        for av in sets.avs() {
-          if let Some(&theta) = vars.theta.get(&(av, t1.id())) {
-            lhs = lhs + theta;
-          }
-        }
+      trace!(?t1, ?t2);
+      for av in sets.avs() {
+        // trace!(?av, ?t1);
+        lhs = lhs + vars.theta[&(av, t1)];
       }
 
       for av in sets.avs() {
-        if let Some(&y) = vars.y.get(&(av, t1.id(), t2.id())) {
+        if let Some(&y) = vars.y.get(&(av, t1, t2)) {
           ysum = ysum + y;
         }
       }
     }
+
     c!(lhs >= self.sp_obj*(1 - n_pairs + ysum))
   }
 }
 
 #[derive(Clone)]
 pub struct FeasCut {
-  pub task_pairs: Vec<(TaskId, TaskId)>,
-  pub tasks: FnvHashSet<TaskId>,
+  pub task_pairs: Vec<(Task, Task)>,
+  pub tasks: Vec<Task>,
 }
 
 impl FeasCut {
   pub fn build(model: &Model, cons: &SpConstraints) -> Result<Self> {
-    let mut tasks = FnvHashSet::default();
+    let mut tasks = Vec::new();
     let mut task_pairs = Vec::new();
 
     let x_cons = cons.end_req.iter()
@@ -164,7 +164,7 @@ impl FeasCut {
 
     for (&t, c) in x_cons {
       if model.get_obj_attr(attr::IISConstr, c)? > 0 {
-        tasks.insert(t);
+        tasks.push(t);
       }
     }
 
@@ -201,7 +201,7 @@ impl TimingSubproblem {
       let mut v = map_with_capacity(pv_routes.values().map(|tasks| tasks.len()).sum());
       for tasks in pv_routes.values() {
         for &t in tasks {
-          v.insert(t.id(), add_ctsvar!(model)?);
+          v.insert(t, add_ctsvar!(model)?);
         }
       }
       v
@@ -213,9 +213,9 @@ impl TimingSubproblem {
     let obj = av_routes.values()
       .flat_map(|routes| routes.iter())
       .map(|task_pairs| {
-        let second_last_task = task_pairs.last().expect("bug: empty PV route?").0;
+        let second_last_task = &task_pairs.last().expect("bug: empty PV route?").0;
         obj_constant += (second_last_task.tt + data.travel_time[&(second_last_task.end, data.ddepot)]) as f64;
-        vars[&second_last_task.id()]
+        vars[second_last_task]
       })
       .grb_sum() + obj_constant;
     model.set_objective(obj, Minimize)?;
@@ -227,7 +227,7 @@ impl TimingSubproblem {
   pub fn solve(mut self, tasks: &Tasks) -> Result<Vec<BendersCut>> {
     let mut cuts = Vec::with_capacity(1);
     // if tracing::level_filters::STATIC_MAX_LEVEL < tracing::Level::INFO {
-      self.model.set_param(param::OutputFlag, 0)?;
+    self.model.set_param(param::OutputFlag, 0)?;
     // }
 
     self.model.optimize()?;
@@ -236,7 +236,7 @@ impl TimingSubproblem {
     match status? {
       Status::Optimal => {
         // TODO check
-        // cuts.push(BendersCut::Optimality(OptCut::build(&self.model, tasks, &self.cons)?));
+        cuts.push(BendersCut::Optimality(OptCut::build(&self.model, tasks, &self.cons)?));
       }
       Status::Infeasible => {
         self.model.compute_iis()?;
@@ -247,7 +247,7 @@ impl TimingSubproblem {
       other => {
         let err = CbError::Status(other);
         error!(status=?other, "{}", err);
-        return Err(err.into())
+        return Err(err.into());
       }
     }
 
