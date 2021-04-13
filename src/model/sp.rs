@@ -99,42 +99,51 @@ pub struct OptCut {
   pub sp_obj: f64,
   /// Task-to-task pairs which must ALL be active for the cut to be active
   pub task_pairs: Vec<(Task, Task)>,
+  /// Tasks which appear in the objective.
+  pub obj_tasks: Vec<Task>
 }
 
 impl OptCut {
-  pub fn build(model: &Model, tasks: &Tasks, cons: &SpConstraints) -> Result<Self> {
+  pub fn build(sp: &TimingSubproblem, tasks: &Tasks) -> Result<Self> {
     let _span = error_span!("opt_cut").entered();
 
-    let sp_obj = model.get_attr(attr::ObjVal)?;
+    let sp_obj = sp.model.get_attr(attr::ObjVal)?;
     debug!(?sp_obj);
     let mut task_pairs = Vec::new();
-    for (&(t1, t2), c) in &cons.av_sync {
-      trace!(?t1, ?t2, dual=?model.get_obj_attr(attr::Pi, c));
-      if t2.ty == TaskType::DDepot
-        || model.get_obj_attr(attr::Pi, c)?.abs() > 1e-8
-      {
+    for (&(t1, t2), c) in &sp.cons.av_sync {
+      trace!(?t1, ?t2, dual=?sp.model.get_obj_attr(attr::Pi, c));
+      // if t2.ty == TaskType::DDepot
+      //   || model.get_obj_attr(attr::Pi, c)?.abs() > 1e-8
+      // {
         task_pairs.push((t1, t2));
-      }
+      // }
     }
 
-    Ok(OptCut { sp_obj, task_pairs })
+    let mut obj_tasks = Vec::with_capacity(sp.vars.len());
+    for (t, var) in &sp.vars {
+      if sp.model.get_obj_attr(attr::Obj, var)? > 0.001 {
+        obj_tasks.push(*t);
+      }
+    }
+    trace!(task_pairs=?&task_pairs);
+
+    Ok(OptCut { sp_obj, task_pairs, obj_tasks })
   }
 
   pub fn into_ineq(self, sets: &Sets, tasks: &Tasks, vars: &MpVars) -> IneqExpr {
     let _span = error_span!("opt_cut").entered();
 
-    let mut lhs = Expr::default();
+    let mut lhs = sets.avs()
+      .cartesian_product(self.obj_tasks)
+      .filter_map(|(av, t)| vars.theta.get(&(av, t)))
+      .grb_sum();
+
     let mut ysum = Expr::default();
     let obj = self.sp_obj;
     let n_pairs = self.task_pairs.len() as isize;
 
     for (t1, t2) in self.task_pairs {
       trace!(?t1, ?t2);
-      for av in sets.avs() {
-        // trace!(?av, ?t1);
-        lhs = lhs + vars.theta[&(av, t1)];
-      }
-
       for av in sets.avs() {
         if let Some(&y) = vars.y.get(&(av, t1, t2)) {
           ysum = ysum + y;
@@ -193,10 +202,10 @@ impl FeasCut {
 
 
 impl TimingSubproblem {
-  pub fn build(data: &Data, tasks: &Tasks, av_routes: &Map<Avg, Vec<AvPath>>, pv_routes: &Map<Pv, PvPath>) -> Result<TimingSubproblem> {
+  pub fn build(env: &Env, data: &Data, tasks: &Tasks, av_routes: &Map<Avg, Vec<AvPath>>, pv_routes: &Map<Pv, PvPath>) -> Result<TimingSubproblem> {
     let _span = error_span!("sp_build").entered();
 
-    let mut model = Model::new("subproblem")?;
+    let mut model = Model::with_env("subproblem", env)?;
     let vars: Map<_, _> = {
       let mut v = map_with_capacity(pv_routes.values().map(|tasks| tasks.len()).sum());
       for tasks in pv_routes.values() {
@@ -215,6 +224,7 @@ impl TimingSubproblem {
       .map(|task_pairs| {
         let second_last_task = &task_pairs.last().expect("bug: empty PV route?").0;
         obj_constant += (second_last_task.tt + data.travel_time[&(second_last_task.end, data.ddepot)]) as f64;
+        trace!(?second_last_task);
         vars[second_last_task]
       })
       .grb_sum() + obj_constant;
@@ -236,7 +246,7 @@ impl TimingSubproblem {
     match status? {
       Status::Optimal => {
         // TODO check
-        cuts.push(BendersCut::Optimality(OptCut::build(&self.model, tasks, &self.cons)?));
+        cuts.push(BendersCut::Optimality(OptCut::build(&self, tasks)?));
       }
       Status::Infeasible => {
         self.model.compute_iis()?;

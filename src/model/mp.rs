@@ -36,11 +36,13 @@ impl MpVars {
     let n_yvars: usize = tasks.succ.values().map(|s| s.len()).sum();
     let mut y = map_with_capacity(n_yvars);
 
-    for (&av, t1s) in &tasks.compat_with_av {
-      for &t1 in t1s {
+    for (&av, av_tasks) in &tasks.compat_with_av {
+      for &t1 in av_tasks {
         for &t2 in &tasks.succ[&t1] {
-          let obj_coeff = obj_param.tt * (data.travel_cost[&(t1.end, t2.start)] as f64);
-          y.insert((av, t1, t2), add_binvar!(model, name: &format!("Y[{:?}-{:?}|{}]", &t1, &t2, av))?);
+          if av_tasks.contains(&t2) {
+            let obj_coeff = obj_param.tt * (data.travel_cost[&(t1.end, t2.start)] as f64);
+            y.insert((av, t1, t2), add_binvar!(model, name: &format!("Y[{:?}-{:?}|{}]", &t1, &t2, av))?);
+          }
         }
       }
     }
@@ -52,7 +54,7 @@ impl MpVars {
 
     let mut theta = map_with_capacity(data.n_active * tasks.all.len());
     for a in sets.avs() {
-      for &t in &tasks.all {
+      for &t in &tasks.compat_with_av[&a] {
         theta.insert((a, t), add_ctsvar!(model, name: &format!("Theta[{:?}|{}]", &t, a), obj: obj_param.cover)?);
       }
     }
@@ -177,6 +179,7 @@ pub struct TaskModelMaster {
   pub vars: MpVars,
   pub cons: MpConstraints,
   pub model: Model,
+  pub sp_env: Env,
 }
 
 
@@ -185,8 +188,13 @@ impl TaskModelMaster {
     let mut model = Model::new("Task Model MP")?;
     let vars = MpVars::build(data, sets, tasks, &mut model, obj_param)?;
     let cons = MpConstraints::build(data, sets, tasks, &mut model, &vars)?;
+    let sp_env = {
+      let mut e = Env::empty()?;
+      e.set(param::OutputFlag, 0)?;
+      e.start()?
+    };
 
-    Ok(TaskModelMaster { vars, cons, model })
+    Ok(TaskModelMaster { vars, cons, model, sp_env })
   }
 }
 

@@ -59,7 +59,7 @@ fn main() -> Result<()> {
   mp.model.set_param(grb::param::LazyConstraints, 1)?;
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
-  let mut callback = model::cb::Cb::new(&data, &sets, &tasks, mp.vars.clone());
+  let mut callback = model::cb::Cb::new(&data, &sets, &tasks, mp.vars.clone())?;
   mp.model.optimize_with_callback(&mut callback)?;
   callback.flush_cut_cache(&mut mp.model)?;
   mp.model.update()?;

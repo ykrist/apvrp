@@ -9,6 +9,7 @@ use tracing::{info, info_span, debug, trace, error_span};
 use std::fmt;
 use grb::constr::IneqExpr;
 use variant_count::VariantCount;
+use anyhow::Context;
 
 #[derive(Debug, Clone)]
 pub enum CbError {
@@ -191,7 +192,8 @@ impl CbStats {
   #[inline]
   pub fn inc_cut_count(&mut self, cut_ty: CutType) -> usize {
     #[cfg(debug_assertions)]
-      let val = self.n_cuts.get_mut(cut_ty as usize).expect("vec should be large enough: will cause UB in release builds!");
+      let val = self.n_cuts.get_mut(cut_ty as usize)
+      .expect("vec should be large enough: will cause UB in release builds!");
 
     // Safety: We know the discriminant of `CutType` is always a valid index because the only
     // way to create a CbStats struct is to call `default()`, which allocates a `Vec` large enough.
@@ -225,19 +227,31 @@ pub struct Cb<'a> {
   mp_vars: super::mp::MpVars, // needs to be owned to avoid mutability issues with the Model object.
   pub stats: CbStats,
   cut_cache: Vec<(String, IneqExpr)>,
+  sp_env: Env,
 }
 
 impl<'a> Cb<'a> {
-  pub fn new(data: &'a Data, sets: &'a Sets, tasks: &'a Tasks, mp_vars: super::mp::MpVars) -> Self {
+  pub fn new(data: &'a Data, sets: &'a Sets, tasks: &'a Tasks, mp_vars: super::mp::MpVars) -> Result<Self> {
     let stats = CbStats::default();
-    Cb {
+
+    let sp_env = {
+      let ctx_msg = "create SP environment";
+      let mut e = Env::empty().context(ctx_msg)?;
+      e.set(param::OutputFlag, 0)
+        .and_then(|e| e.set(param::Threads, 1))
+        .context(ctx_msg)?;
+      e.start()?
+    };
+
+    Ok(Cb {
       data,
       sets,
       tasks,
       mp_vars,
       stats,
       cut_cache: Vec::new(),
-    }
+      sp_env,
+    })
   }
 
   pub fn flush_cut_cache(&mut self, mp: &mut Model) -> Result<()> {
@@ -307,7 +321,7 @@ impl<'a> Callback for Cb<'a> {
       Where::MIPSol(ctx) => {
         info!("integer MP solution found");
         let old_cut_cache_len = self.cut_cache.len();
-        // if old_cut_cache_len > 15 { ctx.terminate(); return Ok(()); } // TODO REMOVE
+        // if old_cut_cache_len > 150 { ctx.terminate(); return Ok(()); } // TODO REMOVE
 
         let task_pairs = self.get_task_pairs_by_av(&ctx)?;
         let mut av_routes = map_with_capacity(task_pairs.len());
@@ -325,7 +339,6 @@ impl<'a> Callback for Cb<'a> {
           av_routes.insert(av, av_paths);
 
           // TODO heuristic AV-path time-feasibility cuts
-          // TODO heuristic AV-path cycle cuts
         }
 
         let pv_tasks = self.get_tasks_by_pv(&ctx)?;
@@ -344,20 +357,23 @@ impl<'a> Callback for Cb<'a> {
         if self.cut_cache.len() == old_cut_cache_len {
           let _span = error_span!("lp_sp").entered();
           info!("no heuristic cuts found, building LP subproblem");
-          let sp = TimingSubproblem::build(self.data, self.tasks, &av_routes, &pv_routes)?;
+          let sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &av_routes, &pv_routes)?;
           info!("solving LP subproblem");
           let cuts = sp.solve(self.tasks)?;
           info!(ncuts=cuts.len(), "LP cuts generated");
 
           for cut in cuts {
             let name = match &cut {
-              BendersCut::Optimality(_) => {
-                self.stats.inc_cut_count(CutType::LpOpt);
-                "sp_opt"
+              BendersCut::Optimality(cut) => {
+                let thetas = self.sets.avs()
+                  .cartesian_product(&cut.obj_tasks)
+                  .filter_map(|(av, &t)| self.mp_vars.theta.get(&(av, t)));
+                let estimate : f64 = ctx.get_solution(thetas)?.into_iter().sum();
+                debug!(?estimate, sp_obj=?cut.sp_obj);
+                format!("sp_opt[{}]", self.stats.inc_cut_count(CutType::LpOpt))
               }
               BendersCut::Feasibility(_) => {
-                self.stats.inc_cut_count(CutType::LpFeas);
-                "sp_feas"
+                format!("sp_feas[{}]", self.stats.inc_cut_count(CutType::LpFeas))
               }
             };
             let cut = cut.into_ineq(self.sets, self.tasks, &self.mp_vars);

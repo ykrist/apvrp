@@ -446,7 +446,7 @@ pub fn task_incompat(t1: &Task, t2: &Task, data: &Data) -> Option<Incompatibilit
   }
 
   if t1.ty == TaskType::ODepot && t2.ty == TaskType::DDepot {
-    return None;// TODO return Some(Optimisation)?
+    return Some(Incompatibility::Opt); // necessary to avoid trivial AV routes
   }
 
   let t = t1.t_release + t1.tt + data.travel_time[&(t1.end, t2.start)] + t2.tt;
