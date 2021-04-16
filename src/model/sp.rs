@@ -7,6 +7,8 @@ use super::mp::MpVars;
 use super::cb::{AvPath, PvPath, CbError};
 use tracing::{error_span, debug, trace, error};
 use crate::TaskType::ODepot;
+use itertools::Itertools;
+use crate::solution::SpSolution;
 
 pub struct SpConstraints {
   av_sync: Map<(Task, Task), Constr>,
@@ -24,7 +26,7 @@ impl SpConstraints {
     let mut av_sync = map_with_capacity(vars.len()); // slightly too big but close enough
     for routes in av_routes.values() {
       for task_pairs in routes {
-        for &(t1, t2) in task_pairs {
+        for (&t1, &t2) in task_pairs.iter().tuple_windows() {
           if t1 != tasks.odepot && t2 != tasks.ddepot {
             debug!(?t1, ?t2, "av_sync");
             let c = c!(vars[&t1] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
@@ -70,12 +72,6 @@ impl SpConstraints {
     }
     Ok(SpConstraints { av_sync, start_req, end_req, ub, lb })
   }
-}
-
-pub struct TimingSubproblem {
-  pub vars: Map<Task, Var>,
-  pub cons: SpConstraints,
-  pub model: Model,
 }
 
 #[derive(Clone)]
@@ -201,8 +197,18 @@ impl FeasCut {
 }
 
 
-impl TimingSubproblem {
-  pub fn build(env: &Env, data: &Data, tasks: &Tasks, av_routes: &Map<Avg, Vec<AvPath>>, pv_routes: &Map<Pv, PvPath>) -> Result<TimingSubproblem> {
+pub struct TimingSubproblem<'a> {
+  pub vars: Map<Task, Var>,
+  pub cons: SpConstraints,
+  pub model: Model,
+  pub av_routes: &'a Map<Avg, Vec<AvPath>>,
+  pub pv_routes: &'a Map<Pv, PvPath>,
+  pub data: &'a Data,
+}
+
+
+impl<'a> TimingSubproblem<'a> {
+  pub fn build(env: &Env, data: &'a Data, tasks: &Tasks, av_routes: &'a Map<Avg, Vec<AvPath>>, pv_routes: &'a Map<Pv, PvPath>) -> Result<TimingSubproblem<'a>> {
     let _span = error_span!("sp_build").entered();
 
     let mut model = Model::with_env("subproblem", env)?;
@@ -221,8 +227,8 @@ impl TimingSubproblem {
     let mut obj_constant = 0.0;
     let obj = av_routes.values()
       .flat_map(|routes| routes.iter())
-      .map(|task_pairs| {
-        let second_last_task = &task_pairs.last().expect("bug: empty PV route?").0;
+      .map(|route| {
+        let second_last_task = &route[route.len()-2];
         obj_constant += (second_last_task.tt + data.travel_time[&(second_last_task.end, data.ddepot)]) as f64;
         trace!(?second_last_task);
         vars[second_last_task]
@@ -230,23 +236,33 @@ impl TimingSubproblem {
       .grb_sum() + obj_constant;
     model.set_objective(obj, Minimize)?;
 
-    Ok(TimingSubproblem { vars, cons, model })
+    Ok(TimingSubproblem { vars, cons, model, av_routes, pv_routes, data })
   }
 
-
-  pub fn solve(mut self, tasks: &Tasks) -> Result<Vec<BendersCut>> {
+  #[tracing::instrument(skip(self, tasks))]
+  pub fn solve(mut self, tasks: &Tasks, estimate: Time) -> Result<Vec<BendersCut>> {
     let mut cuts = Vec::with_capacity(1);
     // if tracing::level_filters::STATIC_MAX_LEVEL < tracing::Level::INFO {
-    self.model.set_param(param::OutputFlag, 0)?;
+    // self.model.set_param(param::OutputFlag, 0)?;
     // }
 
     self.model.optimize()?;
     let status = self.model.status();
-    trace!(?status);
+    debug!(?status);
     match status? {
       Status::Optimal => {
         // TODO check
-        cuts.push(BendersCut::Optimality(OptCut::build(&self, tasks)?));
+        let obj = self.model.get_attr(attr::ObjVal)?.round() as Time;
+        debug!(obj);
+        if estimate > obj {
+          SpSolution::from_sp(&self)?.pretty_print();
+          error!(obj, "invalid Benders cut");
+          return Err(CbError::Assertion.into());
+        }
+        // debug_assert!(obj >= estimate);
+        if estimate < obj {
+          cuts.push(BendersCut::Optimality(OptCut::build(&self, tasks)?));
+        }
       }
       Status::Infeasible => {
         self.model.compute_iis()?;

@@ -188,6 +188,14 @@ impl TaskModelMaster {
     let mut model = Model::new("Task Model MP")?;
     let vars = MpVars::build(data, sets, tasks, &mut model, obj_param)?;
     let cons = MpConstraints::build(data, sets, tasks, &mut model, &vars)?;
+
+    // initial Benders Cuts
+    for (&(av, t, td), &y) in vars.y.iter() {
+      if td.ty == TaskType::DDepot {
+        model.add_constr(&format!("initial_bc[{:?}|{}]", &t, av),c!(vars.theta[&(av, t)] >= (t.t_release + t.tt)*y ))?;
+      }
+    }
+
     let sp_env = {
       let mut e = Env::empty()?;
       e.set(param::OutputFlag, 0)?;

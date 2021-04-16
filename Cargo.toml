@@ -18,6 +18,7 @@ tracing =  {version = "0.1",  features = ["max_level_trace", "release_max_level_
 tracing-subscriber = { version = "0.2", features = ["json"] }
 tracing-appender = "0.1"
 variant_count = "^1.1.0"
+prettytable-rs = "^0.8"
 
 [[bin]]
 name = "apvrp"

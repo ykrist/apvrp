@@ -50,3 +50,6 @@ pub mod model;
 pub mod preprocess;
 pub mod graph;
 pub mod logging;
+pub mod solution;
+mod utils;
+pub use utils::iter_cycle;

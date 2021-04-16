@@ -10,9 +10,11 @@ use std::fmt;
 use grb::constr::IneqExpr;
 use variant_count::VariantCount;
 use anyhow::Context;
+use std::hash::Hash;
 
 #[derive(Debug, Clone)]
 pub enum CbError {
+  Assertion,
   Status(grb::Status),
   Other(String),
 }
@@ -22,6 +24,7 @@ impl fmt::Display for CbError {
     f.write_str("Callback error: ")?;
     match self {
       CbError::Status(s) => f.write_fmt(format_args!("unexpected status: {:?}", s))?,
+      CbError::Assertion => f.write_str("an assertion failed")?,
       CbError::Other(s) => f.write_str(s)?,
     }
     Ok(())
@@ -40,8 +43,21 @@ fn discard_edge_weights<T,W>(pairs: Vec<(T, W)>) -> Vec<T> {
   pairs.into_iter().map(|(x, _)| x).collect()
 }
 
-pub(super) type AvPath = Vec<(Task, Task)>;
-pub(super) type PvPath = Vec<Task>;
+#[inline]
+fn to_path_nodes<N: Copy, W>(pairs: &[(Vec<(N, N)>, W)]) -> Vec<Vec<N>> {
+  pairs.iter()
+    .map(|(arcs, _)| {
+      std::iter::once(arcs[0].0)
+        .chain(arcs.iter().map(|(_, n)| *n))
+        .collect()
+    })
+    .collect()
+}
+
+/// A (possibly cyclic) Active Vehicle path.  If the path is a cycle, the first and last Tasks are the same.
+pub(crate) type AvPath = Vec<Task>;
+/// A (possibly cyclic) Passive Vehicle path.  If the path is a cycle, the first and last Tasks are the same.
+pub(crate) type PvPath = Vec<Task>;
 
 /// Given a list of task pairs (from the Y variables), construct routes for an Active Vehicle class, plus any cycles which occur.
 #[tracing::instrument(skip(tasks, task_pairs))]
@@ -105,7 +121,7 @@ pub fn construct_av_routes(tasks: &Tasks, task_pairs: &[(Task, Task)]) -> (Vec<A
   };
 
   let (paths, cycles) = graph.decompose_paths_cycles();
-  (discard_edge_weights(paths), discard_edge_weights(cycles))
+  (to_path_nodes(&paths), to_path_nodes(&cycles))
 }
 
 /// Given a list of tasks, construct the route for a Passive vehicle, plus any cycles which occur.
@@ -220,6 +236,30 @@ impl CbStats {
   }
 }
 
+pub trait QueryVarValues {
+  fn get(&self, vars: impl Iterator<Item=Var>) -> Result<Vec<f64>>;
+}
+
+impl<'a> QueryVarValues for MIPSolCtx<'a> {
+  #[inline]
+  fn get(&self, vars: impl Iterator<Item=Var>) -> Result<Vec<f64>> {
+    Ok(self.get_solution(vars)?)
+  }
+}
+
+impl <'a> QueryVarValues for Model {
+  #[inline]
+  fn get(&self, vars: impl Iterator<Item=Var>) -> Result<Vec<f64>> {
+    Ok(self.get_obj_attr_batch(attr::X, vars)?)
+  }
+}
+
+#[inline]
+pub fn get_var_values<'a, M: QueryVarValues, K: Hash + Eq + Copy>(ctx: &M, var_dict: &'a Map<K, Var>) -> Result<impl Iterator<Item=(K, f64)> + 'a> {
+  let vals = ctx.get(var_dict.values().copied())?;
+  Ok(var_dict.keys().copied().zip(vals).filter(|(_, v)| v.abs() > 1e-8))
+}
+
 pub struct Cb<'a> {
   data: &'a Data,
   sets: &'a Sets,
@@ -294,12 +334,14 @@ impl<'a> Cb<'a> {
 
   fn av_cycle_cut(&self, cycle: &AvPath) -> IneqExpr {
     let ysum = cycle.iter()
-      .flat_map(|&(t1, t2)| {
+      .tuple_windows()
+      .flat_map(|(&t1, &t2)| {
         self.sets.avs()
           .filter_map( move |a| self.mp_vars.y.get(&(a, t1, t2)))
       })
       .grb_sum();
-    c!(ysum <= cycle.len() - 1)
+    trace!(?cycle);
+    c!(ysum <= cycle.len() - 2) // cycle is a list of n+1 nodes (start = end), which form n arcs
   }
 
   fn pv_cycle_cut(&self, cycle: &PvPath) -> IneqExpr {
@@ -308,7 +350,7 @@ impl<'a> Cb<'a> {
         self.tasks.by_locs[&(t.start, t.end)].iter()
           .map(|t| self.mp_vars.x[t]))
       .grb_sum();
-    c!(xsum <= cycle.len() - 1)
+    c!(xsum <= cycle.len() - 2) // cycle is a list of n+1 nodes (start = end), which form n arcs
   }
 }
 
@@ -319,7 +361,7 @@ impl<'a> Callback for Cb<'a> {
 
     match w {
       Where::MIPSol(ctx) => {
-        info!("integer MP solution found");
+        info!("integer MP solution.rs found");
         let old_cut_cache_len = self.cut_cache.len();
         // if old_cut_cache_len > 150 { ctx.terminate(); return Ok(()); } // TODO REMOVE
 
@@ -359,17 +401,22 @@ impl<'a> Callback for Cb<'a> {
           info!("no heuristic cuts found, building LP subproblem");
           let sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &av_routes, &pv_routes)?;
           info!("solving LP subproblem");
-          let cuts = sp.solve(self.tasks)?;
+
+          let theta : Map<_, _> = get_var_values(&ctx, &self.mp_vars.theta)?.collect();
+          trace!(?theta);
+          let estimate = theta.values().sum::<f64>().round() as Time;
+          let cuts = match sp.solve(self.tasks, estimate) {
+            Err(e) => {
+              ctx.terminate();
+              return Err(e)
+            }
+            Ok(cuts) => cuts
+          };
           info!(ncuts=cuts.len(), "LP cuts generated");
 
           for cut in cuts {
             let name = match &cut {
               BendersCut::Optimality(cut) => {
-                let thetas = self.sets.avs()
-                  .cartesian_product(&cut.obj_tasks)
-                  .filter_map(|(av, &t)| self.mp_vars.theta.get(&(av, t)));
-                let estimate : f64 = ctx.get_solution(thetas)?.into_iter().sum();
-                debug!(?estimate, sp_obj=?cut.sp_obj);
                 format!("sp_opt[{}]", self.stats.inc_cut_count(CutType::LpOpt))
               }
               BendersCut::Feasibility(_) => {
