@@ -9,6 +9,7 @@ use tracing::{error_span, debug, trace, error};
 use crate::TaskType::ODepot;
 use itertools::Itertools;
 use crate::solution::SpSolution;
+use crate::model::cb::get_var_values;
 
 pub struct SpConstraints {
   av_sync: Map<(Task, Task), Constr>,
@@ -216,7 +217,7 @@ impl<'a> TimingSubproblem<'a> {
       let mut v = map_with_capacity(pv_routes.values().map(|tasks| tasks.len()).sum());
       for tasks in pv_routes.values() {
         for &t in tasks {
-          v.insert(t, add_ctsvar!(model)?);
+          v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
         }
       }
       v
@@ -234,6 +235,8 @@ impl<'a> TimingSubproblem<'a> {
         vars[second_last_task]
       })
       .grb_sum() + obj_constant;
+    model.update()?;
+    trace!(?obj_constant, obj=?obj.attach(&model));
     model.set_objective(obj, Minimize)?;
 
     Ok(TimingSubproblem { vars, cons, model, av_routes, pv_routes, data })
@@ -254,6 +257,7 @@ impl<'a> TimingSubproblem<'a> {
         // TODO check
         let obj = self.model.get_attr(attr::ObjVal)?.round() as Time;
         debug!(obj);
+        trace!(T=?get_var_values(&self.model, &self.vars)?.collect_vec());
         if estimate > obj {
           SpSolution::from_sp(&self)?.pretty_print();
           error!(obj, "invalid Benders cut");

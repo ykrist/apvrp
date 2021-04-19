@@ -55,11 +55,12 @@ fn main() -> Result<()> {
 
 
   let mut mp = model::mp::TaskModelMaster::build(&data, &sets, &tasks, ObjWeights::default())?;
+  mp.model.set_param(grb::param::Threads, 4)?;
   mp.model.set_param(grb::param::LazyConstraints, 1)?;
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
-  let mut callback = model::cb::Cb::new(&data, &sets, &tasks, mp.vars.clone())?;
-  mp.model.optimize_with_callback(&mut callback);
+  let mut callback = model::cb::Cb::new(&data, &sets, &tasks, &mp)?;
+  mp.model.optimize_with_callback(&mut callback)?;
   callback.flush_cut_cache(&mut mp.model)?;
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;

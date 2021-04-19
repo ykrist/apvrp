@@ -120,19 +120,28 @@ impl fmt::Debug for Task {
     use TaskType::*;
     use fmt::Debug;
 
-    match self.ty {
-      DDepot | ODepot => { return self.ty.fmt(f) }
-      _ => {}
-    }
+    if f.alternate() {
+      f.debug_struct("Task")
+        .field("short_name", &format_args!("{:?}", &self))
+        .field("t_release", &self.t_release)
+        .field("tt", &self.tt)
+        .field("t_deadline", &self.t_deadline)
+        .finish()
+    } else {
+      match self.ty {
+        DDepot | ODepot => { return self.ty.fmt(f) }
+        _ => {}
+      }
 
-    // Avoid using `f.debug_tuple`, tasks are small enough that they should be printed as atomic terms.
-    match self.ty {
-      Direct => {
-        f.write_fmt(format_args!("{:?}({})", self.ty, self.p.unwrap()))
-      },
-      _ => {
-        // DDepot and ODepot are covered above, so `p` is not `None`.
-        f.write_fmt(format_args!("{:?}({},{},{})", self.ty, self.p.unwrap(), self.start, self.end))
+      // Avoid using `f.debug_tuple`, tasks are small enough that they should be printed as atomic terms.
+      match self.ty {
+        Direct => {
+          f.write_fmt(format_args!("{:?}({})", self.ty, self.p.unwrap()))
+        },
+        _ => {
+          // DDepot and ODepot are covered above, so `p` is not `None`.
+          f.write_fmt(format_args!("{:?}({},{},{})", self.ty, self.p.unwrap(), self.start, self.end))
+        }
       }
     }
   }
@@ -183,6 +192,9 @@ pub struct Tasks {
   pub odepot: Task,
   pub ddepot: Task,
 }
+
+
+
 
 impl Tasks {
   pub fn generate(data: &Data, sets: &Sets, pv_req_t_start: &Map<(Pv, Req), Time>) -> Self {
@@ -360,7 +372,11 @@ impl Tasks {
 
     for &t1 in &all {
       let t1_succ: Vec<_> = all.iter()
-        .filter(|t2| task_incompat(&t1, t2, data).is_none())
+        .filter(|t2| {
+          let incompat = task_incompat(&t1, t2, data);
+          trace!(?t1, ?t2, ?incompat);
+          incompat.is_none()
+        })
         .copied()
         .collect();
 
@@ -394,6 +410,7 @@ impl Tasks {
   }
 }
 
+#[derive(Copy, Clone, Debug)]
 pub enum Incompatibility {
   /// Time-incompatibility
   Time,

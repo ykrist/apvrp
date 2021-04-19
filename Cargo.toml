@@ -8,7 +8,7 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0.38"
-grb = "1.0.2"
+grb = "^1.0.3"
 itertools = "0.10.0"
 instances = {path = "../instances"}
 fnv = "1.0.7"

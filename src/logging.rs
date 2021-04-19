@@ -10,7 +10,10 @@ fn build_and_set_global_subscriber(logfile: Option<impl AsRef<Path>>, logfilter_
     .as_ref()
     .map(|filename| -> Option<String> {
       if let Ok(filter) = std::fs::read_to_string(filename) {
-        let lines: Vec<_> = filter.lines().collect();
+        let lines: Vec<_> = filter.lines()
+          .map(|s| s.trim())
+          .filter(|s| !s.starts_with('#'))
+          .collect();
         Some(lines.join(","))
       } else { None }
     })

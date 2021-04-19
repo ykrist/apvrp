@@ -116,7 +116,7 @@ impl MpConstraints {
       cmap
     };
 
-    let num_av = { // ASSUMPTION this is only correct if there is only one vehicle in every vehicle class
+    let num_av = {
       let mut cmap = map_with_capacity(data.n_active);
       for (&av, av_tasks) in &tasks.compat_with_av {
         let to = tasks.odepot;
@@ -192,7 +192,8 @@ impl TaskModelMaster {
     // initial Benders Cuts
     for (&(av, t, td), &y) in vars.y.iter() {
       if td.ty == TaskType::DDepot {
-        model.add_constr(&format!("initial_bc[{:?}|{}]", &t, av),c!(vars.theta[&(av, t)] >= (t.t_release + t.tt)*y ))?;
+        let tt_d = data.travel_time[&(t.end, td.start)];
+        model.add_constr(&format!("initial_bc[{:?}|{}]", &t, av),c!(vars.theta[&(av, t)] >= (t.t_release + t.tt + tt_d)*y ))?;
       }
     }
 

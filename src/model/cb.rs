@@ -5,12 +5,14 @@ use grb::callback::{Callback, Where, CbResult, MIPSolCtx};
 use fnv::FnvHashSet;
 use super::sp::{BendersCut, TimingSubproblem};
 use crate::graph::DecomposableDigraph;
-use tracing::{info, info_span, debug, trace, error_span};
+use tracing::{info, info_span, debug, trace, error_span, warn};
 use std::fmt;
 use grb::constr::IneqExpr;
 use variant_count::VariantCount;
 use anyhow::Context;
 use std::hash::Hash;
+use std::env::var;
+use std::collections::{HashSet, HashMap};
 
 #[derive(Debug, Clone)]
 pub enum CbError {
@@ -184,6 +186,7 @@ pub enum CutType {
   LpFeas,
   AvCycle,
   PvCycle,
+  AvChain,
 }
 
 pub struct CutCounts {
@@ -196,11 +199,12 @@ pub struct CutCounts {
 #[derive(Clone)]
 pub struct CbStats {
   n_cuts: Vec<usize>,
+  n_cuts_total: usize,
 }
 
 impl std::default::Default for CbStats {
   fn default() -> Self {
-    CbStats { n_cuts: vec![0; CutType::VARIANT_COUNT] }
+    CbStats { n_cuts: vec![0; CutType::VARIANT_COUNT], n_cuts_total: 0 }
   }
 }
 
@@ -215,10 +219,10 @@ impl CbStats {
     // way to create a CbStats struct is to call `default()`, which allocates a `Vec` large enough.
     #[cfg(not(debug_assertions))]
       let val = unsafe { self.n_cuts.get_unchecked_mut(cut_ty as usize) };
-
     let val = unsafe { self.n_cuts.get_unchecked_mut(cut_ty as usize) };
     let old_val = *val;
     *val += 1;
+    self.n_cuts_total += 1;
     old_val
   }
 
@@ -264,15 +268,24 @@ pub struct Cb<'a> {
   data: &'a Data,
   sets: &'a Sets,
   tasks: &'a Tasks,
+  var_names: Map<Var, String>,
   mp_vars: super::mp::MpVars, // needs to be owned to avoid mutability issues with the Model object.
   pub stats: CbStats,
   cut_cache: Vec<(String, IneqExpr)>,
+  av_cycles: HashMap<Vec<Task>, usize>,
   sp_env: Env,
 }
 
 impl<'a> Cb<'a> {
-  pub fn new(data: &'a Data, sets: &'a Sets, tasks: &'a Tasks, mp_vars: super::mp::MpVars) -> Result<Self> {
+  pub fn new(data: &'a Data, sets: &'a Sets, tasks: &'a Tasks, mp: &super::mp::TaskModelMaster) -> Result<Self> {
     let stats = CbStats::default();
+    let var_names: Map<_, _> = {
+      let vars = mp.model.get_vars()?;
+      let names = mp.model.get_obj_attr_batch(attr::VarName, vars.iter().copied())?;
+      vars.iter().copied()
+        .zip(names)
+        .collect()
+    };
 
     let sp_env = {
       let ctx_msg = "create SP environment";
@@ -287,10 +300,12 @@ impl<'a> Cb<'a> {
       data,
       sets,
       tasks,
-      mp_vars,
+      mp_vars: mp.vars.clone(),
       stats,
       cut_cache: Vec::new(),
       sp_env,
+      var_names,
+      av_cycles: Default::default(),
     })
   }
 
@@ -332,17 +347,115 @@ impl<'a> Cb<'a> {
     Ok(task_pairs)
   }
 
-  fn av_cycle_cut(&self, cycle: &AvPath) -> IneqExpr {
-    let ysum = cycle.iter()
-      .tuple_windows()
+  #[tracing::instrument(level="trace", skip(self))]
+  fn av_cycle_cut(&mut self, cycle: &AvPath) -> IneqExpr {
+    trace!("{:#?}", cycle);
+    #[cfg(debug_assertions)] {
+      let mut sorted_cycle = cycle.clone();
+      sorted_cycle.sort_by_key(|t| t.id());
+      let count = self.av_cycles.entry(sorted_cycle).or_insert(0);
+      if *count > 0 { warn!(?count, "cycle has been encountered before")}
+      *count += 1;
+    }
+    let _self = &*self;
+
+    let n = cycle.len();
+    let ysum = cycle[..n-1].iter()
+      .cartesian_product(cycle[..n-1].iter())
       .flat_map(|(&t1, &t2)| {
-        self.sets.avs()
-          .filter_map( move |a| self.mp_vars.y.get(&(a, t1, t2)))
+        _self.sets.avs()
+          .filter_map( move |a| _self.mp_vars.y.get(&(a, t1, t2)))
       })
       .grb_sum();
-    trace!(?cycle);
-    c!(ysum <= cycle.len() - 2) // cycle is a list of n+1 nodes (start = end), which form n arcs
+
+    let c = c!(ysum <= n - 2); // cycle is a list of n+1 nodes (start = end), which form n arcs
+    trace!(cut=?c.with_names(&self.var_names));
+    // trace!(?cycle, cut=?&c);
+    c
   }
+
+  /// Generate an inequality to cut off `chain`, assuming `chain` violates timing constraints
+  #[tracing::instrument(level="trace", skip(self))]
+  fn av_chain_cuts(&mut self, chain: &[Task]) -> (IneqExpr, IneqExpr) {
+
+    debug_assert!(!schedule::check_av_route(self.data, chain));
+
+    let mut end_idx = 2;
+    while schedule::check_av_route(self.data, &chain[..end_idx]) {
+      end_idx += 1;
+    }
+
+    let mut start_idx = end_idx-2;
+    while schedule::check_av_route(self.data, &chain[start_idx..end_idx]) {
+      start_idx -= 1;
+    }
+
+
+    let chain = &chain[start_idx..end_idx];
+    let l = chain.len() - 1;
+
+    debug_assert!(!schedule::check_av_route(self.data, chain));
+    debug_assert!(chain.len() > 1);
+
+    let y_sum_middle_bit = chain[1..l].iter()
+      .tuple_windows()
+      .flat_map(|(&t1, &t2)| {
+        let y = &self.mp_vars.y;
+        self.sets.avs().filter_map(move |a| y.get(&(a, t1 ,t2)).copied())
+      })
+      .grb_sum();
+
+    let mut av_route = chain.to_owned();
+
+    let after_cut = {
+      let mut ysum = y_sum_middle_bit.clone() +
+        self.sets.avs()
+          .filter_map(|a| self.mp_vars.y.get(&(a, chain[0], chain[1])))
+          .grb_sum();
+
+      let second_last_task = chain[l-1];
+      for &last_task in &self.tasks.succ[&second_last_task] {
+        *av_route.last_mut().unwrap() = last_task;
+        if !schedule::check_av_route(self.data, &av_route) {
+          // trace!(av_route=?&av_route, "illegal");
+          for av in self.sets.avs() {
+            if let Some(&y) = self.mp_vars.y.get(&(av, second_last_task, last_task)) {
+              ysum = ysum + y;
+            }
+          }
+        }
+      }
+      *av_route.last_mut().unwrap() = chain[l];
+      c!(ysum <= l-1)
+    };
+
+    trace!(short_chain=?chain, after_cut=?after_cut.with_names(&self.var_names));
+    let before_cut = {
+      let mut ysum = y_sum_middle_bit.clone() +
+        self.sets.avs()
+          .filter_map(|a| self.mp_vars.y.get(&(a, chain[l-1], chain[l])))
+          .grb_sum();
+
+      let second_task = chain[1];
+
+      for &first_task in &self.tasks.pred[&second_task] {
+        *av_route.first_mut().unwrap() = first_task;
+        if !schedule::check_av_route(self.data, &av_route) {
+          // trace!(av_route=?&av_route, "illegal");
+          for av in self.sets.avs() {
+            if let Some(&y) = self.mp_vars.y.get(&(av, first_task, second_task)) {
+              ysum = ysum + y;
+            }
+          }
+        }
+      }
+      c!(ysum <= l-1)
+    };
+
+    trace!(short_chain=?chain, before_cut=?before_cut.with_names(&self.var_names));
+    (before_cut, after_cut)
+  }
+
 
   fn pv_cycle_cut(&self, cycle: &PvPath) -> IneqExpr {
     let xsum = cycle.iter()
@@ -361,9 +474,8 @@ impl<'a> Callback for Cb<'a> {
 
     match w {
       Where::MIPSol(ctx) => {
-        info!("integer MP solution.rs found");
+        debug!("integer MP solution found");
         let old_cut_cache_len = self.cut_cache.len();
-        // if old_cut_cache_len > 150 { ctx.terminate(); return Ok(()); } // TODO REMOVE
 
         let task_pairs = self.get_task_pairs_by_av(&ctx)?;
         let mut av_routes = map_with_capacity(task_pairs.len());
@@ -373,8 +485,17 @@ impl<'a> Callback for Cb<'a> {
             info!(num_cycles=av_cycles.len(), "AV cycles found");
             trace!(?av_cycles);
             for cycle in av_cycles {
-              self.stats.inc_cut_count(CutType::AvCycle);
-              self.cut_cache.push(("av_cycle".to_string(), self.av_cycle_cut(&cycle)));
+              if !schedule::check_av_route(self.data, &cycle[..cycle.len()-1]) {
+                self.stats.inc_cut_count(CutType::AvChain);
+                self.stats.inc_cut_count(CutType::AvChain);
+                let (before_cut, after_cut) = self.av_chain_cuts(&cycle[..cycle.len()-1]);
+                self.cut_cache.push(("av_chain_before".to_string(), before_cut));
+                self.cut_cache.push(("av_chain_after".to_string(), after_cut));
+              } else {
+                self.stats.inc_cut_count(CutType::AvCycle);
+                let cut = self.av_cycle_cut(&cycle);
+                self.cut_cache.push(("av_cycle".to_string(), cut));
+              }
             }
           }
 
@@ -390,7 +511,8 @@ impl<'a> Callback for Cb<'a> {
           pv_routes.insert(pv, pv_path);
 
           for cycle in pv_cycles {
-            self.cut_cache.push(("pv_cycle".to_string(), self.pv_cycle_cut(&cycle)));
+            let cut =  self.pv_cycle_cut(&cycle);
+            self.cut_cache.push(("pv_cycle".to_string(), cut));
           }
           // TODO heuristic PV feasibility cuts
         }
@@ -398,9 +520,8 @@ impl<'a> Callback for Cb<'a> {
 
         if self.cut_cache.len() == old_cut_cache_len {
           let _span = error_span!("lp_sp").entered();
-          info!("no heuristic cuts found, building LP subproblem");
+          debug!("no heuristic cuts found, solving LP subproblem");
           let sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &av_routes, &pv_routes)?;
-          info!("solving LP subproblem");
 
           let theta : Map<_, _> = get_var_values(&ctx, &self.mp_vars.theta)?.collect();
           trace!(?theta);
@@ -408,7 +529,8 @@ impl<'a> Callback for Cb<'a> {
           let cuts = match sp.solve(self.tasks, estimate) {
             Err(e) => {
               ctx.terminate();
-              return Err(e)
+              // return Err(e)
+              return Ok(())
             }
             Ok(cuts) => cuts
           };
@@ -417,6 +539,7 @@ impl<'a> Callback for Cb<'a> {
           for cut in cuts {
             let name = match &cut {
               BendersCut::Optimality(cut) => {
+                // continue;
                 format!("sp_opt[{}]", self.stats.inc_cut_count(CutType::LpOpt))
               }
               BendersCut::Feasibility(_) => {
