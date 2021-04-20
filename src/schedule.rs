@@ -1,5 +1,6 @@
 use crate::*;
 use std::cmp::max;
+use tracing::trace;
 
 #[inline]
 fn pv_forward_step(t: &mut Time, data: &Data, t1: &Task, t2: &Task) {
@@ -18,13 +19,17 @@ fn av_forward_step(t: &mut Time, data: &Data, t1: &Task, t2: &Task) {
   *t = max(arrival, t2.t_release);
 }
 
+#[tracing::instrument(level="trace", skip(data))]
 pub fn check_pv_route(data: &Data, tasks: &[Task]) -> bool {
   let mut t = tasks[0].t_release;
+  trace!(t);
   for (t1, t2) in tasks.iter().tuple_windows() {
     pv_forward_step(&mut t, data, t1, t2);
     if t + t2.tt > t2.t_deadline {
+      trace!(t, "{:#?} to {:#?}", t1, t2);
       return false;
     }
+    trace!(t, t2.end.srv_time=?data.srv_time.get(&t2.end), t2.t_release, t2.tt, t2.t_deadline);
   }
   true
 }

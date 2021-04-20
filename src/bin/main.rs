@@ -60,14 +60,18 @@ fn main() -> Result<()> {
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
   let mut callback = model::cb::Cb::new(&data, &sets, &tasks, &mp)?;
-  mp.model.optimize_with_callback(&mut callback)?;
+  let opt_res = mp.model.optimize_with_callback(&mut callback);
+  match opt_res {
+    Err(e) => tracing::error!(err=%e, "error during optimisation"),
+    Ok(_) => {}
+  };
   callback.flush_cut_cache(&mut mp.model)?;
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
-  //
-  // for (cut_ty, num) in callback.stats.get_cut_counts() {
-  //   println!("Num {:?} Cuts: {}", cut_ty, num);
-  // }
+
+  for (cut_ty, num) in callback.stats.get_cut_counts() {
+    println!("Num {:?} Cuts: {}", cut_ty, num);
+  }
 
   // let tasks: Vec<RawPvTask> = tasks.all.into_iter().filter_map(RawPvTask::new).collect();
   // let task_filename = format!("scrap/tasks/{}.json", idx);

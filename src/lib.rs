@@ -52,5 +52,5 @@ pub mod graph;
 pub mod logging;
 pub mod solution;
 mod utils;
-pub use utils::{iter_cycle, AttachNameMap};
+pub use utils::{iter_cycle};
 pub mod schedule;

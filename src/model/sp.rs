@@ -29,7 +29,7 @@ impl SpConstraints {
       for task_pairs in routes {
         for (&t1, &t2) in task_pairs.iter().tuple_windows() {
           if t1 != tasks.odepot && t2 != tasks.ddepot {
-            debug!(?t1, ?t2, "av_sync");
+            trace!(?t1, ?t2, "av_sync");
             let c = c!(vars[&t1] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
             av_sync.insert((t1, t2), model.add_constr("", c)?);
           }
@@ -105,7 +105,6 @@ impl OptCut {
     let _span = error_span!("opt_cut").entered();
 
     let sp_obj = sp.model.get_attr(attr::ObjVal)?;
-    debug!(?sp_obj);
     let mut task_pairs = Vec::new();
     for (&(t1, t2), c) in &sp.cons.av_sync {
       trace!(?t1, ?t2, dual=?sp.model.get_obj_attr(attr::Pi, c));

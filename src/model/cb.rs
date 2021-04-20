@@ -187,6 +187,7 @@ pub enum CutType {
   AvCycle,
   PvCycle,
   AvChain,
+  PvChain,
 }
 
 pub struct CutCounts {
@@ -210,7 +211,7 @@ impl std::default::Default for CbStats {
 
 impl CbStats {
   #[inline]
-  pub fn inc_cut_count(&mut self, cut_ty: CutType) -> usize {
+  pub fn inc_cut_count(&mut self, cut_ty: CutType, inc: usize) -> usize {
     #[cfg(debug_assertions)]
       let val = self.n_cuts.get_mut(cut_ty as usize)
       .expect("vec should be large enough: will cause UB in release builds!");
@@ -221,8 +222,8 @@ impl CbStats {
       let val = unsafe { self.n_cuts.get_unchecked_mut(cut_ty as usize) };
     let val = unsafe { self.n_cuts.get_unchecked_mut(cut_ty as usize) };
     let old_val = *val;
-    *val += 1;
-    self.n_cuts_total += 1;
+    *val += inc;
+    self.n_cuts_total += inc;
     old_val
   }
 
@@ -349,7 +350,7 @@ impl<'a> Cb<'a> {
 
   #[tracing::instrument(level="trace", skip(self))]
   fn av_cycle_cut(&mut self, cycle: &AvPath) -> IneqExpr {
-    trace!("{:#?}", cycle);
+    // trace!("{:#?}", cycle);
     #[cfg(debug_assertions)] {
       let mut sorted_cycle = cycle.clone();
       sorted_cycle.sort_by_key(|t| t.id());
@@ -417,7 +418,6 @@ impl<'a> Cb<'a> {
       for &last_task in &self.tasks.succ[&second_last_task] {
         *av_route.last_mut().unwrap() = last_task;
         if !schedule::check_av_route(self.data, &av_route) {
-          // trace!(av_route=?&av_route, "illegal");
           for av in self.sets.avs() {
             if let Some(&y) = self.mp_vars.y.get(&(av, second_last_task, last_task)) {
               ysum = ysum + y;
@@ -441,7 +441,6 @@ impl<'a> Cb<'a> {
       for &first_task in &self.tasks.pred[&second_task] {
         *av_route.first_mut().unwrap() = first_task;
         if !schedule::check_av_route(self.data, &av_route) {
-          // trace!(av_route=?&av_route, "illegal");
           for av in self.sets.avs() {
             if let Some(&y) = self.mp_vars.y.get(&(av, first_task, second_task)) {
               ysum = ysum + y;
@@ -465,6 +464,11 @@ impl<'a> Cb<'a> {
       .grb_sum();
     c!(xsum <= cycle.len() - 2) // cycle is a list of n+1 nodes (start = end), which form n arcs
   }
+
+
+  fn pv_chain_cuts(&self, chain: &PvPath) -> (IneqExpr, IneqExpr) {
+    todo!()
+  }
 }
 
 
@@ -486,41 +490,55 @@ impl<'a> Callback for Cb<'a> {
             trace!(?av_cycles);
             for cycle in av_cycles {
               if !schedule::check_av_route(self.data, &cycle[..cycle.len()-1]) {
-                self.stats.inc_cut_count(CutType::AvChain);
-                self.stats.inc_cut_count(CutType::AvChain);
+                self.stats.inc_cut_count(CutType::AvChain, 2);
                 let (before_cut, after_cut) = self.av_chain_cuts(&cycle[..cycle.len()-1]);
                 self.cut_cache.push(("av_chain_before".to_string(), before_cut));
                 self.cut_cache.push(("av_chain_after".to_string(), after_cut));
               } else {
-                self.stats.inc_cut_count(CutType::AvCycle);
+                self.stats.inc_cut_count(CutType::AvCycle, 1);
                 let cut = self.av_cycle_cut(&cycle);
                 self.cut_cache.push(("av_cycle".to_string(), cut));
               }
             }
           }
 
-          av_routes.insert(av, av_paths);
+          for av_path in &av_paths {
+            if !schedule::check_av_route(self.data, av_path) {
+              self.stats.inc_cut_count(CutType::AvChain, 2);
+              let (before_cut, after_cut) = self.av_chain_cuts(av_path);
+              self.cut_cache.push(("av_chain_before".to_string(), before_cut));
+              self.cut_cache.push(("av_chain_after".to_string(), after_cut));
+            }
+          }
 
-          // TODO heuristic AV-path time-feasibility cuts
+          av_routes.insert(av, av_paths);
         }
 
         let pv_tasks = self.get_tasks_by_pv(&ctx)?;
         let mut pv_routes = map_with_capacity(pv_tasks.len());
         for (&pv, tasks) in &pv_tasks {
           let (pv_path, pv_cycles) = construct_pv_route(&self.data, tasks);
-          pv_routes.insert(pv, pv_path);
 
           for cycle in pv_cycles {
             let cut =  self.pv_cycle_cut(&cycle);
+            self.stats.inc_cut_count(CutType::PvCycle, 1);
             self.cut_cache.push(("pv_cycle".to_string(), cut));
           }
-          // TODO heuristic PV feasibility cuts
+
+          if !schedule::check_pv_route(self.data, &pv_path) {
+            let (before_cut, after_cut) = self.pv_chain_cuts(&pv_path);
+            self.stats.inc_cut_count(CutType::PvChain, 2);
+            self.cut_cache.push(("pv_chain_before".to_string(), before_cut));
+            self.cut_cache.push(("pv_chain_after".to_string(), after_cut));
+          }
+
+          pv_routes.insert(pv, pv_path);
         }
 
 
         if self.cut_cache.len() == old_cut_cache_len {
           let _span = error_span!("lp_sp").entered();
-          debug!("no heuristic cuts found, solving LP subproblem");
+          info!("no heuristic cuts found, solving LP subproblem");
           let sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &av_routes, &pv_routes)?;
 
           let theta : Map<_, _> = get_var_values(&ctx, &self.mp_vars.theta)?.collect();
@@ -528,25 +546,28 @@ impl<'a> Callback for Cb<'a> {
           let estimate = theta.values().sum::<f64>().round() as Time;
           let cuts = match sp.solve(self.tasks, estimate) {
             Err(e) => {
-              ctx.terminate();
-              // return Err(e)
-              return Ok(())
+              // ctx.terminate();
+              return Err(e);
+              // return Ok(())
             }
             Ok(cuts) => cuts
           };
-          info!(ncuts=cuts.len(), "LP cuts generated");
+
 
           for cut in cuts {
             let name = match &cut {
               BendersCut::Optimality(cut) => {
                 // continue;
-                format!("sp_opt[{}]", self.stats.inc_cut_count(CutType::LpOpt))
+                info!("LP optimality cut generated");
+                format!("sp_opt[{}]", self.stats.inc_cut_count(CutType::LpOpt, 1))
               }
               BendersCut::Feasibility(_) => {
-                format!("sp_feas[{}]", self.stats.inc_cut_count(CutType::LpFeas))
+                info!("LP feasibility cut generated");
+                format!("sp_feas[{}]", self.stats.inc_cut_count(CutType::LpFeas, 1))
               }
             };
             let cut = cut.into_ineq(self.sets, self.tasks, &self.mp_vars);
+            trace!(cut=?cut.with_names(&self.var_names));
             self.cut_cache.push((name.to_string(), cut));
           }
         } else {
