@@ -28,7 +28,7 @@ fn earliest_departures(data: &Data) -> Map<(Pv, Req), Time> {
           trace!(?rp, ?po);
           let t = std::cmp::max(
             data.start_time[&rp],
-            data.travel_time[&(Loc::Ao, rp)] + data.travel_time[&(po, rp)] + data.srv_time[&rp],
+            data.travel_time[&(Loc::Ao, po)] + data.travel_time[&(po, rp)] + data.srv_time[&rp],
           );
 
           ((p, r), t)

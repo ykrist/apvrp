@@ -134,14 +134,19 @@ impl fmt::Debug for Task {
           f.write_fmt(format_args!("{:?}({})", self.ty, self.p.unwrap()))
         },
         Start => {
-          f.write_fmt(format_args!("Start({},{})", self.start, self.end))
+          f.write_fmt(format_args!("{:?}({},{})", self.ty, self.start.pv(), self.end.req()))
         },
         End => {
-          f.write_fmt(format_args!("End({},{})", self.start, self.end))
+          f.write_fmt(format_args!("{:?}({},{})", self.ty, self.start.req(), self.end.pv()))
         },
-        _ => {
-          // DDepot and ODepot are covered above, so `p` is not `None`.
-          f.write_fmt(format_args!("{:?}({},{},{})", self.ty, self.p.unwrap(), self.start, self.end))
+        Transfer => {
+          f.write_fmt(format_args!("{:?}({},{},{})", self.ty, self.p.unwrap(), self.start.req(), self.end.req()))
+        }
+        Request => {
+          f.write_fmt(format_args!("{:?}({},{})", self.ty, self.p.unwrap(), self.start.req()))
+        }
+        ODepot | DDepot => {
+          self.ty.fmt(f)
         }
       }
     }
