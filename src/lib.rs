@@ -1,7 +1,7 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(unused_imports)]
-pub use fnv::FnvHashMap as Map;
+pub use fnv::{FnvHashMap as Map, FnvHashSet as Set};
 pub use anyhow::Result;
 use itertools::Itertools;
 use std::fmt;
@@ -41,6 +41,11 @@ pub use tasks::*;
 
 pub fn map_with_capacity<K,V>(capacity: usize) -> Map<K,V> {
   Map::with_capacity_and_hasher(capacity, fnv::FnvBuildHasher::default())
+}
+
+
+pub fn set_with_capacity<T>(capacity: usize) -> Set<T> {
+  FnvHashSet::with_capacity_and_hasher(capacity, fnv::FnvBuildHasher::default())
 }
 
 
@@ -154,6 +159,8 @@ pub mod logging;
 pub mod solution;
 mod utils;
 pub use utils::{iter_cycle};
+use fnv::FnvHashSet;
+
 pub mod schedule;
 
 // TODO tests for encode and decode.

@@ -3,10 +3,11 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use serde::{Serialize};
 use itertools::max;
-use fnv::FnvHashSet;
+use fnv::{FnvHashSet, FnvBuildHasher};
 use std::fmt;
 use grb::constr::IneqExpr;
 use tracing::{error_span, trace, error};
+use std::collections::HashMap;
 
 pub type TaskId = u32;
 pub type PVIRTaskId = u32;
@@ -49,7 +50,7 @@ pub enum TaskType {
 }
 
 impl fmt::Debug for TaskType {
-  fn fmt(&self, f : &mut fmt::Formatter<'_>) -> fmt::Result {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     use TaskType::*;
     let s = match self {
       Transfer => "Trn",
@@ -124,7 +125,7 @@ impl fmt::Debug for Task {
         .finish()
     } else {
       match self.ty {
-        DDepot | ODepot => { return self.ty.fmt(f) }
+        DDepot | ODepot => { return self.ty.fmt(f); }
         _ => {}
       }
 
@@ -132,13 +133,13 @@ impl fmt::Debug for Task {
       match self.ty {
         Direct => {
           f.write_fmt(format_args!("{:?}({})", self.ty, self.p.unwrap()))
-        },
+        }
         Start => {
           f.write_fmt(format_args!("{:?}({},{})", self.ty, self.start.pv(), self.end.req()))
-        },
+        }
         End => {
           f.write_fmt(format_args!("{:?}({},{})", self.ty, self.start.req(), self.end.pv()))
-        },
+        }
         Transfer => {
           f.write_fmt(format_args!("{:?}({},{},{})", self.ty, self.p.unwrap(), self.start.req(), self.end.req()))
         }
@@ -186,7 +187,8 @@ impl Task {
 #[derive(Debug, Clone)]
 pub struct Tasks {
   pub all: Vec<Task>,
-  pub compat_with_av: Map<Avg, FnvHashSet<Task>>, // FIXME is this correct?
+  pub compat_with_av: Map<Avg, FnvHashSet<Task>>,
+  // FIXME is this correct?
   pub by_id: Map<TaskId, Task>,
   pub by_start: Map<Loc, Vec<Task>>,
   pub by_end: Map<Loc, Vec<Task>>,
@@ -198,8 +200,6 @@ pub struct Tasks {
   pub odepot: Task,
   pub ddepot: Task,
 }
-
-
 
 
 impl Tasks {
@@ -269,7 +269,7 @@ impl Tasks {
 
     // END tasks: go from Req delivery to PV dest
     for po in sets.pv_origins() {
-      for rp in data.compat_passive_req[&po.pv()].iter().copied().map(Loc::ReqP)  {
+      for rp in data.compat_passive_req[&po.pv()].iter().copied().map(Loc::ReqP) {
         let rd = rp.dest();
         let pd = po.dest();
         let t_release = pv_req_t_start[&(po.pv(), rp.req())] + data.travel_time[&(rp, rd)] + data.srv_time[&rd];
@@ -468,3 +468,100 @@ pub fn task_incompat(t1: &Task, t2: &Task, data: &Data) -> Option<Incompatibilit
 
   None
 }
+
+
+pub fn update_implied_cover_before(visited: &mut FnvHashSet<Loc>, task: &Task) -> bool {
+  use Loc::*;
+  use TaskType::*;
+
+  let cover_violation = match task.ty {
+    ODepot | DDepot => false,
+
+    Start | Direct =>
+      visited.insert(task.start)
+        && visited.insert(task.end),
+
+    End =>
+      visited.insert(task.end.origin())
+        && visited.insert(task.start.origin())
+        && visited.insert(task.start)
+        && visited.insert(task.end),
+
+    Transfer =>
+      visited.insert(Po(task.p.unwrap()))
+        && visited.insert(task.start.origin())
+        && visited.insert(task.start)
+        && visited.insert(task.end),
+
+    Request =>
+      visited.insert(Po(task.p.unwrap()))
+        && visited.insert(task.start)
+        && visited.insert(task.end),
+  };
+
+  !cover_violation
+}
+
+
+
+
+pub fn update_implied_cover_after(visited: &mut FnvHashSet<Loc>, task: &Task) -> bool {
+  use Loc::*;
+  use TaskType::*;
+
+  let cover_violation = match task.ty {
+    ODepot | DDepot => false,
+
+    Start =>
+      visited.insert(task.start)
+        && visited.insert(task.end)
+        && visited.insert(task.end.dest())
+        && visited.insert(task.start.dest()),
+
+    End | Direct =>
+      visited.insert(task.start)
+        && visited.insert(task.end),
+
+    Transfer =>
+      visited.insert(task.start)
+        && visited.insert(task.end)
+        && visited.insert(task.end.dest())
+        && visited.insert(Pd(task.p.unwrap())),
+
+    Request =>
+      visited.insert(task.start)
+        && visited.insert(task.end)
+        && visited.insert(Pd(task.p.unwrap())),
+  };
+
+  !cover_violation
+}
+
+
+/// Update the Request-Passive vehicle pairings.  If a conflict occurs, the pairing is not
+/// modified and `false` is returned.  Otherwise, the pairings are updated and `true` is returned.
+pub fn update_req_pv_pairing(pairing: &mut HashMap<Req, Pv>, task: &Task) -> bool {
+  use Loc::*;
+  use TaskType::*;
+  use std::collections::hash_map::Entry;
+
+  #[inline]
+  fn update_one(pairing: &mut HashMap<Req, Pv>, r: Req, pv: Pv) -> bool {
+    match pairing.entry(r) {
+      Entry::Occupied(e) => e.get() == &pv,
+      Entry::Vacant(e) => {
+        e.insert(pv);
+        true
+      }
+    }
+  }
+
+  match task.ty {
+    ODepot | DDepot | Direct => true,
+    Start => update_one(pairing, task.end.req(), task.p.unwrap()),
+    End | Request => update_one(pairing, task.start.req(), task.p.unwrap()),
+    Transfer => update_one(pairing, task.start.req(), task.p.unwrap())
+      && update_one(pairing, task.end.req(), task.p.unwrap()),
+  }
+}
+
