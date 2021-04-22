@@ -164,10 +164,10 @@ pub fn construct_pv_route(data: &Data, tasks_used: &[Task]) -> (PvPath, Vec<PvPa
     }
   }
 
-  let pv_origin = first_task.p.unwrap();
+  let pv_origin = Loc::Po(first_task.p.unwrap());
   let graph = PvGraph {
     pv_origin,
-    pv_dest: pv_origin + data.n_passive,
+    pv_dest: pv_origin.dest(),
     task_by_start: tasks_used.iter().map(|&t| (t.start, t)).collect()
   };
 
@@ -319,7 +319,7 @@ impl<'a> Cb<'a> {
 
   #[tracing::instrument(level="trace", skip(self, ctx))]
   fn get_tasks_by_pv(&self, ctx: &MIPSolCtx) -> anyhow::Result<Map<Pv, Vec<Task>>> {
-    let mut pv_tasks = map_with_capacity(self.data.n_passive);
+    let mut pv_tasks = map_with_capacity(self.data.n_passive as usize);
 
     for (t, val) in self.mp_vars.x.keys()
       .zip(ctx.get_solution(self.mp_vars.x.values())?) {

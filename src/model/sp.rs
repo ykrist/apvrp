@@ -229,7 +229,7 @@ impl<'a> TimingSubproblem<'a> {
       .flat_map(|routes| routes.iter())
       .map(|route| {
         let second_last_task = &route[route.len()-2];
-        obj_constant += (second_last_task.tt + data.travel_time[&(second_last_task.end, data.ddepot)]) as f64;
+        obj_constant += (second_last_task.tt + data.travel_time[&(second_last_task.end, Loc::Ad)]) as f64;
         trace!(?second_last_task);
         vars[second_last_task]
       })

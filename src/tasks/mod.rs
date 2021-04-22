@@ -16,24 +16,19 @@ mod checks;
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub struct RawPvTask {
-  pub start: Loc,
+  pub start: RawLoc,
   /// End location
-  pub end: Loc,
+  pub end: RawLoc,
   /// Passive vehicle
   pub p: Pv,
 }
 
 impl RawPvTask {
-  pub fn new(task: Task) -> Option<RawPvTask> {
-    task.p.map(|p| RawPvTask { start: task.start, end: task.end, p })
+  pub fn new(task: Task, lss: &LocSetStarts) -> Option<RawPvTask> {
+    task.p.map(|p| RawPvTask { start: task.start.encode(lss), end: task.end.encode(lss), p })
   }
 }
 
-impl From<Task> for RawPvTask {
-  fn from(task: Task) -> RawPvTask {
-    RawPvTask { start: task.start, end: task.end, p: task.p.unwrap() }
-  }
-}
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum TaskType {
@@ -138,6 +133,12 @@ impl fmt::Debug for Task {
         Direct => {
           f.write_fmt(format_args!("{:?}({})", self.ty, self.p.unwrap()))
         },
+        Start => {
+          f.write_fmt(format_args!("Start({},{})", self.start, self.end))
+        },
+        End => {
+          f.write_fmt(format_args!("End({},{})", self.start, self.end))
+        },
         _ => {
           // DDepot and ODepot are covered above, so `p` is not `None`.
           f.write_fmt(format_args!("{:?}({},{},{})", self.ty, self.p.unwrap(), self.start, self.end))
@@ -201,13 +202,13 @@ impl Tasks {
     let _span = error_span!("task generation").entered();
 
     let mut all = Vec::with_capacity(500); // TODO improve this estimate
-    let mut by_cover = map_with_capacity(data.n_req);
+    let mut by_cover = map_with_capacity(data.n_req as usize);
 
     // trivial tasks: AV origin and destination depots
     let odepot = Task::new(
       TaskType::ODepot,
-      data.odepot,
-      data.odepot,
+      Loc::Ao,
+      Loc::Ao,
       None,
       0,
       data.tmax,
@@ -215,8 +216,8 @@ impl Tasks {
     );
     let ddepot = Task::new(
       TaskType::DDepot,
-      data.ddepot,
-      data.ddepot,
+      Loc::Ad,
+      Loc::Ad,
       None,
       0,
       data.tmax,
@@ -225,26 +226,26 @@ impl Tasks {
     all.push(odepot);
     all.push(ddepot);
 
-    // direct tasks: PV origin to PV destination
+    // DIRECT tasks: PV origin to PV destination
     for po in sets.pv_origins() {
-      let dp = data.n_passive + po;
+      trace!(?po);
       all.push(Task::new(
         TaskType::Direct,
         po,
-        dp,
-        Some(po),
-        data.travel_time[&(data.odepot, po)],
-        data.tmax - data.travel_time[&(dp, data.ddepot)],
-        data.travel_time[&(po, dp)],
+        po.dest(),
+        Some(po.pv()),
+        data.travel_time[&(Loc::Ao, po)],
+        data.tmax - data.travel_time[&(po.dest(), Loc::Ad)],
+        data.travel_time[&(po, po.dest())],
       ))
     }
 
-    // tasks that go from PV origin to Req pickup
+    // START tasks: go from PV origin to Req pickup
     for po in sets.pv_origins() {
-      for &rp in &data.compat_passive_req[&po] {
-        let rd = rp + data.n_req;
-        let t_release = data.travel_time[&(data.odepot, po)];
-        let t_deadline = data.end_time[&rd] - data.srv_time[&rp] - data.srv_time[&rd] - data.travel_time[&(rp, rd)];
+      for &r in &data.compat_passive_req[&po.pv()] {
+        let rp = Loc::ReqP(r);
+        let t_release = data.travel_time[&(Loc::Ao, po)];
+        let t_deadline = data.end_time[&rp.dest()] - data.srv_time[&rp] - data.srv_time[&rp.dest()] - data.travel_time[&(rp, rp.dest())];
         let tt = data.travel_time[&(po, rp)];
 
         // Assumption: if po and rp are marked as compatible, they are time-compatible.
@@ -253,7 +254,7 @@ impl Tasks {
           TaskType::Start,
           po,
           rp,
-          Some(po),
+          Some(po.pv()),
           t_release,
           t_deadline,
           tt,
@@ -261,21 +262,21 @@ impl Tasks {
       }
     }
 
-    // tasks that go from Req delivery to PV dest
+    // END tasks: go from Req delivery to PV dest
     for po in sets.pv_origins() {
-      for &rp in &data.compat_passive_req[&po] {
-        let rd = rp + data.n_req;
-        let pd = po + data.n_passive;
-        let t_release = pv_req_t_start[&(po, rp)] + data.travel_time[&(rp, rd)] + data.srv_time[&rd];
+      for rp in data.compat_passive_req[&po.pv()].iter().copied().map(Loc::ReqP)  {
+        let rd = rp.dest();
+        let pd = po.dest();
+        let t_release = pv_req_t_start[&(po.pv(), rp.req())] + data.travel_time[&(rp, rd)] + data.srv_time[&rd];
         // let t_deadline = 2*data.tmax; //  FIXME doesn't seems like Michael is taking this tmax into account
-        let t_deadline = data.tmax - data.travel_time[&(pd, data.ddepot)];
+        let t_deadline = data.tmax - data.travel_time[&(pd, Loc::Ad)];
         let tt = data.travel_time[&(rd, pd)];
         if t_release + tt <= t_deadline {
           all.push(Task::new(
             TaskType::End,
             rd,
             pd,
-            Some(po),
+            Some(po.pv()),
             t_release,
             t_deadline,
             tt,
@@ -284,50 +285,51 @@ impl Tasks {
       }
     }
 
-    // tasks that go from Req pickup to its delivery
-    for po in sets.pv_origins() {
-      for &rp in &data.compat_passive_req[&po] {
-        let rd = rp + data.n_req;
-        let t_release = pv_req_t_start[&(po, rp)];
+    // REQUEST tasks: go from Req pickup to its delivery
+    for pv in sets.pvs() {
+      for rp in data.compat_passive_req[&pv].iter().copied().map(Loc::ReqP) {
+        let rd = rp.dest();
+        let t_release = pv_req_t_start[&(pv, rp.req())];
         let tt = data.travel_time[&(rp, rd)];
         let t_deadline = data.end_time[&rd] - data.srv_time[&rd];
+        trace!(pv, ?rp, t_release, tt, t_deadline);
         if t_release + tt <= t_deadline {
           let task = Task::new(
             TaskType::Request,
             rp,
             rd,
-            Some(po),
+            Some(pv),
             t_release,
             t_deadline,
             tt,
           );
           all.push(task);
-          by_cover.entry(rp).or_insert_with(Vec::new).push(task);
+          by_cover.entry(rp.req()).or_insert_with(Vec::new).push(task);
         }
       }
     }
 
-    // tasks that go from a Req delivery to another Pickup
-    for po in sets.pv_origins() {
-      let requests = &data.compat_passive_req[&po];
-      for &r1p in requests {
-        let r1d = r1p + data.n_req;
+    // TRANSFER tasks: go from a Req delivery to another Pickup
+    for pv in sets.pvs() {
+      let requests = &data.compat_passive_req[&pv];
+      for r1p in requests.iter().copied().map(Loc::ReqP) {
+        let r1d = r1p.dest();
 
-        for &r2p in requests {
+        for r2p in requests.iter().copied().map(Loc::ReqP) {
           if r1p == r2p {
             continue;
           }
-          let r2d = r2p + data.n_req;
+          let r2d = r2p.dest();
           let tt = data.travel_time[&(r1d, r2p)];
           let t_deadline = data.end_time[&r2d] - data.srv_time[&r2d] - data.travel_time[&(r2p, r2d)] - data.srv_time[&r2p];
-          let t_release = pv_req_t_start[&(po, r1p)] + data.travel_time[&(r1p, r1d)] + data.srv_time[&r1d];
+          let t_release = pv_req_t_start[&(pv, r1p.req())] + data.travel_time[&(r1p, r1d)] + data.srv_time[&r1d];
 
           if t_release + tt <= t_deadline {
             all.push(Task::new(
               TaskType::Transfer,
               r1d,
               r2p,
-              Some(po),
+              Some(pv),
               t_release,
               t_deadline,
               tt,
@@ -352,13 +354,13 @@ impl Tasks {
 
 
     // Lookups
-    let mut by_start: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc);
-    let mut by_end: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc);
+    let mut by_start: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc as usize);
+    let mut by_end: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc as usize);
     let mut by_locs: Map<(Loc, Loc), Vec<_>> = map_with_capacity(data.travel_time.len());
     let mut by_id: Map<_, _> = map_with_capacity(all.len());
     let mut succ: Map<_, _> = map_with_capacity(all.len());
     let mut pred: Map<_, _> = map_with_capacity(all.len());
-    let mut by_pv: Map<_, _> = sets.pv_origins().map(|pv| (pv, FnvHashSet::default())).collect();
+    let mut by_pv: Map<_, _> = sets.pvs().map(|pv| (pv, FnvHashSet::default())).collect();
 
     for &t in &all {
       by_id.insert(t.id(), t);
@@ -424,41 +426,17 @@ fn task_req(t: &Task, n_req: Loc) -> Req {
   use TaskType::*;
   match t.ty {
     Direct | Transfer | ODepot | DDepot => panic!("not valid for direct or transfer tasks"),
-    Start => t.end,
-    End => t.start - n_req,
-    Request => t.start
+    Start => t.end.req(),
+    End => t.start.req(),
+    Request => t.start.req()
   }
-}
-
-fn pv_schedule(locs: &[Loc], data: &Data) -> Option<Vec<Time>> {
-  let mut schedule = Vec::with_capacity(locs.len());
-  let mut i = locs[0];
-  let mut t = data.travel_time[&(data.odepot, i)];
-  schedule.push(t);
-
-  for k in 1..locs.len() {
-    let j = locs[k];
-    t = data.travel_time[&(i, j)] + t + data.srv_time.get(&j).copied().unwrap_or(0);
-    t = std::cmp::max(t, data.start_time.get(&j).copied().unwrap_or(0));
-    if t > data.start_time.get(&j).copied().unwrap_or(2500) {
-      return None;
-    }
-    i = j;
-    schedule.push(t);
-  }
-
-  if t + data.travel_time[&(i, data.ddepot)] > data.tmax {
-    return None;
-  }
-
-  Some(schedule)
 }
 
 
 /// Returns `None` if it is possible to complete `t2` after task `t1`, using the same active vehicle.
 /// Otherwise, returns the reason for the incompatibility.
 pub fn task_incompat(t1: &Task, t2: &Task, data: &Data) -> Option<Incompatibility> {
-  if !checks::cover(t1, t2, data.n_req) {
+  if !checks::cover(t1, t2) {
     return Some(Incompatibility::Cover);
   }
 

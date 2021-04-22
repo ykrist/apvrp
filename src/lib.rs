@@ -1,40 +1,40 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(unused_imports)]
+pub use fnv::FnvHashMap as Map;
+pub use anyhow::Result;
+use itertools::Itertools;
+use std::fmt;
 
 pub use instances::dataset::apvrp::{
   MEISEL_A,
   TILK_AB,
   DSET,
-  Av, Pv, Time, Cost, Loc, Req,
+  Av, Pv, Req, Time, Cost, Loc as RawLoc,
 };
+use instances::dataset::apvrp::LocSetStarts;
+
 /// Active Vehicle Group.
 pub type Avg = Av;
 
 pub struct Data {
   pub id: String,
-  pub odepot: usize,
-  pub ddepot: usize,
-  pub n_req: usize,
-  pub n_passive: usize,
-  pub n_active: usize,
-  pub n_loc: usize,
+  pub n_req: RawLoc,
+  pub n_passive: RawLoc,
+  pub n_active: RawLoc,
+  pub n_loc: RawLoc,
   pub tmax: Time,
-  pub srv_time: Map<Req, Time>,
-  pub start_time: Map<Req, Time>,
-  pub end_time: Map<Req, Time>,
+  pub srv_time: Map<Loc, Time>,
+  pub start_time: Map<Loc, Time>,
+  pub end_time: Map<Loc, Time>,
   pub compat_req_passive: Map<Req, Vec<Pv>>,
   pub compat_passive_req: Map<Pv, Vec<Req>>,
   pub compat_passive_active: Map<Pv, Vec<Avg>>,
   pub compat_active_passive: Map<Avg, Vec<Pv>>,
-  pub travel_cost: Map<(usize, usize), Cost>,
-  pub travel_time: Map<(usize, usize), Time>,
+  pub travel_cost: Map<(Loc, Loc), Cost>,
+  pub travel_time: Map<(Loc, Loc), Time>,
   pub av_groups: Map<Avg, Vec<Av>>,
 }
-pub use fnv::FnvHashMap as Map;
-pub use anyhow::Result;
-
-use itertools::Itertools;
 
 mod tasks;
 pub use tasks::*;
@@ -42,6 +42,107 @@ pub use tasks::*;
 pub fn map_with_capacity<K,V>(capacity: usize) -> Map<K,V> {
   Map::with_capacity_and_hasher(capacity, fnv::FnvBuildHasher::default())
 }
+
+
+#[derive(Hash, Copy, Clone, Eq, PartialEq)]
+pub enum Loc {
+  /// Passive vehicle origin (p)
+  Po(u16),
+  /// Passive vehicle destination (p)
+  Pd(u16),
+  /// Request pickup (r)
+  ReqP(u16),
+  /// Request delivery (r)
+  ReqD(u16),
+  /// Request delivery (d)
+  Ao,
+  Ad,
+}
+
+impl fmt::Debug for Loc {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Loc::Ao => f.write_str("Ao"),
+      Loc::Ad => f.write_str("Ad"),
+      Loc::Po(p) => f.write_fmt(format_args!("Po({})", p)),
+      Loc::Pd(p) => f.write_fmt(format_args!("Pd({})", p)),
+      Loc::ReqP(r) => f.write_fmt(format_args!("Rp({})", r)),
+      Loc::ReqD(r) => f.write_fmt(format_args!("Rd({})", r)),
+    }
+  }
+}
+
+impl fmt::Display for Loc {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fmt::Debug::fmt(self, f)
+  }
+}
+
+impl Loc {
+  pub fn dest(&self) -> Loc {
+    match self {
+      Loc::ReqP(r) => Loc::ReqD(*r),
+      Loc::Ao => Loc::Ad,
+      Loc::Po(p) => Loc::Pd(*p),
+      _ => unimplemented!("only defined for request pickups, AV- and PV origins")
+    }
+  }
+
+  pub fn origin(&self) -> Loc {
+    match self {
+      Loc::ReqD(r) => Loc::ReqD(*r),
+      Loc::Ad => Loc::Ao,
+      Loc::Pd(p) => Loc::Po(*p),
+      _ => unimplemented!("only defined for request deliveries, AV- and PV destinations")
+    }
+  }
+
+  pub fn req(&self) -> Req {
+    match self {
+      Loc::ReqD(r) | Loc::ReqP(r) => *r,
+      _ => unimplemented!("only defined for request pickups and deliveries")
+    }
+  }
+
+  pub fn pv(&self) -> Pv {
+    match self {
+      Loc::Po(p) | Loc::Pd(p) => *p,
+      _ => unimplemented!("only defined for passive vehicle origins and destinations")
+    }
+  }
+
+
+  pub fn decode(loc: RawLoc, starts: &LocSetStarts) -> Loc {
+    if loc == starts.avo {
+      Loc::Ao
+    } else if loc < starts.pv_d {
+      Loc::Po(loc - starts.pv_o)
+    } else if loc < starts.req_p {
+      Loc::Pd(loc - starts.pv_d)
+    } else if loc < starts.req_d {
+      Loc::ReqP(loc - starts.req_p)
+    } else if loc < starts.avd {
+      Loc::ReqD(loc - starts.req_d)
+    } else if loc == starts.avd {
+      Loc::Ad
+    } else {
+      panic!("{} is out of range (max {})", loc, starts.avd)
+    }
+  }
+
+  pub fn encode(&self, starts: &LocSetStarts) -> RawLoc {
+    match self {
+      Loc::Ao => starts.avo,
+      Loc::Ad => starts.avd,
+      Loc::Po(p) => starts.pv_o + *p,
+      Loc::Pd(p) => starts.pv_d + *p,
+      Loc::ReqP(r) => starts.req_p + *r,
+      Loc::ReqD(r) => starts.req_d + *r,
+    }
+  }
+
+}
+
 
 mod sets;
 pub use sets::Sets;
@@ -54,3 +155,5 @@ pub mod solution;
 mod utils;
 pub use utils::{iter_cycle};
 pub mod schedule;
+
+// TODO tests for encode and decode.

@@ -3,6 +3,8 @@ use anyhow::Result;
 use instances::dataset::{Dataset, apvrp::ApvrpInstance};
 use tracing::{info, info_span};
 use apvrp::model::mp::ObjWeights;
+use instances::dataset::apvrp::LocSetStarts;
+use tracing::trace;
 
 fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
   use instances::{
@@ -13,6 +15,26 @@ fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
     .push_owned(TILK_AB.map(move |data| rescale_distances(data, tilk_scale)))
     .push_ref(&*MEISEL_A)
     .finish()
+}
+
+#[tracing::instrument(level="trace", skip(data))]
+fn earliest_departures(data: &Data) -> Map<(Pv, Req), Time> {
+  data.compat_req_passive.iter()
+    .flat_map(|(&r, pvs)| {
+      pvs.iter()
+        .map(move |&p| {
+          let rp = Loc::ReqP(r);
+          let po = Loc::Po(p);
+          trace!(?rp, ?po);
+          let t = std::cmp::max(
+            data.start_time[&rp],
+            data.travel_time[&(Loc::Ao, rp)] + data.travel_time[&(po, rp)] + data.srv_time[&rp],
+          );
+
+          ((p, r), t)
+        })
+    })
+    .collect()
 }
 
 #[tracing::instrument]
@@ -26,7 +48,8 @@ fn main() -> Result<()> {
     let _span = info_span!("preprocess", idx, id=%d.id).entered();
     info!("loaded instance");
     preprocess::pv_req_timing_compat(&mut d);
-    let d= preprocess::av_grouping(d);
+    let lss = LocSetStarts::new(d.n_passive, d.n_req);
+    let d= preprocess::av_grouping(d, &lss);
     info!(num_av_groups = d.av_groups.len(), num_av = d.n_active, "preprocessing finished");
     d
   };
@@ -34,25 +57,9 @@ fn main() -> Result<()> {
   let sets = Sets::new(&data);
 
   // `pv_req_t_start` is the earliest time we can *depart* from request r's pickup with passive vehicle p
-  let pv_req_t_start: Map<_, _> = data.compat_req_passive.iter()
-    .flat_map(|(&r, pvs)| {
-      let data = &data;
-      pvs.iter()
-        .map(move |&p| (
-          (p, r),
-          std::cmp::max(
-            data.start_time[&r],
-            data.travel_time[&(data.odepot, p)] + data.travel_time[&(p, r)] + data.srv_time[&r],
-          )
-        ))
-    })
-    .collect();
-
+  let pv_req_t_start = earliest_departures(&data);
   let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
   info!(num_tasks=tasks.all.len(), "task generation finished");
-
-
-
 
   let mut mp = model::mp::TaskModelMaster::build(&data, &sets, &tasks, ObjWeights::default())?;
   mp.model.set_param(grb::param::Threads, 4)?;

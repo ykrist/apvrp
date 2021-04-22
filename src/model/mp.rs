@@ -2,7 +2,7 @@ use crate::*;
 use crate::tasks::TaskId;
 use grb::prelude::*;
 use fnv::FnvHashSet;
-use tracing::{info};
+use tracing::{info, trace};
 
 #[derive(Clone)]
 pub struct MpVars {
@@ -47,12 +47,12 @@ impl MpVars {
       }
     }
 
-    let mut u = map_with_capacity(data.n_req);
-    for p in sets.req_pickups() {
-      u.insert(p, add_binvar!(model, name: &format!("U[{}]", p), obj: obj_param.av_finish_time)?);
+    let mut u = map_with_capacity(data.n_req as usize);
+    for r in sets.reqs() {
+      u.insert(r, add_binvar!(model, name: &format!("U[{}]", r), obj: obj_param.av_finish_time)?);
     }
 
-    let mut theta = map_with_capacity(data.n_active * tasks.all.len());
+    let mut theta = map_with_capacity(data.n_active as usize * tasks.all.len());
     for a in sets.avs() {
       for &t in &tasks.compat_with_av[&a] {
         theta.insert((a, t), add_ctsvar!(model, name: &format!("Theta[{:?}|{}]", &t, a), obj: obj_param.cover)?);
@@ -75,8 +75,9 @@ pub struct MpConstraints {
 impl MpConstraints {
   pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model, vars: &MpVars) -> Result<Self> {
     let req_cover = {
-      let mut cmap = map_with_capacity(data.n_req);
-      for r in sets.req_pickups() {
+      let mut cmap = map_with_capacity(data.n_req as usize);
+      for r in sets.reqs() {
+        trace!(r);
         let xsum = tasks.by_cover[&r].iter().map(|t| vars.x[t]).grb_sum();
         let c = model.add_constr(&format!("req_cover[{}]", r), c!(xsum + vars.u[&r] == 1))?;
         cmap.insert(r, c);
@@ -85,20 +86,20 @@ impl MpConstraints {
     };
 
     let pv_cover = {
-      let mut cmap = map_with_capacity(data.n_passive);
-      for pv in sets.pv_origins() {
-        let xsum = tasks.by_start[&pv].iter().map(|t| vars.x[t]).grb_sum();
-        let c = model.add_constr(&format!("pv_cover[{}]", pv), c!(xsum == 1))?;
-        cmap.insert(pv, c);
+      let mut cmap = map_with_capacity(data.n_passive as usize);
+      for po in sets.pv_origins() {
+        let xsum = tasks.by_start[&po].iter().map(|t| vars.x[t]).grb_sum();
+        let c = model.add_constr(&format!("pv_cover[{}]", po.pv()), c!(xsum == 1))?;
+        cmap.insert(po.pv(), c);
       }
       cmap
     };
 
     let pv_flow = {
-      let mut cmap = map_with_capacity((data.n_loc - 2) * data.n_passive);
+      let mut cmap = map_with_capacity((data.n_loc as usize - 2) * data.n_passive as usize);
       for (&pv, pv_tasks) in &tasks.by_pv {
-        for &rp in &data.compat_passive_req[&pv] {
-          let rd = rp + data.n_req;
+        for rp in data.compat_passive_req[&pv].iter().copied().map(Loc::ReqP) {
+          let rd = rp.dest();
           for &i in &[rp, rd] {
             let lhs = tasks.by_start[&i].iter()
               .filter_map(|t| if pv_tasks.contains(t) { Some(vars.x[t]) } else { None })
@@ -117,7 +118,7 @@ impl MpConstraints {
     };
 
     let num_av = {
-      let mut cmap = map_with_capacity(data.n_active);
+      let mut cmap = map_with_capacity(data.n_active as usize);
       for (&av, av_tasks) in &tasks.compat_with_av {
         let to = tasks.odepot;
         let ysum = tasks.succ[&to]

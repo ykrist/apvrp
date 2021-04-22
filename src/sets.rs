@@ -1,78 +1,64 @@
-use crate::{Loc, Data, Avg};
+use crate::{Loc, Data, Avg, Av, Pv, Req};
 use std::ops::Range;
 use std::iter::Iterator;
 
 #[derive(Debug, Clone)]
 pub struct Sets {
-  pv_o_srt: usize,
-  pv_d_srt: usize,
-  r_o_srt: usize,
-  r_d_srt: usize,
-  end: usize,
+  n_active: Av,
+  n_passive: Pv,
+  n_req: Req,
   av_groups: Vec<Avg>,
 }
 
 impl Sets {
   pub fn new(data: &Data) -> Self {
-    let pv_o_srt = 1;
-    let pv_d_srt = pv_o_srt + data.n_passive;
-    let r_o_srt = pv_d_srt + data.n_passive;
-    let r_d_srt = r_o_srt + data.n_req;
-    let end = r_d_srt + data.n_req;
     let mut av_groups : Vec<_> = data.av_groups.keys().copied().collect();
     av_groups.sort();
 
     Sets {
-      pv_d_srt,
-      pv_o_srt,
-      r_o_srt,
-      r_d_srt,
-      end,
+      n_active: data.n_active,
+      n_passive: data.n_passive,
+      n_req: data.n_req,
       av_groups
     }
   }
 
 
-  /// Set of passive vehicles/passive vehicle origin locations
+
+  /// Set of passive vehicles
   #[inline(always)]
-  pub fn pv_origins(&self) -> Range<Loc> {
-    self.pv_o_srt..self.pv_d_srt
+  pub fn pvs(&self) -> Range<Pv> {
+    0..self.n_passive
+  }
+
+  /// Set of passive vehicle origin locations
+  #[inline(always)]
+  pub fn pv_origins(&self) -> impl Iterator<Item=Loc> {
+    self.pvs().map(Loc::Po)
   }
 
   /// Set of passive vehicle dest. locations
   #[inline(always)]
-  pub fn pv_dests(&self) -> Range<Loc> {
-    self.pv_d_srt..self.r_o_srt
+  pub fn pv_dests(&self) -> impl Iterator<Item=Loc> {
+    self.pvs().map(Loc::Pd)
   }
 
-  /// Set of passive vehicle locations
+  /// Set of requests
   #[inline(always)]
-  pub fn pv_locs(&self) -> Range<Loc> {
-    self.pv_o_srt..self.r_o_srt
+  pub fn reqs(&self) -> Range<Req> {
+    0..self.n_req
   }
 
-  /// Set of requests/request origin locations
+  /// Request origin locations
   #[inline(always)]
-  pub fn req_pickups(&self) -> Range<Loc> {
-    self.r_o_srt..self.r_d_srt
+  pub fn req_pickups(&self) -> impl Iterator<Item=Loc>  {
+    self.reqs().map(Loc::ReqP)
   }
 
   /// Set of request dest. locations
   #[inline(always)]
-  pub fn req_deliveries(&self) -> Range<Loc> {
-    self.r_d_srt..self.end
-  }
-
-  /// Set of request locations
-  #[inline(always)]
-  pub fn req_locs(&self) -> Range<Loc> {
-    self.r_o_srt..self.end
-  }
-
-  /// Set of locations
-  #[inline(always)]
-  pub fn locs(&self) -> Range<Loc> {
-    0..(self.end + 1)
+  pub fn req_deliveries(&self) -> impl Iterator<Item=Loc>  {
+    self.reqs().map(Loc::ReqD)
   }
 
   // /// Set of active vehicles
