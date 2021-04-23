@@ -62,8 +62,8 @@ pub(crate) type AvPath = Vec<Task>;
 pub(crate) type PvPath = Vec<Task>;
 
 /// Given a list of task pairs (from the Y variables), construct routes for an Active Vehicle class, plus any cycles which occur.
-#[tracing::instrument(skip(tasks, task_pairs))]
-pub fn construct_av_routes(tasks: &Tasks, task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvPath>) {
+#[tracing::instrument(skip(task_pairs))]
+pub fn construct_av_routes(task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvPath>) {
   trace!(?task_pairs);
   use crate::graph::DecomposableDigraph;
 
@@ -127,8 +127,8 @@ pub fn construct_av_routes(tasks: &Tasks, task_pairs: &[(Task, Task)]) -> (Vec<A
 }
 
 /// Given a list of tasks, construct the route for a Passive vehicle, plus any cycles which occur.
-#[tracing::instrument(skip(data, tasks_used))]
-pub fn construct_pv_route(data: &Data, tasks_used: &[Task]) -> (PvPath, Vec<PvPath>) {
+#[tracing::instrument(skip(tasks_used))]
+pub fn construct_pv_route(tasks_used: &[Task]) -> (PvPath, Vec<PvPath>) {
   trace!(?tasks_used);
   debug_assert!(!tasks_used.is_empty());
   let first_task = *tasks_used.first().unwrap();
@@ -220,7 +220,7 @@ impl CbStats {
     // way to create a CbStats struct is to call `default()`, which allocates a `Vec` large enough.
     #[cfg(not(debug_assertions))]
       let val = unsafe { self.n_cuts.get_unchecked_mut(cut_ty as usize) };
-    let val = unsafe { self.n_cuts.get_unchecked_mut(cut_ty as usize) };
+
     let old_val = *val;
     *val += inc;
     self.n_cuts_total += inc;
@@ -465,7 +465,7 @@ impl<'a> Cb<'a> {
     c!(xsum <= cycle.len() - 2) // cycle is a list of n+1 nodes (start = end), which form n arcs
   }
 
-
+  #[allow(unused_variables)]
   fn pv_chain_cuts(&self, chain: &PvPath) -> (IneqExpr, IneqExpr) {
     todo!()
   }
@@ -484,7 +484,7 @@ impl<'a> Callback for Cb<'a> {
         let task_pairs = self.get_task_pairs_by_av(&ctx)?;
         let mut av_routes = map_with_capacity(task_pairs.len());
         for (&av, av_task_pairs) in &task_pairs {
-          let (av_paths, av_cycles) = construct_av_routes(&self.tasks, av_task_pairs);
+          let (av_paths, av_cycles) = construct_av_routes(av_task_pairs);
           if av_cycles.len() > 0 {
             info!(num_cycles=av_cycles.len(), "AV cycles found");
             trace!(?av_cycles);
@@ -517,7 +517,7 @@ impl<'a> Callback for Cb<'a> {
         let pv_tasks = self.get_tasks_by_pv(&ctx)?;
         let mut pv_routes = map_with_capacity(pv_tasks.len());
         for (&pv, tasks) in &pv_tasks {
-          let (pv_path, pv_cycles) = construct_pv_route(&self.data, tasks);
+          let (pv_path, pv_cycles) = construct_pv_route(tasks);
 
           for cycle in pv_cycles {
             let cut =  self.pv_cycle_cut(&cycle);
@@ -556,7 +556,7 @@ impl<'a> Callback for Cb<'a> {
 
           for cut in cuts {
             let name = match &cut {
-              BendersCut::Optimality(cut) => {
+              BendersCut::Optimality(_) => {
                 // continue;
                 info!("LP optimality cut generated");
                 format!("sp_opt[{}]", self.stats.inc_cut_count(CutType::LpOpt, 1))

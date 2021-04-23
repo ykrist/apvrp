@@ -428,10 +428,10 @@ pub enum Incompatibility {
   Opt,
 }
 
-fn task_req(t: &Task, n_req: Loc) -> Req {
+fn task_req(t: &Task) -> Req {
   use TaskType::*;
   match t.ty {
-    Direct | Transfer | ODepot | DDepot => panic!("not valid for direct or transfer tasks"),
+    Direct | Transfer | ODepot | DDepot => panic!("not valid for direct, AV depot or transfer tasks"),
     Start => t.end.req(),
     End => t.start.req(),
     Request => t.start.req()

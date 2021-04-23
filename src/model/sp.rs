@@ -84,7 +84,7 @@ pub enum BendersCut {
 impl BendersCut {
   pub fn into_ineq(self, sets: &Sets, tasks: &Tasks, vars: &MpVars) -> IneqExpr {
     match self {
-      BendersCut::Optimality(cut) => cut.into_ineq(sets, tasks, vars),
+      BendersCut::Optimality(cut) => cut.into_ineq(sets, vars),
       BendersCut::Feasibility(cut) => cut.into_ineq(sets, vars),
     }
   }
@@ -101,7 +101,7 @@ pub struct OptCut {
 }
 
 impl OptCut {
-  pub fn build(sp: &TimingSubproblem, tasks: &Tasks) -> Result<Self> {
+  pub fn build(sp: &TimingSubproblem) -> Result<Self> {
     let _span = error_span!("opt_cut").entered();
 
     let sp_obj = sp.model.get_attr(attr::ObjVal)?;
@@ -126,16 +126,15 @@ impl OptCut {
     Ok(OptCut { sp_obj, task_pairs, obj_tasks })
   }
 
-  pub fn into_ineq(self, sets: &Sets, tasks: &Tasks, vars: &MpVars) -> IneqExpr {
+  pub fn into_ineq(self, sets: &Sets, vars: &MpVars) -> IneqExpr {
     let _span = error_span!("opt_cut").entered();
 
-    let mut lhs = sets.avs()
+    let lhs = sets.avs()
       .cartesian_product(self.obj_tasks)
       .filter_map(|(av, t)| vars.theta.get(&(av, t)))
       .grb_sum();
 
     let mut ysum = Expr::default();
-    let obj = self.sp_obj;
     let n_pairs = self.task_pairs.len() as isize;
 
     for (t1, t2) in self.task_pairs {
@@ -235,7 +234,7 @@ impl<'a> TimingSubproblem<'a> {
       })
       .grb_sum() + obj_constant;
     model.update()?;
-    trace!(?obj_constant, obj=?obj.attach(&model));
+    trace!(?obj_constant, obj=?obj.with_names(&model));
     model.set_objective(obj, Minimize)?;
 
     Ok(TimingSubproblem { vars, cons, model, av_routes, pv_routes, data })
@@ -264,7 +263,7 @@ impl<'a> TimingSubproblem<'a> {
         }
         // debug_assert!(obj >= estimate);
         if estimate < obj {
-          cuts.push(BendersCut::Optimality(OptCut::build(&self, tasks)?));
+          cuts.push(BendersCut::Optimality(OptCut::build(&self)?));
         }
       }
       Status::Infeasible => {

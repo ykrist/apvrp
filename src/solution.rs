@@ -86,7 +86,7 @@ impl<'a> SpSolution<'a> {
       let mut st_row = vec![cell!("ST")];
       let mut tt_row = vec![cell!("TT")];
       // let mut et_row = vec![cell!("ET")];
-      let mut lt_row = vec![cell!("LT")];
+      // let mut lt_row = vec![cell!("LT")];
 
       for (task, t) in route {
         task_row.push(cell!(format!("{:?}", task)));
