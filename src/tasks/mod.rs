@@ -13,6 +13,7 @@ pub type TaskId = u32;
 pub type PVIRTaskId = u32;
 
 mod checks;
+pub mod chain;
 
 
 #[derive(Copy, Clone, Debug, Serialize)]
