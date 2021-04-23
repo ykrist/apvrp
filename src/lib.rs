@@ -59,8 +59,9 @@ pub enum Loc {
   ReqP(u16),
   /// Request delivery (r)
   ReqD(u16),
-  /// Request delivery (d)
+  /// AV origin depot
   Ao,
+  /// AV dest depot
   Ad,
 }
 

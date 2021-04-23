@@ -63,7 +63,7 @@ impl Sets {
 
   // /// Set of active vehicles
   #[inline(always)]
-  pub fn avs(&self) -> impl Iterator<Item=Avg> + '_ {
+  pub fn avs(&self) -> impl Iterator<Item=Avg> + Clone + '_ {
     self.av_groups.iter().copied()
   }
 }

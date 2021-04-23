@@ -6,7 +6,7 @@ use itertools::max;
 use fnv::{FnvHashSet, FnvBuildHasher};
 use std::fmt;
 use grb::constr::IneqExpr;
-use tracing::{error_span, trace, error};
+use tracing::{error_span, trace, error, warn};
 use std::collections::HashMap;
 
 pub type TaskId = u32;
@@ -196,6 +196,7 @@ pub struct Tasks {
   pub by_locs: Map<(Loc, Loc), Vec<Task>>,
   pub by_cover: Map<Req, Vec<Task>>,
   pub by_pv: Map<Pv, FnvHashSet<Task>>,
+  pub similar_tasks: Map<Task, Vec<Task>>,
   pub succ: Map<Task, Vec<Task>>,
   pub pred: Map<Task, Vec<Task>>,
   pub odepot: Task,
@@ -367,6 +368,7 @@ impl Tasks {
     let mut succ: Map<_, _> = map_with_capacity(all.len());
     let mut pred: Map<_, _> = map_with_capacity(all.len());
     let mut by_pv: Map<_, _> = sets.pvs().map(|pv| (pv, FnvHashSet::default())).collect();
+    let mut similar_tasks: Map<_, Vec<_>> = map_with_capacity(all.len());
 
     for &t in &all {
       by_id.insert(t.id(), t);
@@ -414,7 +416,27 @@ impl Tasks {
       }
     }
 
-    Tasks { all, by_id, by_pv, by_cover, by_locs, by_end, by_start, succ, pred, odepot, compat_with_av, ddepot }
+    for &t1 in &all {
+      if t1.ty == TaskType::Request || t1.ty == TaskType::Transfer {
+        let candidates = &by_start[&t1.start];
+        let similar = similar_tasks.entry(t1).or_insert(Vec::with_capacity(candidates.len()));
+        for &t2 in candidates {
+          if t1.end == t2.end {
+            if t1.t_release == t2.t_release && t1.t_deadline == t2.t_release {
+              similar.push(t2);
+            } else {
+              warn!(?t1, ?t2, t1.t_release, t2.t_release, t1.t_deadline, t2.t_deadline,
+                "interesting timing tasks: similar tasks with different time values");
+            }
+          }
+        }
+        similar.shrink_to_fit();
+      } else {
+        similar_tasks.insert(t1, vec![t1]);
+      }
+    }
+
+    Tasks { all, by_id, by_pv, by_cover, by_locs, by_end, by_start, similar_tasks, succ, pred, odepot, compat_with_av, ddepot }
   }
 }
 

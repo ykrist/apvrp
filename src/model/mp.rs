@@ -61,6 +61,14 @@ impl MpVars {
 
     Ok(MpVars { x, y, theta, u })
   }
+
+
+  pub fn ysum_similar_tasks<'a>(&'a self, sets: &'a Sets, tasks: &'a Tasks, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {
+    tasks.similar_tasks[&t1].iter()
+      .cartesian_product(&tasks.similar_tasks[&t2])
+      .cartesian_product(sets.avs())
+      .filter_map(move |((&t1, &t2), a)| self.y.get(&(a, t1, t2)).copied())
+  }
 }
 
 pub struct MpConstraints {
