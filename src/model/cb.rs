@@ -371,7 +371,6 @@ impl<'a> Cb<'a> {
 
     let c = c!(ysum <= n - 2); // cycle is a list of n+1 nodes (start = end), which form n arcs
     trace!(cut=?c.with_names(&self.var_names));
-    // trace!(?cycle, cut=?&c);
     c
   }
 
@@ -387,6 +386,41 @@ impl<'a> Cb<'a> {
 
   #[tracing::instrument(level="trace", skip(self))]
   fn av_chain_tournament_cut(&self, chain: &[Task]) -> IneqExpr {
+    let n = chain.len()-1;
+    /// Are all permutations illegal?
+    let mut all_illegal = true;
+    /// Are all permutations where the first Task in the chain is held fixed illegal?
+    let mut all_illegal_first_fixed = true;
+    /// Are all permutations where the last Task in the chain is held fixed illegal?
+    let mut all_illegal_last_fixed = true;
+
+    for c in chain.permutations() {
+      let c = c.as_slice();
+      if schedule::check_av_route(self.data, c) {
+        all_illegal = false;
+
+        if c[0] == chain[0] {
+          all_illegal_first_fixed = false;
+        }
+
+        if c[n] == chain[n] {
+          all_illegal_last_fixed = false
+        }
+      }
+    }
+
+    if all_illegal {
+      // add cut
+    } else if all_illegal_last_fixed | all_illegal_first_fixed {
+      if all_illegal_first_fixed {
+        // add cut
+      }
+      if all_illegal_last_fixed {
+        // add cut
+      }
+    } else {
+      // basic forward tornamenting
+    }
     todo!()
   }
 
