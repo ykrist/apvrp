@@ -107,14 +107,19 @@ fn impl_chain_cover_and_pred(chain: &[Task], cover_only: bool) -> bool {
   true
 }
 
+use crate::utils::Permutator;
 pub trait ChainIterExt {
   // pub fn legal_before(&self, data: &Data, tasks: &Tasks) -> ;
-
+  fn permutations(&self) -> Permutator<Task>;
   fn legal_after<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> LegalEndsIter<'a>;
   fn legal_before<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> LegalEndsIter<'a>;
 }
 
 impl ChainIterExt for &[Task] {
+  fn permutations(&self) -> Permutator<Task> {
+    Permutator::new(self.to_vec())
+  }
+
   fn legal_after<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> LegalEndsIter<'a> {
     LegalEndsIter::new_after(self, data, tasks)
   }

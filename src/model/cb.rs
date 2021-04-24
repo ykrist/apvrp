@@ -375,9 +375,38 @@ impl<'a> Cb<'a> {
     c
   }
 
+  #[tracing::instrument(level="trace", skip(self))]
+  fn av_chain_infork_cut(&mut self, chain: &[Task]) -> IneqExpr {
+    todo!()
+  }
+
+  #[tracing::instrument(level="trace", skip(self))]
+  fn av_chain_outfork_cut(&mut self, chain: &[Task]) -> IneqExpr {
+    todo!()
+  }
+
+  #[tracing::instrument(level="trace", skip(self))]
+  fn av_chain_tournament_cut(&self, chain: &[Task]) -> IneqExpr {
+    todo!()
+  }
+
+  fn shortest_illegal_av_chain<'b>(&self, chain: &'b [Task]) -> &'b [Task] {
+    for l in 3..=chain.len() {
+      for start_pos in 0..(chain.len()-l) {
+        let c = &chain[start_pos..(start_pos + l)];
+        if !schedule::check_av_route(self.data, c) {
+          return c;
+        }
+      }
+    }
+    unreachable!("chain must be illegal")
+  }
+
+
+
   /// Generate an inequality to cut off `chain`, assuming `chain` violates timing constraints
   #[tracing::instrument(level="trace", skip(self))]
-  fn av_chain_cuts(&mut self, chain: &[Task]) -> (IneqExpr, IneqExpr) {
+  fn av_chain_fork_cuts(&mut self, chain: &[Task]) -> (IneqExpr, IneqExpr) {
 
     debug_assert!(!schedule::check_av_route(self.data, chain));
 
@@ -491,7 +520,7 @@ impl<'a> Callback for Cb<'a> {
             for cycle in av_cycles {
               if !schedule::check_av_route(self.data, &cycle[..cycle.len()-1]) {
                 self.stats.inc_cut_count(CutType::AvChain, 2);
-                let (before_cut, after_cut) = self.av_chain_cuts(&cycle[..cycle.len()-1]);
+                let (before_cut, after_cut) = self.av_chain_fork_cuts(&cycle[..cycle.len()-1]);
                 self.cut_cache.push(("av_chain_before".to_string(), before_cut));
                 self.cut_cache.push(("av_chain_after".to_string(), after_cut));
               } else {
@@ -505,7 +534,7 @@ impl<'a> Callback for Cb<'a> {
           for av_path in &av_paths {
             if !schedule::check_av_route(self.data, av_path) {
               self.stats.inc_cut_count(CutType::AvChain, 2);
-              let (before_cut, after_cut) = self.av_chain_cuts(av_path);
+              let (before_cut, after_cut) = self.av_chain_fork_cuts(av_path);
               self.cut_cache.push(("av_chain_before".to_string(), before_cut));
               self.cut_cache.push(("av_chain_after".to_string(), after_cut));
             }
