@@ -21,6 +21,8 @@ pub struct ObjWeights {
 
 impl std::default::Default for ObjWeights {
   fn default() -> Self { ObjWeights { tt: 10.0, av_finish_time: 1.0, cover: 10_000.0 }}
+  // fn default() -> Self { ObjWeights { tt: 10.0, av_finish_time: 0.0, cover: 10_000.0 }}
+  // fn default() -> Self { ObjWeights { tt: 0.0, av_finish_time: 0.0, cover: 1.0 }}
 }
 
 impl MpVars {
@@ -49,13 +51,13 @@ impl MpVars {
 
     let mut u = map_with_capacity(data.n_req as usize);
     for r in sets.reqs() {
-      u.insert(r, add_binvar!(model, name: &format!("U[{}]", r), obj: obj_param.av_finish_time)?);
+      u.insert(r, add_binvar!(model, name: &format!("U[{}]", r), obj: obj_param.cover)?);
     }
 
     let mut theta = map_with_capacity(data.n_active as usize * tasks.all.len());
     for a in sets.avs() {
       for &t in &tasks.compat_with_av[&a] {
-        theta.insert((a, t), add_ctsvar!(model, name: &format!("Theta[{:?}|{}]", &t, a), obj: obj_param.cover)?);
+        theta.insert((a, t), add_ctsvar!(model, name: &format!("Theta[{:?}|{}]", &t, a), obj: obj_param.av_finish_time)?);
       }
     }
 

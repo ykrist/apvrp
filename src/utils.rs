@@ -18,6 +18,36 @@ pub fn iter_cycle<'a, T>(vals: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> + 
     .chain(std::iter::once((last, first)))
 }
 
+// pub struct CyclicPermutator<T> {
+//   objects: Rc<Vec<T>>,
+//   idx: usize,
+//   len: usize,
+// }
+//
+// impl <T: Clone> CyclicPermutator<T> {
+//   pub fn new(objects: &[T]) -> CyclicPermutator<T> {
+//     let len = objects.len();
+//     let mut v = Vec::with_capacity(2*objects.len() - 1);
+//     v.extend_from_slice(objects);
+//     v.extend_from_slice(&objects[..(len-1)]);
+//     CyclicPermutator{ objects: Rc::new(v), len, idx: 0}
+//   }
+// }
+//
+// impl<T> Iterator for CyclicPermutator<T> {
+//   type Item = Rc<Vec<T>>;
+//
+//   fn next(&mut self) -> Option<Self::Item> {
+//     if self.idx < self.len {
+//
+//       self.idx += 1;
+//     } else {
+//       None
+//     }
+//   }
+// }
+
+
 pub struct Permutator<T> {
   objects: Rc<Vec<T>>,
   k: usize,

@@ -178,6 +178,7 @@ impl Task {
   #[inline(always)]
   pub fn id(&self) -> TaskId { self.id }
 
+  /// Is this task an AV-depot task?
   #[inline(always)]
   pub fn is_depot(&self) -> bool {
     self.ty == TaskType::ODepot || self.ty == TaskType::DDepot
@@ -422,7 +423,7 @@ impl Tasks {
         let similar = similar_tasks.entry(t1).or_insert(Vec::with_capacity(candidates.len()));
         for &t2 in candidates {
           if t1.end == t2.end {
-            if t1.t_release == t2.t_release && t1.t_deadline == t2.t_release {
+            if t1.t_release == t2.t_release && t1.t_deadline == t2.t_deadline {
               similar.push(t2);
             } else {
               warn!(?t1, ?t2, t1.t_release, t2.t_release, t1.t_deadline, t2.t_deadline,
@@ -560,31 +561,32 @@ pub fn update_implied_cover_after(visited: &mut FnvHashSet<Loc>, task: &Task) ->
   !cover_violation
 }
 
-
-/// Update the Request-Passive vehicle pairings.  If a conflict occurs, the pairing is not
-/// modified and `false` is returned.  Otherwise, the pairings are updated and `true` is returned.
-pub fn update_req_pv_pairing(pairing: &mut HashMap<Req, Pv>, task: &Task) -> bool {
-  use Loc::*;
-  use TaskType::*;
-  use std::collections::hash_map::Entry;
-
-  #[inline]
-  fn update_one(pairing: &mut HashMap<Req, Pv>, r: Req, pv: Pv) -> bool {
-    match pairing.entry(r) {
-      Entry::Occupied(e) => e.get() == &pv,
-      Entry::Vacant(e) => {
-        e.insert(pv);
-        true
-      }
-    }
-  }
-
-  match task.ty {
-    ODepot | DDepot | Direct => true,
-    Start => update_one(pairing, task.end.req(), task.p.unwrap()),
-    End | Request => update_one(pairing, task.start.req(), task.p.unwrap()),
-    Transfer => update_one(pairing, task.start.req(), task.p.unwrap())
-      && update_one(pairing, task.end.req(), task.p.unwrap()),
-  }
-}
+// FIXME: I don't think this works with the similar-task lifting because the Req-PV pairing for tasks
+//  will change.
+// /// Update the Request-Passive vehicle pairings.  If a conflict occurs, the pairing is not
+// /// modified and `false` is returned.  Otherwise, the pairings are updated and `true` is returned.
+// pub fn update_req_pv_pairing(pairing: &mut HashMap<Req, Pv>, task: &Task) -> bool {
+//   use Loc::*;
+//   use TaskType::*;
+//   use std::collections::hash_map::Entry;
+//
+//   #[inline]
+//   fn update_one(pairing: &mut HashMap<Req, Pv>, r: Req, pv: Pv) -> bool {
+//     match pairing.entry(r) {
+//       Entry::Occupied(e) => e.get() == &pv,
+//       Entry::Vacant(e) => {
+//         e.insert(pv);
+//         true
+//       }
+//     }
+//   }
+//
+//   match task.ty {
+//     ODepot | DDepot | Direct => true,
+//     Start => update_one(pairing, task.end.req(), task.p.unwrap()),
+//     End | Request => update_one(pairing, task.start.req(), task.p.unwrap()),
+//     Transfer => update_one(pairing, task.start.req(), task.p.unwrap())
+//       && update_one(pairing, task.end.req(), task.p.unwrap()),
+//   }
+// }
 

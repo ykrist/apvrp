@@ -14,10 +14,10 @@ pub fn av_chain_cover_pred(chain: &[Task]) -> bool { impl_chain_cover_and_pred(c
 ///   2. There are no conflicts between the locations visited before and after the chain.
 ///   3. An AV-feasible schedule exists for the chain.
 ///
-/// Returns `false` otherwise.
+/// Returns `false` otherwise. Does **not** check PV-Req pairings.
 #[inline]
 pub fn av_chain_full(data: &Data, chain: &[Task]) -> bool {
-  schedule::check_pv_route(data, chain) && av_chain_cover_pred(chain)
+  schedule::check_av_route(data, chain) && av_chain_cover_pred(chain)
 }
 
 

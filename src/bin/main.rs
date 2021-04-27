@@ -5,6 +5,7 @@ use tracing::{info, info_span};
 use apvrp::model::mp::ObjWeights;
 use instances::dataset::apvrp::LocSetStarts;
 use tracing::trace;
+use grb::prelude::*;
 
 fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
   use instances::{
@@ -39,8 +40,14 @@ fn earliest_departures(data: &Data) -> Map<(Pv, Req), Time> {
 
 #[tracing::instrument]
 fn main() -> Result<()> {
+  #[allow(non_snake_case)]
+  let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
+
+
   let _g = logging::init_logging(Some("log.ndjson"), Some("apvrp.logfilter"));
-  let idx: usize = std::env::args().into_iter().skip(1).next().ok_or(anyhow::Error::msg("Expected integer argument"))?.parse()?;
+  let idx: usize = std::env::args().into_iter().skip(1).next()
+    .ok_or(anyhow::Error::msg("Expected integer argument"))?
+    .parse()?;
   info!(idx);
 
   let data = {
@@ -62,10 +69,19 @@ fn main() -> Result<()> {
   info!(num_tasks=tasks.all.len(), "task generation finished");
 
   let mut mp = model::mp::TaskModelMaster::build(&data, &sets, &tasks, ObjWeights::default())?;
-  mp.model.set_param(grb::param::Threads, 4)?;
-  mp.model.set_param(grb::param::LazyConstraints, 1)?;
+
+  mp.model.update()?;
+  mp.model.set_obj_attr_batch(attr::BranchPriority, mp.vars.u.values().map(|&u| (u, 100)))?;
+  mp.model.set_obj_attr_batch(attr::UB, mp.vars.u.values().map(|&u| (u, 0.0)))?;
+  mp.model.set_param(&MIN_BP_FORBID, 1)?;
+  mp.model.set_param(param::BranchDir, 1)?;
+  mp.model.set_param(param::Threads, 4)?;
+  mp.model.set_param(param::LazyConstraints, 1)?;
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
+
+  mp.model.set_obj_attr_batch( attr::Sense, mp.cons.num_av.values().map(|&c| (c, ConstrSense::Equal)))?;
+  mp.model.update()?;
   let mut callback = model::cb::Cb::new(&data, &sets, &tasks, &mp)?;
   let opt_res = mp.model.optimize_with_callback(&mut callback);
   match opt_res {
