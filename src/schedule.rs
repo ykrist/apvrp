@@ -12,10 +12,14 @@ fn pv_forward_step(t: &mut Time, data: &Data, t1: &Task, t2: &Task) {
 
 #[inline]
 fn av_forward_step(t: &mut Time, data: &Data, t1: &Task, t2: &Task) {
-  let mut arrival = *t + t1.tt + data.travel_time[&(t1.end, t2.start)];
-  if t1.p == t2.p {
-    arrival += *data.srv_time.get(&t1.end).unwrap_or(&0);
-  }
+  let arrival = if t1.end == t2.start {
+    // t1 and t2 must have the same passive vehicle by PV flow constraints
+    // so we can add the service time
+    *t + t1.tt + data.srv_time.get(&t1.end).copied().unwrap_or(0)
+  } else {
+    // Different passive vehicles (because we forbid task-task connections where t1.end != t2.start && t1.p == t2.p)
+    *t + t1.tt + data.travel_time[&(t1.end, t2.start)]
+  };
   *t = max(arrival, t2.t_release);
 }
 
