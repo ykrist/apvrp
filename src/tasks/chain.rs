@@ -57,6 +57,9 @@ impl LocsVisitedByChain {
   }
 }
 
+pub fn pv_chain_full(data: &Data, chain: &[Task]) -> bool {
+  schedule::check_pv_route(data, chain) && av_chain_cover_pred(chain) // AV check for cover and precedence should be correct should do for now
+}
 
 fn impl_chain_cover_and_pred(chain: &[Task], cover_only: bool) -> bool {
   use TaskType::*;
@@ -111,8 +114,10 @@ use crate::utils::Permutator;
 pub trait ChainIterExt {
   // pub fn legal_before(&self, data: &Data, tasks: &Tasks) -> ;
   fn permutations(&self) -> Permutator<Task>;
-  fn legal_after<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> LegalEndsIter<'a>;
-  fn legal_before<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> LegalEndsIter<'a>;
+  fn av_legal_after<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> AvLegalEndsIter<'a>;
+  fn av_legal_before<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> AvLegalEndsIter<'a>;
+  fn pv_legal_after<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> PvLegalEndsIter<'a>;
+  fn pv_legal_before<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> PvLegalEndsIter<'a>;
 }
 
 impl ChainIterExt for &[Task] {
@@ -120,30 +125,38 @@ impl ChainIterExt for &[Task] {
     Permutator::new(self.to_vec())
   }
 
-  fn legal_after<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> LegalEndsIter<'a> {
-    LegalEndsIter::new_after(self, data, tasks)
+  fn av_legal_after<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> AvLegalEndsIter<'a> {
+    AvLegalEndsIter::new_after(self, data, tasks)
   }
 
-  fn legal_before<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> LegalEndsIter<'a> {
-    LegalEndsIter::new_before(self, data, tasks)
+  fn av_legal_before<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> AvLegalEndsIter<'a> {
+    AvLegalEndsIter::new_before(self, data, tasks)
+  }
+
+  fn pv_legal_after<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> PvLegalEndsIter<'a> {
+    PvLegalEndsIter::new_after(self, data, tasks)
+  }
+
+  fn pv_legal_before<'a>(&'a self, data: &'a Data, tasks: &'a Tasks) -> PvLegalEndsIter<'a> {
+    PvLegalEndsIter::new_before(self, data, tasks)
   }
 }
 
-pub struct LegalEndsIter<'a> {
+pub struct AvLegalEndsIter<'a> {
   replace_idx: usize,
   chain_template: Vec<Task>,
   candidate_iter: std::slice::Iter<'a, Task>,
   data: &'a Data,
 }
 
-impl<'a> LegalEndsIter<'a> {
+impl<'a> AvLegalEndsIter<'a> {
   pub fn new_after(chain: &[Task], data: &'a Data, tasks: &'a Tasks) -> Self {
     let candidate_iter = tasks.succ[chain.last().unwrap()].iter();
     let mut chain_template = Vec::with_capacity(chain.len() + 1);
     chain_template.extend_from_slice(chain);
     chain_template.push(tasks.ddepot); // placeholder
     // replace_idx is a valid index since Vec is non-empty
-    LegalEndsIter { replace_idx: chain_template.len() - 1, chain_template, candidate_iter, data }
+    AvLegalEndsIter { replace_idx: chain_template.len() - 1, chain_template, candidate_iter, data }
   }
 
   pub fn new_before(chain: &[Task], data: &'a Data, tasks: &'a Tasks) -> Self {
@@ -152,11 +165,11 @@ impl<'a> LegalEndsIter<'a> {
     chain_template.push(tasks.odepot); // placeholder
     chain_template.extend_from_slice(chain);
     // replace_idx is a valid index since Vec is non-empty
-    LegalEndsIter { replace_idx: 0, chain_template, candidate_iter, data }
+    AvLegalEndsIter { replace_idx: 0, chain_template, candidate_iter, data }
   }
 }
 
-impl Iterator for LegalEndsIter<'_> {
+impl Iterator for AvLegalEndsIter<'_> {
   type Item = Task;
 
   fn next(&mut self) -> Option<Task> {
@@ -172,3 +185,52 @@ impl Iterator for LegalEndsIter<'_> {
   }
 }
 
+
+pub struct PvLegalEndsIter<'a> {
+  replace_idx: usize,
+  chain_template: Vec<Task>,
+  candidate_iter: std::slice::Iter<'a, Task>,
+  data: &'a Data,
+}
+
+
+impl<'a> PvLegalEndsIter<'a> {
+  pub fn new_after(chain: &[Task], data: &'a Data, tasks: &'a Tasks) -> Self {
+    let last_task = chain.last().unwrap();
+    let p = last_task.p.expect("task should have a passive vehicle");
+    let candidate_iter = tasks.pv_succ[&last_task].iter();
+    let mut chain_template = Vec::with_capacity(chain.len() + 1);
+    chain_template.extend_from_slice(chain);
+    chain_template.push(tasks.ddepot); // placeholder
+    // replace_idx is a valid index since Vec is non-empty
+    PvLegalEndsIter { replace_idx: chain_template.len() - 1, chain_template, candidate_iter, data }
+  }
+
+  pub fn new_before(chain: &[Task], data: &'a Data, tasks: &'a Tasks) -> Self {
+    let first_task = chain.first().unwrap();
+    let p = first_task.p.expect("task should have a passive vehicle");
+    let candidate_iter = tasks.pv_pred[&first_task].iter();
+    let mut chain_template = Vec::with_capacity(chain.len() + 1);
+    chain_template.extend_from_slice(chain);
+    chain_template.push(tasks.odepot); // placeholder
+    // replace_idx is a valid index since Vec is non-empty
+    PvLegalEndsIter { replace_idx: 0, chain_template, candidate_iter, data }
+  }
+}
+
+
+impl Iterator for PvLegalEndsIter<'_> {
+  type Item = Task;
+
+  fn next(&mut self) -> Option<Task> {
+    while let Some(&task) = self.candidate_iter.next() {
+      // Safety: replace_idx is a valid index because it is never modified, and is valid in the constructors.
+      let task_to_replace = unsafe { self.chain_template.get_unchecked_mut(self.replace_idx) };
+      *task_to_replace = task;
+      if pv_chain_full(self.data, &self.chain_template) {
+        return Some(task)
+      }
+    }
+    None
+  }
+}

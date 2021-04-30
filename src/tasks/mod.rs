@@ -32,7 +32,7 @@ impl RawPvTask {
 }
 
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub enum TaskType {
   /// Move from one request to another (delivery to pickup loc)
   Transfer,
@@ -47,6 +47,18 @@ pub enum TaskType {
   /// Av origin depot (fake task)
   ODepot,
   /// Av destination depot (fake task)
+  DDepot,
+}
+
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum ShorthandTask {
+  Transfer(Pv, Req, Req),
+  Start(Pv, Req),
+  Request(Pv, Req),
+  End(Pv, Req),
+  Direct(Pv),
+  ODepot,
   DDepot,
 }
 
@@ -139,7 +151,7 @@ impl fmt::Debug for Task {
           f.write_fmt(format_args!("{:?}({},{})", self.ty, self.start.pv(), self.end.req()))
         }
         End => {
-          f.write_fmt(format_args!("{:?}({},{})", self.ty, self.start.req(), self.end.pv()))
+          f.write_fmt(format_args!("{:?}({},{})", self.ty, self.end.pv(), self.start.req()))
         }
         Transfer => {
           f.write_fmt(format_args!("{:?}({},{},{})", self.ty, self.p.unwrap(), self.start.req(), self.end.req()))
@@ -197,9 +209,12 @@ pub struct Tasks {
   pub by_locs: Map<(Loc, Loc), Vec<Task>>,
   pub by_cover: Map<Req, Vec<Task>>,
   pub by_pv: Map<Pv, FnvHashSet<Task>>,
+  pub by_shorthand: Map<ShorthandTask, Task>,
   pub similar_tasks: Map<Task, Vec<Task>>,
   pub succ: Map<Task, Vec<Task>>,
   pub pred: Map<Task, Vec<Task>>,
+  pub pv_succ: Map<Task, Vec<Task>>,
+  pub pv_pred: Map<Task, Vec<Task>>,
   pub odepot: Task,
   pub ddepot: Task,
 }
@@ -362,6 +377,7 @@ impl Tasks {
 
 
     // Lookups
+    let mut by_shorthand = map_with_capacity(all.len());
     let mut by_start: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc as usize);
     let mut by_end: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc as usize);
     let mut by_locs: Map<(Loc, Loc), Vec<_>> = map_with_capacity(data.travel_time.len());
@@ -398,6 +414,17 @@ impl Tasks {
         trace!(?t1, t1_succ=?&t1_succ);
       }
       succ.insert(t1, t1_succ);
+
+      // shorthand for querying tasks
+      match t1.ty {
+        TaskType::ODepot => by_shorthand.insert(ShorthandTask::ODepot, t1),
+        TaskType::DDepot => by_shorthand.insert(ShorthandTask::DDepot, t1),
+        TaskType::Request => by_shorthand.insert(ShorthandTask::Request(t1.p.unwrap(), t1.start.req()), t1),
+        TaskType::Transfer => by_shorthand.insert(ShorthandTask::Transfer(t1.p.unwrap(), t1.start.req(), t1.end.req()), t1),
+        TaskType::Start => by_shorthand.insert(ShorthandTask::Start(t1.p.unwrap(), t1.end.req()), t1),
+        TaskType::End => by_shorthand.insert(ShorthandTask::End(t1.p.unwrap(), t1.start.req()), t1),
+        TaskType::Direct => by_shorthand.insert(ShorthandTask::Direct(t1.p.unwrap()), t1),
+      };
     }
 
     let mut compat_with_av: Map<_, _> = sets.avs()
@@ -436,8 +463,108 @@ impl Tasks {
         similar_tasks.insert(t1, vec![t1]);
       }
     }
+    let (pv_succ, pv_pred) = Self::build_pv_succ_pred_lookup(data, &all, &by_start, &by_end, &by_shorthand);
+    Tasks {
+      all,
+      by_id,
+      by_pv,
+      by_cover,
+      by_locs,
+      by_end,
+      by_start,
+      by_shorthand,
+      similar_tasks,
+      succ,
+      pred,
+      pv_succ,
+      pv_pred,
+      odepot,
+      compat_with_av,
+      ddepot,
+    }
+  }
 
-    Tasks { all, by_id, by_pv, by_cover, by_locs, by_end, by_start, similar_tasks, succ, pred, odepot, compat_with_av, ddepot }
+
+  fn build_pv_succ_pred_lookup(data : &Data,
+                               all: &Vec<Task>,
+                               by_start: &Map<Loc, Vec<Task>>,
+                               by_end: &Map<Loc, Vec<Task>>,
+                               by_shorthand: &Map<ShorthandTask, Task>,
+  ) -> (Map<Task, Vec<Task>>, Map<Task, Vec<Task>>) {
+    use ShorthandTask::*;
+    let mut pv_succ: Map<_, Vec<_>> = map_with_capacity(all.len());
+    let mut pv_pred: Map<_, Vec<_>> = map_with_capacity(all.len());
+    let dummy_task = by_shorthand[&ODepot];
+
+    for &t1 in all {
+        match t1.ty {
+        TaskType::ODepot | TaskType::DDepot | TaskType::Direct => {}
+        TaskType::Start => {
+          pv_succ.insert(t1, vec![by_shorthand[&Request(t1.p.unwrap(), t1.end.req())]]);
+        }
+        TaskType::End => {
+          pv_pred.insert(t1, vec![by_shorthand[&Request(t1.p.unwrap(), t1.start.req())]]);
+        }
+        TaskType::Transfer => {
+          pv_succ.insert(t1, vec![by_shorthand[&Request(t1.p.unwrap(), t1.end.req())]]);
+          pv_pred.insert(t1, vec![by_shorthand[&Request(t1.p.unwrap(), t1.start.req())]]);
+        }
+
+        TaskType::Request => {
+          let p = t1.p.unwrap();
+          let r = t1.start.req();
+
+          let mut path = [dummy_task, dummy_task, dummy_task, t1, by_shorthand[&End(p, r)]];
+          let mut t1_pred = Vec::with_capacity(1);
+
+          for &t_before in &by_end[&t1.start] {
+            match t_before.ty {
+              TaskType::Start => t1_pred.push(t_before),
+              TaskType::Transfer => {
+                if t_before.p == t1.p {
+                  let r_before = t_before.start.req();
+                  path[0] = by_shorthand[&Start(p, r_before)];
+                  path[1] = by_shorthand[&Request(p, r_before)];
+                  path[2] = t_before;
+
+                  if schedule::check_pv_route(data, &path) {
+                    t1_pred.push(t_before);
+                  }
+                }
+              }
+              _ => unreachable!()
+            }
+          }
+
+          let mut path = [by_shorthand[&Start(p, r)], t1, dummy_task, dummy_task, dummy_task];
+          let mut t1_succ = Vec::with_capacity(1);
+
+          for &t_after in &by_start[&t1.end] {
+            match t_after.ty {
+              TaskType::End => t1_succ.push(t_after),
+              TaskType::Transfer  => {
+                if t_after.p == t1.p {
+                  let r_after = t_after.end.req();
+                  path[2] = t_after;
+                  path[3] = by_shorthand[&Request(p, r_after)];
+                  path[4] = by_shorthand[&End(p, r_after)];
+
+                  if schedule::check_pv_route(data, &path) {
+                    t1_succ.push(t_after);
+                  }
+                }
+
+              }
+              _ => unreachable!()
+            }
+          }
+
+          pv_pred.insert(t1, t1_pred);
+          pv_succ.insert(t1, t1_succ);
+        }
+      }
+    }
+    (pv_succ, pv_pred)
   }
 }
 
@@ -525,8 +652,6 @@ pub fn update_implied_cover_before(visited: &mut FnvHashSet<Loc>, task: &Task) -
 
   !cover_violation
 }
-
-
 
 
 pub fn update_implied_cover_after(visited: &mut FnvHashSet<Loc>, task: &Task) -> bool {
