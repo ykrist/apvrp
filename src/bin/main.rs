@@ -40,6 +40,7 @@ fn earliest_departures(data: &Data) -> Map<(Pv, Req), Time> {
 
 #[tracing::instrument]
 fn main() -> Result<()> {
+
   #[allow(non_snake_case)]
   let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
 
@@ -66,6 +67,8 @@ fn main() -> Result<()> {
   // `pv_req_t_start` is the earliest time we can *depart* from request r's pickup with passive vehicle p
   let pv_req_t_start = earliest_departures(&data);
   let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
+  let QQQ = crate::solution::load_michael_soln("/home/yannik/phd/src/apvrp/scrap/0.json", &tasks, &LocSetStarts::new(data.n_passive, data.n_req))?;
+
   info!(num_tasks=tasks.all.len(), "task generation finished");
 
   let mut mp = model::mp::TaskModelMaster::build(&data, &sets, &tasks, ObjWeights::default())?;

@@ -30,7 +30,7 @@ impl MpVars {
     let mut x = map_with_capacity(tasks.all.len());
     for &t in &tasks.all {
       let obj_coeff =
-        if !t.is_depot() { obj_param.tt *( data.travel_cost[&(t.start, t.end)] as f64) }
+        if !t.is_depot() { obj_param.tt * ( data.travel_cost[&(t.start, t.end)] as f64) }
         else { 0.0 };
       x.insert(t, add_binvar!(model, name: &format!("X[{:?}]", &t), obj: obj_coeff)?);
     }
