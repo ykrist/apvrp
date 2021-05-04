@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::fs::read_to_string;
 use std::path::Path;
 use anyhow::Context;
-
+use tracing::trace;
 
 #[derive(Clone)]
 pub struct Solution {
@@ -138,15 +138,18 @@ struct JsonSolution {
   pv_routes: Map<String, Vec<JsonTask>>,
 }
 
-
+#[tracing::instrument(level="trace")]
 fn json_task_to_sh_task(lss: &LocSetStarts, st: &JsonTask) -> ShorthandTask {
   use ShorthandTask::*;
 
   let start = Loc::decode(st.start, lss);
   let end = Loc::decode(st.end, lss);
-  let p = if st.p < 0 { None } else { Some(st.p as Pv) };
-
-  match start {
+  let p =
+    if st.p < 0 { None }
+    else if st.p == 0 { unreachable!() }
+    else { Some(st.p as Pv - 1) };
+    
+  let sht = match start {
     Loc::Ao => ODepot,
     Loc::Ad => DDepot,
     Loc::ReqP(r) => Request(p.unwrap(), r),
@@ -165,7 +168,9 @@ fn json_task_to_sh_task(lss: &LocSetStarts, st: &JsonTask) -> ShorthandTask {
       }
     }
     _ => unreachable!("unmatched start: start={:?}, end={:?}", start, end)
-  }
+  };
+  trace!(sh_task=?sht);
+  sht
 }
 
 pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &Tasks, lss: &LocSetStarts) -> Result<Solution> {
