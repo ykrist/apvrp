@@ -163,5 +163,6 @@ pub use utils::{iter_cycle};
 use fnv::FnvHashSet;
 
 pub mod schedule;
+pub mod experiment;
 
 // TODO tests for encode and decode.

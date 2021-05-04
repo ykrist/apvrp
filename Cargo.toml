@@ -20,6 +20,8 @@ tracing-subscriber = { version = "0.2", features = ["json"] }
 tracing-appender = "0.1"
 variant_count = "^1.1.0"
 prettytable-rs = "^0.8"
+slurm-harray = { git = "ssh://git@bitbucket.org/yannik_rist/slurm-utils-rs.git" }
+clap = "2.33.3"
 
 [[bin]]
 name = "apvrp"

@@ -6,6 +6,7 @@ use apvrp::model::mp::ObjWeights;
 use instances::dataset::apvrp::LocSetStarts;
 use tracing::trace;
 use grb::prelude::*;
+use slurm_harray::{Experiment, handle_slurm_args};
 
 fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
   use instances::{
@@ -44,16 +45,16 @@ fn main() -> Result<()> {
   #[allow(non_snake_case)]
   let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
 
+  let exp: experiment::ApvrpExp = handle_slurm_args()?;
+  exp.write_index_file()?;
+  exp.write_parameter_file()?;
 
-  let _g = logging::init_logging(Some("log.ndjson"), Some("apvrp.logfilter"));
-  let idx: usize = std::env::args().into_iter().skip(1).next()
-    .ok_or(anyhow::Error::msg("Expected integer argument"))?
-    .parse()?;
-  info!(idx);
+  let _g = logging::init_logging(Some(exp.get_output_path(&exp.outputs.trace_log)), Some("apvrp.logfilter"));
+  info!(inputs=?exp.inputs, params=?exp.parameters);
 
   let data = {
-    let mut d = dataset(0.5).load_instance(idx)?;
-    let _span = info_span!("preprocess", idx, id=%d.id).entered();
+    let mut d = dataset(0.5).load_instance(exp.inputs.index)?;
+    let _span = info_span!("preprocess", idx=exp.inputs.index, id=%d.id).entered();
     info!("loaded instance");
     preprocess::pv_req_timing_compat(&mut d);
     let lss = LocSetStarts::new(d.n_passive, d.n_req);
@@ -85,7 +86,7 @@ fn main() -> Result<()> {
 
   mp.model.set_obj_attr_batch( attr::Sense, mp.cons.num_av.values().map(|&c| (c, ConstrSense::Equal)))?;
   mp.model.update()?;
-  let mut callback = model::cb::Cb::new(&data, &sets, &tasks, &mp)?;
+  let mut callback = model::cb::Cb::new(&data, &exp, &sets, &tasks, &mp)?;
   let opt_res = mp.model.optimize_with_callback(&mut callback);
   match opt_res {
     Err(e) => tracing::error!(err=%e, "error during optimisation"),

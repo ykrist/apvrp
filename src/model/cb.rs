@@ -13,6 +13,8 @@ use anyhow::Context;
 use std::hash::Hash;
 use std::env::var;
 use std::collections::{HashSet, HashMap};
+use experiment::Params;
+use slurm_harray::ExperimentAuto;
 
 #[derive(Debug, Clone)]
 pub enum CbError {
@@ -110,12 +112,13 @@ pub struct Cb<'a> {
   cut_cache: Vec<(String, IneqExpr)>,
   av_cycles: HashMap<Vec<Task>, usize>,
   sp_env: Env,
+  params: &'a Params,
 }
 
 impl<'a> Cb<'a> {
   pub fn sp_env(&self) -> &Env { &self.sp_env }
 
-  pub fn new(data: &'a Data, sets: &'a Sets, tasks: &'a Tasks, mp: &super::mp::TaskModelMaster) -> Result<Self> {
+  pub fn new(data: &'a Data, exp: &'a experiment::ApvrpExp, sets: &'a Sets, tasks: &'a Tasks, mp: &super::mp::TaskModelMaster) -> Result<Self> {
     let stats = CbStats::default();
     let var_names: Map<_, _> = {
       let vars = mp.model.get_vars()?;
@@ -144,6 +147,7 @@ impl<'a> Cb<'a> {
       sp_env,
       var_names,
       av_cycles: Default::default(),
+      params: &exp.parameters
     })
   }
 
@@ -396,17 +400,34 @@ impl<'a> Cb<'a> {
 
       if !schedule::check_pv_route(self.data, &pv_path) {
         let chain = self.shorten_illegal_pv_chain(&pv_path);
-        self.pv_chain_infork_cut(chain);
-        self.pv_chain_outfork_cut(chain);
+        if chain.len() >= self.params.pv_fork_cuts_min_chain_len
+          && chain.len() <= self.params.pv_fork_cuts_max_chain_len {
+          self.pv_chain_infork_cut(chain);
+          self.pv_chain_outfork_cut(chain);
+        }
       }
       pv_routes.push((pv, pv_path));
     }
     Ok(pv_routes)
   }
 
+  fn av_chain_cuts(&mut self, chain: &[Task]) {
+    if self.params.av_fork_cuts_min_chain_len <= chain.len() &&
+      chain.len() <= self.params.av_fork_cuts_max_chain_len {
+      self.av_chain_infork_cut(&chain);
+      self.av_chain_outfork_cut(&chain);
+    }
+
+    if self.params.av_tournament_cuts_min_chain_len <= chain.len()
+      && chain.len() <= self.params.av_tournament_cuts_max_chain_len {
+      self.av_chain_tournament_cut(&chain);
+    }
+  }
+
   fn sep_av_cuts(&mut self, ctx: &MIPSolCtx) -> Result<Vec<(Av, AvPath)>> {
     let task_pairs = get_task_pairs_by_av(ctx, &self.mp_vars.y)?;
     let mut av_routes = Vec::with_capacity(task_pairs.len());
+
     for (&av, av_task_pairs) in &task_pairs {
       let (av_paths, av_cycles) = construct_av_routes(av_task_pairs);
       if av_cycles.len() > 0 {
@@ -414,9 +435,7 @@ impl<'a> Cb<'a> {
         trace!(?av_cycles);
         for cycle in av_cycles {
           if let Some(chain) = self.illegal_av_chain_in_cycle(&cycle) {
-            self.av_chain_infork_cut(&chain);
-            self.av_chain_outfork_cut(&chain);
-            self.av_chain_tournament_cut(&chain);
+            self.av_chain_cuts(&chain);
           } else {
             self.av_cycle_cut(&cycle);
           }
@@ -426,9 +445,7 @@ impl<'a> Cb<'a> {
       for av_path in av_paths {
         if !schedule::check_av_route(self.data, &av_path) {
           let chain = self.shorten_illegal_av_chain(&av_path);
-          self.av_chain_infork_cut(&chain);
-          self.av_chain_outfork_cut(&chain);
-          self.av_chain_tournament_cut(&chain);
+          self.av_chain_cuts(chain);
         }
         av_routes.push((av, av_path));
       }
