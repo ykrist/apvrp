@@ -91,13 +91,20 @@ fn main() -> Result<()> {
     Err(e) => tracing::error!(err=%e, "error during optimisation"),
     Ok(_) => {}
   };
+
+  let sol =solution::Solution::from_mp(&mp)?;
+  let sol = sol.solve_for_times(callback.sp_env(), &data, &tasks)?;
+  sol.pretty_print(&data);
+
   callback.flush_cut_cache(&mut mp.model)?;
   mp.model.update()?;
-  mp.model.write("master_problem.lp")?;
+  // mp.model.write("master_problem.lp")?;
 
   for (cut_ty, num) in callback.stats.get_cut_counts() {
     println!("Num {:?} Cuts: {}", cut_ty, num);
   }
+
+
 
   // let tasks: Vec<RawPvTask> = tasks.all.into_iter().filter_map(RawPvTask::new).collect();
   // let task_filename = format!("scrap/tasks/{}.json", idx);
