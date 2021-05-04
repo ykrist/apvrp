@@ -4,12 +4,11 @@ use grb::prelude::*;
 use fnv::FnvHashSet;
 use grb::constr::IneqExpr;
 use super::mp::MpVars;
-use super::cb::{AvPath, PvPath, CbError};
+use super::cb::{CbError};
 use tracing::{error_span, debug, trace, error};
 use crate::TaskType::ODepot;
 use itertools::Itertools;
-use crate::solution::SpSolution;
-use crate::model::cb::get_var_values;
+use crate::solution::*;
 
 pub struct SpConstraints {
   av_sync: Map<(Task, Task), Constr>,
