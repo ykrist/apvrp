@@ -586,7 +586,7 @@ impl<'a> Callback for Cb<'a> {
         let initial_cut_cache_len = self.cut_cache.len();
 
         let pv_tasks = self.get_tasks_by_pv(&ctx)?;
-        let mut pv_routes = map_with_capacity(pv_tasks.len());
+        let mut pv_routes = Vec::with_capacity(pv_tasks.len());
         for (&pv, tasks) in &pv_tasks {
           let (pv_path, pv_cycles) = construct_pv_route(tasks);
 
@@ -599,7 +599,7 @@ impl<'a> Callback for Cb<'a> {
             self.pv_chain_infork_cut(chain);
             self.pv_chain_outfork_cut(chain);
           }
-          pv_routes.insert(pv, pv_path);
+          pv_routes.push((pv, pv_path));
         }
 
         if self.cut_cache.len() > initial_cut_cache_len {
@@ -608,7 +608,7 @@ impl<'a> Callback for Cb<'a> {
         }
 
         let task_pairs = self.get_task_pairs_by_av(&ctx)?;
-        let mut av_routes = map_with_capacity(task_pairs.len());
+        let mut av_routes = Vec::with_capacity(task_pairs.len());
         for (&av, av_task_pairs) in &task_pairs {
           let (av_paths, av_cycles) = construct_av_routes(av_task_pairs);
           if av_cycles.len() > 0 {
@@ -625,15 +625,15 @@ impl<'a> Callback for Cb<'a> {
             }
           }
 
-          for av_path in &av_paths {
-            if !schedule::check_av_route(self.data, av_path) {
-              let chain = self.shorten_illegal_av_chain(av_path);
+          for av_path in av_paths {
+            if !schedule::check_av_route(self.data, &av_path) {
+              let chain = self.shorten_illegal_av_chain(&av_path);
               self.av_chain_infork_cut(&chain);
               self.av_chain_outfork_cut(&chain);
               self.av_chain_tournament_cut(&chain);
             }
+            av_routes.push((av, av_path));
           }
-          av_routes.insert(av, av_paths);
         }
 
         if self.cut_cache.len() > initial_cut_cache_len {

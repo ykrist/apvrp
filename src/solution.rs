@@ -30,28 +30,25 @@ impl<'a> SpSolution<'a> {
       .collect();
 
     let mut avr: Vec<_> = sp.av_routes.iter()
-      .flat_map(|(&av, routes)| {
-        let task_start_times = &task_start_times;
-        routes.iter().map(move |route| {
-          let mut sched: Vec<_> = route[..route.len() - 1].iter()
-            .map(|task| (*task, *task_start_times.get(task).unwrap_or(&0)))
-            .collect();
+      .map(|(av, route)| {
+        let mut sched: Vec<_> = route[..route.len() - 1].iter()
+          .map(|task| (*task, *task_start_times.get(task).unwrap_or(&0)))
+          .collect();
 
-          let (second_last_task, t) = sched.last().unwrap().clone();
-          let ddepot_task = route.last().unwrap().clone();
-          debug_assert_eq!(ddepot_task.ty, TaskType::DDepot);
-          sched.push((ddepot_task, t + second_last_task.tt + sp.data.travel_time[&(second_last_task.end, ddepot_task.start)]));
-          (av, sched)
-        })
+        let (second_last_task, t) = sched.last().unwrap().clone();
+        let ddepot_task = route.last().unwrap().clone();
+        debug_assert_eq!(ddepot_task.ty, TaskType::DDepot);
+        sched.push((ddepot_task, t + second_last_task.tt + sp.data.travel_time[&(second_last_task.end, ddepot_task.start)]));
+        (*av, sched)
       })
       .collect();
 
     avr.sort_by_key(|(av, _)| *av);
 
     let mut pvr: Vec<_> = sp.pv_routes.iter()
-      .map(|(&pv, route)| {
+      .map(|(pv, route)| {
         let sched = route.iter().map(|t| (*t, task_start_times[t])).collect();
-        (pv, sched)
+        (*pv, sched)
       })
       .collect();
 
@@ -138,17 +135,15 @@ struct JsonSolution {
   pv_routes: Map<String, Vec<JsonTask>>,
 }
 
-#[tracing::instrument(level="trace")]
+#[tracing::instrument(level = "trace")]
 fn json_task_to_sh_task(lss: &LocSetStarts, st: &JsonTask) -> ShorthandTask {
   use ShorthandTask::*;
 
   let start = Loc::decode(st.start, lss);
   let end = Loc::decode(st.end, lss);
   let p =
-    if st.p < 0 { None }
-    else if st.p == 0 { unreachable!() }
-    else { Some(st.p as Pv - 1) };
-    
+    if st.p < 0 { None } else if st.p == 0 { unreachable!() } else { Some(st.p as Pv - 1) };
+
   let sht = match start {
     Loc::Ao => ODepot,
     Loc::Ad => DDepot,

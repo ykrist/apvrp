@@ -20,19 +20,17 @@ pub struct SpConstraints {
 }
 
 impl SpConstraints {
-  pub fn build(data: &Data, tasks: &Tasks, av_routes: &Map<Avg, Vec<AvPath>>, pv_routes: &Map<Pv, PvPath>, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
+  pub fn build(data: &Data, tasks: &Tasks, av_routes: &Vec<(Avg, AvPath)>, pv_routes: &Vec<(Pv, PvPath)>, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
     let _span = error_span!("sp_cons").entered();
 
     // Constraints (3b)
     let mut av_sync = map_with_capacity(vars.len()); // slightly too big but close enough
-    for routes in av_routes.values() {
-      for task_pairs in routes {
-        for (&t1, &t2) in task_pairs.iter().tuple_windows() {
-          if t1 != tasks.odepot && t2 != tasks.ddepot {
-            trace!(?t1, ?t2, "av_sync");
-            let c = c!(vars[&t1] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
-            av_sync.insert((t1, t2), model.add_constr("", c)?);
-          }
+    for (_, route) in av_routes {
+      for (&t1, &t2) in route.iter().tuple_windows() {
+        if t1 != tasks.odepot && t2 != tasks.ddepot {
+          trace!(?t1, ?t2, "av_sync");
+          let c = c!(vars[&t1] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
+          av_sync.insert((t1, t2), model.add_constr("", c)?);
         }
       }
     }
@@ -50,7 +48,7 @@ impl SpConstraints {
       Ok(())
     };
 
-    for pv_route in pv_routes.values() {
+    for (_, pv_route) in pv_routes {
       let mut pv_route = pv_route.iter();
       let mut t1 = *pv_route.next().unwrap();
       add_bounds(t1, model)?;
@@ -97,7 +95,7 @@ pub struct OptCut {
   /// Task-to-task pairs which must ALL be active for the cut to be active
   pub task_pairs: Vec<(Task, Task)>,
   /// Tasks which appear in the objective.
-  pub obj_tasks: Vec<Task>
+  pub obj_tasks: Vec<Task>,
 }
 
 impl OptCut {
@@ -111,7 +109,7 @@ impl OptCut {
       // if t2.ty == TaskType::DDepot
       //   || model.get_obj_attr(attr::Pi, c)?.abs() > 1e-8
       // {
-        task_pairs.push((t1, t2));
+      task_pairs.push((t1, t2));
       // }
     }
 
@@ -200,20 +198,20 @@ pub struct TimingSubproblem<'a> {
   pub vars: Map<Task, Var>,
   pub cons: SpConstraints,
   pub model: Model,
-  pub av_routes: &'a Map<Avg, Vec<AvPath>>,
-  pub pv_routes: &'a Map<Pv, PvPath>,
+  pub av_routes: &'a Vec<(Avg, AvPath)>,
+  pub pv_routes: &'a Vec<(Pv, PvPath)>,
   pub data: &'a Data,
 }
 
 
 impl<'a> TimingSubproblem<'a> {
-  pub fn build(env: &Env, data: &'a Data, tasks: &Tasks, av_routes: &'a Map<Avg, Vec<AvPath>>, pv_routes: &'a Map<Pv, PvPath>) -> Result<TimingSubproblem<'a>> {
+  pub fn build(env: &Env, data: &'a Data, tasks: &Tasks, av_routes: &'a Vec<(Avg, AvPath)>, pv_routes: &'a Vec<(Pv, PvPath)>) -> Result<TimingSubproblem<'a>> {
     let _span = error_span!("sp_build").entered();
 
     let mut model = Model::with_env("subproblem", env)?;
     let vars: Map<_, _> = {
-      let mut v = map_with_capacity(pv_routes.values().map(|tasks| tasks.len()).sum());
-      for tasks in pv_routes.values() {
+      let mut v = map_with_capacity(pv_routes.iter().map(|(_, tasks)| tasks.len()).sum());
+      for (_, tasks) in pv_routes {
         for &t in tasks {
           v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
         }
@@ -224,10 +222,9 @@ impl<'a> TimingSubproblem<'a> {
     let cons = SpConstraints::build(data, tasks, av_routes, pv_routes, &mut model, &vars)?;
 
     let mut obj_constant = 0.0;
-    let obj = av_routes.values()
-      .flat_map(|routes| routes.iter())
-      .map(|route| {
-        let second_last_task = &route[route.len()-2];
+    let obj = av_routes.iter()
+      .map(|(_, route)| {
+        let second_last_task = &route[route.len() - 2];
         obj_constant += (second_last_task.tt + data.travel_time[&(second_last_task.end, Loc::Ad)]) as f64;
         trace!(?second_last_task);
         vars[second_last_task]
