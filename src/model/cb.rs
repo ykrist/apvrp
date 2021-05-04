@@ -5,7 +5,7 @@ use grb::prelude::*;
 use grb::callback::{Callback, Where, CbResult, MIPSolCtx};
 use fnv::FnvHashSet;
 use super::sp::{BendersCut, TimingSubproblem};
-use tracing::{info, info_span, debug, trace, error_span, warn};
+use tracing::{info, info_span, debug, trace, error_span, warn, error};
 use std::fmt;
 use grb::constr::IneqExpr;
 use variant_count::VariantCount;
@@ -113,6 +113,8 @@ pub struct Cb<'a> {
   av_cycles: HashMap<Vec<Task>, usize>,
   sp_env: Env,
   params: &'a Params,
+  #[cfg(debug_assertions)]
+  var_vals: Map<Var, f64>,
 }
 
 impl<'a> Cb<'a> {
@@ -147,7 +149,9 @@ impl<'a> Cb<'a> {
       sp_env,
       var_names,
       av_cycles: Default::default(),
-      params: &exp.parameters
+      params: &exp.parameters,
+      #[cfg(debug_assertions)]
+      var_vals: Map::default(),
     })
   }
 
@@ -155,7 +159,17 @@ impl<'a> Cb<'a> {
   pub fn enqueue_cut(&mut self, cut: IneqExpr, ty: CutType) {
     let i = self.stats.inc_cut_count(ty, 1);
     let name = format!("{:?}[{}]", ty, i);
-    trace!(cut=?cut.with_names(&self.var_names));
+
+    #[cfg(debug_assertions)]
+    {
+      let (lhs, rhs) = cut.evaluate(&self.var_vals);
+      if lhs <= rhs + 1e-6  {
+        error!(?lhs, ?rhs, cut=?cut.with_names(&self.var_names), "cut is not violated!");
+        panic!("found a bug!"); // FIXME INDEX 1 crashes here quickly
+      }
+      trace!(?lhs, ?rhs, cut=?cut.with_names(&self.var_names));
+    }
+
     self.cut_cache.push((name, cut));
   }
 
@@ -452,6 +466,19 @@ impl<'a> Cb<'a> {
     }
     Ok(av_routes)
   }
+
+  fn update_var_values(&mut self,  ctx: &MIPSolCtx) -> Result<()> {
+    // self.var_vals.clear();
+
+    let vars = self.mp_vars.x.values()
+      .chain(self.mp_vars.y.values());
+
+    for (&var, val) in vars.clone().zip(ctx.get_solution(vars)?) {
+      self.var_vals.insert(var, val);
+    }
+    Ok(())
+  }
+
 }
 
 
@@ -468,6 +495,10 @@ impl<'a> Callback for Cb<'a> {
         debug!("integer MP solution found");
         let initial_cut_cache_len = self.cut_cache.len();
         let pv_routes = self.sep_pv_cuts(&ctx)?;
+
+        #[cfg(debug_assertions)]
+          self.update_var_values(&ctx)?;
+
 
         if self.cut_cache.len() > initial_cut_cache_len {
           info!(ncuts = self.cut_cache.len() - initial_cut_cache_len, "heuristic cuts added (PV only)");
