@@ -14,17 +14,23 @@ pub struct Solution {
   pub pv_routes: Vec<(Pv, Vec<Task>)>,
 }
 
+impl Solution {
+  pub fn solve_for_times(&self, env: &grb::Env, data: &Data, tasks: &Tasks) -> Result<SpSolution> {
+    let mut sp = TimingSubproblem::build(env, data, tasks, &self.av_routes, &self.pv_routes)?;
+    sp.model.optimize()?;
+    SpSolution::from_sp(&sp)
+  }
+}
 
 #[derive(Clone)]
-pub struct SpSolution<'a> {
+pub struct SpSolution {
   pub av_routes: Vec<(Avg, Vec<(Task, Time)>)>,
   pub pv_routes: Vec<(Pv, Vec<(Task, Time)>)>,
-  pub data: &'a Data,
 }
 
 
-impl<'a> SpSolution<'a> {
-  pub fn from_sp(sp: &'a TimingSubproblem) -> Result<SpSolution<'a>> {
+impl SpSolution {
+  pub fn from_sp(sp: &TimingSubproblem) -> Result<SpSolution> {
     let task_start_times: Map<_, _> = get_var_values(&sp.model, &sp.vars)?
       .map(|(task, time)| (task, time.round() as Time))
       .collect();
@@ -54,10 +60,10 @@ impl<'a> SpSolution<'a> {
 
     pvr.sort_by_key(|(pv, _)| *pv);
 
-    Ok(SpSolution { av_routes: avr, pv_routes: pvr, data: &sp.data })
+    Ok(SpSolution { av_routes: avr, pv_routes: pvr })
   }
 
-  pub fn pretty_print(&self) {
+  pub fn pretty_print(&self, data: &Data) {
     use prettytable::*;
 
     for (av, route) in &self.av_routes {
@@ -73,7 +79,7 @@ impl<'a> SpSolution<'a> {
         st_row.push(cell!(format!("{:?}", t1)));
         st_row.push(cell!(format!("")));
         tt_time.push(cell!(format!("{:?}", task1.tt)));
-        tt_time.push(cell!(self.data.travel_time[&(task1.end, task2.start)]));
+        tt_time.push(cell!(data.travel_time[&(task1.end, task2.start)]));
       }
 
       if let Some((task, t)) = route.last() {
@@ -142,7 +148,9 @@ fn json_task_to_sh_task(lss: &LocSetStarts, st: &JsonTask) -> ShorthandTask {
   let start = Loc::decode(st.start, lss);
   let end = Loc::decode(st.end, lss);
   let p =
-    if st.p < 0 { None } else if st.p == 0 { unreachable!() } else { Some(st.p as Pv - 1) };
+    if st.p < 0 { None }
+    else if st.p == 0 { unreachable!() }
+    else { Some(st.p as Pv - 1) };
 
   let sht = match start {
     Loc::Ao => ODepot,

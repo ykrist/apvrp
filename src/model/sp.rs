@@ -254,7 +254,7 @@ impl<'a> TimingSubproblem<'a> {
         debug!(obj);
         trace!(T=?get_var_values(&self.model, &self.vars)?.collect_vec());
         if estimate > obj {
-          SpSolution::from_sp(&self)?.pretty_print();
+          SpSolution::from_sp(&self)?.pretty_print(self.data);
           error!(obj, "invalid Benders cut");
           return Err(CbError::Assertion.into());
         }
