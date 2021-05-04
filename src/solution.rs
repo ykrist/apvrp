@@ -238,7 +238,11 @@ impl Solution {
   pub fn solve_for_times(&self, env: &grb::Env, data: &Data, tasks: &Tasks) -> Result<SpSolution> {
     let mut sp = TimingSubproblem::build(env, data, tasks, &self.av_routes, &self.pv_routes)?;
     sp.model.optimize()?;
-    SpSolution::from_sp(&sp)
+    use grb::Status::*;
+    match sp.model.status()? {
+      Optimal => SpSolution::from_sp(&sp),
+      status => Err(anyhow::anyhow!("unexpected subproblem status: {:?}", status)),
+    }
   }
 }
 

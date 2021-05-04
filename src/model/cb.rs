@@ -338,7 +338,7 @@ impl<'a> Cb<'a> {
     None
   }
 
-
+  #[tracing::instrument(level="trace", skip(self))]
   fn pv_cycle_cut(&mut self, cycle: &PvPath) {
     let xsum = cycle.iter()
       .flat_map(|t|
@@ -354,6 +354,7 @@ impl<'a> Cb<'a> {
   // }
   //
   #[allow(unused_variables)]
+  #[tracing::instrument(level="trace", skip(self))]
   fn pv_chain_infork_cut(&mut self, chain: &[Task]) {
     let chain = &chain[1..];
     let rhs_sum = chain.pv_legal_before(self.data, self.tasks)
@@ -368,6 +369,7 @@ impl<'a> Cb<'a> {
   }
 
   #[allow(unused_variables)]
+  #[tracing::instrument(level="trace", skip(self))]
   fn pv_chain_outfork_cut(&mut self, chain: &[Task]) {
     let chain = &chain[..chain.len()-1];
     let rhs_sum = chain.pv_legal_after(self.data, self.tasks)

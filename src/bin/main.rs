@@ -67,7 +67,7 @@ fn main() -> Result<()> {
   // `pv_req_t_start` is the earliest time we can *depart* from request r's pickup with passive vehicle p
   let pv_req_t_start = earliest_departures(&data);
   let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
-  let QQQ = crate::solution::load_michael_soln("/home/yannik/phd/src/apvrp/scrap/0.json", &tasks, &LocSetStarts::new(data.n_passive, data.n_req))?;
+  // let QQQ = crate::solution::load_michael_soln("/home/yannik/phd/src/apvrp/scrap/0.json", &tasks, &LocSetStarts::new(data.n_passive, data.n_req))?;
 
   info!(num_tasks=tasks.all.len(), "task generation finished");
 
@@ -92,7 +92,7 @@ fn main() -> Result<()> {
     Ok(_) => {}
   };
 
-  let sol =solution::Solution::from_mp(&mp)?;
+  let sol = solution::Solution::from_mp(&mp)?;
   let sol = sol.solve_for_times(callback.sp_env(), &data, &tasks)?;
   sol.pretty_print(&data);
 

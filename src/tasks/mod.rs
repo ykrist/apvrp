@@ -485,7 +485,7 @@ impl Tasks {
   }
 
 
-  fn build_pv_succ_pred_lookup(data : &Data,
+  fn build_pv_succ_pred_lookup(data: &Data,
                                all: &Vec<Task>,
                                by_start: &Map<Loc, Vec<Task>>,
                                by_end: &Map<Loc, Vec<Task>>,
@@ -497,7 +497,7 @@ impl Tasks {
     let dummy_task = by_shorthand[&ODepot];
 
     for &t1 in all {
-        match t1.ty {
+      match t1.ty {
         TaskType::ODepot | TaskType::DDepot | TaskType::Direct => {}
         TaskType::Start => {
           pv_succ.insert(t1, vec![by_shorthand[&Request(t1.p.unwrap(), t1.end.req())]]);
@@ -517,19 +517,17 @@ impl Tasks {
           let mut path = [dummy_task, dummy_task, dummy_task, t1, by_shorthand[&End(p, r)]];
           let mut t1_pred = Vec::with_capacity(1);
 
-          for &t_before in &by_end[&t1.start] {
+          for &t_before in by_end[&t1.start].iter().filter(|t2| t2.p == t1.p) {
             match t_before.ty {
               TaskType::Start => t1_pred.push(t_before),
               TaskType::Transfer => {
-                if t_before.p == t1.p {
-                  let r_before = t_before.start.req();
-                  path[0] = by_shorthand[&Start(p, r_before)];
-                  path[1] = by_shorthand[&Request(p, r_before)];
-                  path[2] = t_before;
+                let r_before = t_before.start.req();
+                path[0] = by_shorthand[&Start(p, r_before)];
+                path[1] = by_shorthand[&Request(p, r_before)];
+                path[2] = t_before;
 
-                  if schedule::check_pv_route(data, &path) {
-                    t1_pred.push(t_before);
-                  }
+                if schedule::check_pv_route(data, &path) {
+                  t1_pred.push(t_before);
                 }
               }
               _ => unreachable!()
@@ -539,21 +537,18 @@ impl Tasks {
           let mut path = [by_shorthand[&Start(p, r)], t1, dummy_task, dummy_task, dummy_task];
           let mut t1_succ = Vec::with_capacity(1);
 
-          for &t_after in &by_start[&t1.end] {
+          for &t_after in by_start[&t1.end].iter().filter(|t2| t2.p == t1.p) {
             match t_after.ty {
               TaskType::End => t1_succ.push(t_after),
-              TaskType::Transfer  => {
-                if t_after.p == t1.p {
-                  let r_after = t_after.end.req();
-                  path[2] = t_after;
-                  path[3] = by_shorthand[&Request(p, r_after)];
-                  path[4] = by_shorthand[&End(p, r_after)];
+              TaskType::Transfer => {
+                let r_after = t_after.end.req();
+                path[2] = t_after;
+                path[3] = by_shorthand[&Request(p, r_after)];
+                path[4] = by_shorthand[&End(p, r_after)];
 
-                  if schedule::check_pv_route(data, &path) {
-                    t1_succ.push(t_after);
-                  }
+                if schedule::check_pv_route(data, &path) {
+                  t1_succ.push(t_after);
                 }
-
               }
               _ => unreachable!()
             }

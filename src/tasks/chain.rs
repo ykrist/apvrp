@@ -211,8 +211,8 @@ impl<'a> PvLegalEndsIter<'a> {
     let p = first_task.p.expect("task should have a passive vehicle");
     let candidate_iter = tasks.pv_pred[&first_task].iter();
     let mut chain_template = Vec::with_capacity(chain.len() + 1);
-    chain_template.extend_from_slice(chain);
     chain_template.push(tasks.odepot); // placeholder
+    chain_template.extend_from_slice(chain);
     // replace_idx is a valid index since Vec is non-empty
     PvLegalEndsIter { replace_idx: 0, chain_template, candidate_iter, data }
   }
