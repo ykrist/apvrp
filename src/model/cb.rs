@@ -259,7 +259,32 @@ impl<'a> QueryVarValues for Model {
 #[inline]
 pub fn get_var_values<'a, M: QueryVarValues, K: Hash + Eq + Copy>(ctx: &M, var_dict: &'a Map<K, Var>) -> Result<impl Iterator<Item=(K, f64)> + 'a> {
   let vals = ctx.get(var_dict.values().copied())?;
-  Ok(var_dict.keys().copied().zip(vals).filter(|(_, v)| v.abs() > 1e-8))
+  Ok(var_dict.keys().copied().zip(vals).filter(|(_, v)| v.abs() > 0.9))
+}
+
+
+#[tracing::instrument(level = "trace", skip(ctx, yvars))]
+fn get_task_pairs_by_av<M: QueryVarValues>(ctx: &M, yvars: &Map<(Avg, Task, Task), Var>) -> Result<Map<Avg, Vec<(Task, Task)>>> {
+  let mut task_pairs = Map::default();
+
+  for ((av, t1, t2), val) in get_var_values(ctx, yvars)? {
+    trace!(av, ?t1, ?t2, ?val);
+    task_pairs.entry(av).or_insert_with(Vec::new).push((t1, t2));
+  }
+
+  Ok(task_pairs)
+}
+
+#[tracing::instrument(level = "trace", skip(ctx, xvars))]
+fn get_tasks_by_pv<M: QueryVarValues>(ctx: &M, xvars: &Map<Task, Var>) -> Result<Map<Pv, Vec<Task>>> {
+  let mut tasks = Map::default();
+
+  for (t, val) in get_var_values(ctx, xvars)? {
+    trace!(?t, ?val);
+    tasks.entry(t.p.unwrap()).or_insert_with(Vec::new).push(t);
+  }
+
+  Ok(tasks)
 }
 
 pub struct Cb<'a> {
@@ -321,37 +346,6 @@ impl<'a> Cb<'a> {
       mp.add_constr(&name, cut)?;
     }
     Ok(())
-  }
-
-  #[tracing::instrument(level = "trace", skip(self, ctx))]
-  fn get_tasks_by_pv(&self, ctx: &MIPSolCtx) -> anyhow::Result<Map<Pv, Vec<Task>>> {
-    let mut pv_tasks = map_with_capacity(self.data.n_passive as usize);
-
-    for (t, val) in self.mp_vars.x.keys()
-      .zip(ctx.get_solution(self.mp_vars.x.values())?) {
-      if val > 0.9 {
-        trace!(t=?&t, ?val, "non-zero X var");
-        if !t.is_depot() {
-          pv_tasks.entry(t.p.unwrap())
-            .or_insert_with(Vec::new)
-            .push(*t);
-        }
-      }
-    }
-    Ok(pv_tasks)
-  }
-
-  fn get_task_pairs_by_av(&self, ctx: &MIPSolCtx) -> anyhow::Result<Map<Avg, Vec<(Task, Task)>>> {
-    let mut task_pairs = map_with_capacity(self.data.av_groups.len());
-    for ((av, t1, t2), val) in self.mp_vars.y.keys()
-      .zip(ctx.get_solution(self.mp_vars.y.values())?)
-    {
-      if val > 0.9 {
-        trace!(av, ?t1, ?t2, ?val);
-        task_pairs.entry(*av).or_insert_with(Vec::new).push((*t1, *t2));
-      }
-    }
-    Ok(task_pairs)
   }
 
   #[tracing::instrument(level = "trace", skip(self))]
@@ -585,7 +579,7 @@ impl<'a> Callback for Cb<'a> {
         debug!("integer MP solution found");
         let initial_cut_cache_len = self.cut_cache.len();
 
-        let pv_tasks = self.get_tasks_by_pv(&ctx)?;
+        let pv_tasks = get_tasks_by_pv(&ctx, &self.mp_vars.x)?;
         let mut pv_routes = Vec::with_capacity(pv_tasks.len());
         for (&pv, tasks) in &pv_tasks {
           let (pv_path, pv_cycles) = construct_pv_route(tasks);
@@ -607,7 +601,7 @@ impl<'a> Callback for Cb<'a> {
           return Ok(())
         }
 
-        let task_pairs = self.get_task_pairs_by_av(&ctx)?;
+        let task_pairs = get_task_pairs_by_av(&ctx, &self.mp_vars.y)?;
         let mut av_routes = Vec::with_capacity(task_pairs.len());
         for (&av, av_task_pairs) in &task_pairs {
           let (av_paths, av_cycles) = construct_av_routes(av_task_pairs);
