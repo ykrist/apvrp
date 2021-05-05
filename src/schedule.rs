@@ -52,7 +52,8 @@ pub fn pv_route(data: &Data, tasks: &[Task]) -> Vec<Time> {
 }
 
 pub fn av_route(data: &Data, tasks: &[Task]) -> Vec<Time> {
-  let mut t = tasks[0].t_release;
+  let mut t = max(tasks[0].t_release, data.travel_time[&(Loc::Ao, tasks[0].start)]);
+
   let mut schedule = Vec::with_capacity(tasks.len());
   schedule.push(t);
 

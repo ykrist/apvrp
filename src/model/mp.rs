@@ -20,6 +20,7 @@ pub struct ObjWeights {
 }
 
 impl std::default::Default for ObjWeights {
+  // fn default() -> Self { ObjWeights { tt: 10.0, av_finish_time: 10.0, cover: 10_000.0 }}
   fn default() -> Self { ObjWeights { tt: 10.0, av_finish_time: 1.0, cover: 10_000.0 }}
   // fn default() -> Self { ObjWeights { tt: 10.0, av_finish_time: 0.0, cover: 10_000.0 }}
   // fn default() -> Self { ObjWeights { tt: 0.0, av_finish_time: 0.0, cover: 1.0 }}
