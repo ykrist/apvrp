@@ -468,14 +468,16 @@ impl<'a> Cb<'a> {
   }
 
   fn update_var_values(&mut self,  ctx: &MIPSolCtx) -> Result<()> {
-    // self.var_vals.clear();
+    #[cfg(debug_assertions)]
+      {
+        let vars = self.mp_vars.x.values()
+          .chain(self.mp_vars.y.values());
 
-    let vars = self.mp_vars.x.values()
-      .chain(self.mp_vars.y.values());
+        for (&var, val) in vars.clone().zip(ctx.get_solution(vars)?) {
+          self.var_vals.insert(var, val);
+        }
+      }
 
-    for (&var, val) in vars.clone().zip(ctx.get_solution(vars)?) {
-      self.var_vals.insert(var, val);
-    }
     Ok(())
   }
 
@@ -493,11 +495,14 @@ impl<'a> Callback for Cb<'a> {
     match w {
       Where::MIPSol(ctx) => {
         debug!("integer MP solution found");
-        let initial_cut_cache_len = self.cut_cache.len();
-        let pv_routes = self.sep_pv_cuts(&ctx)?;
 
         #[cfg(debug_assertions)]
           self.update_var_values(&ctx)?;
+
+
+        let initial_cut_cache_len = self.cut_cache.len();
+        let pv_routes = self.sep_pv_cuts(&ctx)?;
+
 
 
         if self.cut_cache.len() > initial_cut_cache_len {
