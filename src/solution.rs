@@ -197,7 +197,9 @@ pub fn get_tasks_by_pv<M: QueryVarValues>(ctx: &M, xvars: &Map<Task, Var>) -> Re
 
   for (t, val) in get_var_values(ctx, xvars)? {
     trace!(?t, ?val);
-    tasks.entry(t.p.unwrap()).or_insert_with(Vec::new).push(t);
+    if t.ty != TaskType::DDepot && t.ty != TaskType::ODepot {
+      tasks.entry(t.p.unwrap()).or_insert_with(Vec::new).push(t);
+    }
   }
 
   Ok(tasks)
@@ -206,6 +208,7 @@ pub fn get_tasks_by_pv<M: QueryVarValues>(ctx: &M, xvars: &Map<Task, Var>) -> Re
 
 #[derive(Clone)]
 pub struct Solution {
+  pub objective: Cost,
   pub av_routes: Vec<(Avg, Vec<Task>)>,
   pub pv_routes: Vec<(Pv, Vec<Task>)>,
 }
@@ -232,7 +235,9 @@ impl Solution {
       pv_routes.push((pv, pv_path));
     }
 
-    Ok(Solution { av_routes, pv_routes })
+    let objective = mp.model.get_attr(attr::ObjVal)?.round() as Cost;
+
+    Ok(Solution { objective, av_routes, pv_routes })
   }
 
   pub fn solve_for_times(&self, env: &grb::Env, data: &Data, tasks: &Tasks) -> Result<SpSolution> {
@@ -347,6 +352,7 @@ impl SpSolution {
 
       println!("Passive Vehicle {}", pv);
       table.printstd();
+
     }
   }
 }
@@ -361,6 +367,7 @@ struct JsonTask {
 #[derive(Deserialize, Clone)]
 struct JsonSolution {
   index: usize,
+  objective: Cost,
   av_routes: Map<String, Vec<Vec<JsonTask>>>,
   pv_routes: Map<String, Vec<JsonTask>>,
 }
@@ -422,5 +429,5 @@ pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &Tasks, lss: &LocSetStar
     pv_routes.push((pv, route));
   }
 
-  Ok(Solution { av_routes, pv_routes })
+  Ok(Solution { objective:  soln.objective, av_routes, pv_routes })
 }
