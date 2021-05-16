@@ -2,6 +2,7 @@ use super::{Task, TaskType, task_req};
 use crate::*;
 
 /// Returns `true` if completing `t1` and then `t2` does not violate the cover constraint
+#[allow(unused_parens)]
 pub fn cover(t1: &Task, t2: &Task) -> bool {
   use TaskType::*;
   match (t1.ty, t2.ty) {
@@ -17,7 +18,7 @@ pub fn cover(t1: &Task, t2: &Task) -> bool {
 
     (DDepot, _) => { false }
 
-
+    // ------------------------------ begin auto-generated code
     // o+(a), o-(a) --> o+(b), o-(b)
     // where
     // a != b
@@ -73,14 +74,14 @@ pub fn cover(t1: &Task, t2: &Task) -> bool {
     // where
     // r != s OR a == b
     (Start, End) => {
-      t1.p == t2.p || t1.end.req() != t2.start.req()
+      ( t1.p == t2.p || t1.end.req() != t2.start.req())
     },
 
     // o+(a), p(r) --> p(s), d(s), o-(b)
     // where
-    // r != s
+    // r != s OR a == b
     (Start, Request) => {
-      t1.end.req() != t2.start.req()
+      ( t1.p == t2.p || t1.end.req() != t2.start.req())
     },
 
     // o+(a), p(r) --> d(s0), p(s1), d(s1), o-(b)
@@ -89,7 +90,7 @@ pub fn cover(t1: &Task, t2: &Task) -> bool {
     // r != s1
     (Start, Transfer) => {
       t1.end.req() != t2.end.req()
-        && (t1.p == t2.p || t1.end.req() != t2.start.req())
+        && ( t1.p == t2.p || t1.end.req() != t2.start.req())
     },
 
     // o+(a), p(r), d(r), o-(a) --> o+(b), o-(b)
@@ -155,9 +156,9 @@ pub fn cover(t1: &Task, t2: &Task) -> bool {
 
     // o+(a), p(r), d(r) --> d(s), o-(b)
     // where
-    // r != s
+    // r != s OR a == b
     (Request, End) => {
-      t1.start.req() != t2.start.req()
+      ( t1.p == t2.p || t1.start.req() != t2.start.req())
     },
 
     // o+(a), p(r), d(r) --> p(s), d(s), o-(b)
@@ -169,11 +170,11 @@ pub fn cover(t1: &Task, t2: &Task) -> bool {
 
     // o+(a), p(r), d(r) --> d(s0), p(s1), d(s1), o-(b)
     // where
-    // r != s0
+    // r != s0 OR a == b
     // r != s1
     (Request, Transfer) => {
-      t1.start.req() != t2.start.req()
-        && t1.start.req() != t2.end.req()
+      t1.start.req() != t2.end.req()
+        && ( t1.p == t2.p || t1.start.req() != t2.start.req())
     },
 
     // o+(a), p(r0), d(r0), p(r1) --> o+(b), o-(b)
@@ -200,16 +201,16 @@ pub fn cover(t1: &Task, t2: &Task) -> bool {
     // r0 != s
     (Transfer, End) => {
       t1.start.req() != t2.start.req()
-        && (t1.p == t2.p || t1.end.req() != t2.start.req())
+        && ( t1.p == t2.p || t1.end.req() != t2.start.req())
     },
 
     // o+(a), p(r0), d(r0), p(r1) --> p(s), d(s), o-(b)
     // where
+    // r1 != s OR a == b
     // r0 != s
-    // r1 != s
     (Transfer, Request) => {
       t1.start.req() != t2.start.req()
-        && t1.end.req() != t2.start.req()
+        && ( t1.p == t2.p || t1.end.req() != t2.start.req())
     },
 
     // o+(a), p(r0), d(r0), p(r1) --> d(s0), p(s1), d(s1), o-(b)
@@ -222,8 +223,11 @@ pub fn cover(t1: &Task, t2: &Task) -> bool {
       t1.start.req() != t2.start.req()
         && t1.start.req() != t2.end.req()
         && t1.end.req() != t2.end.req()
-        && (t1.p == t2.p || t1.end.req() != t2.start.req())
+        && ( t1.p == t2.p || t1.end.req() != t2.start.req())
     },
+
+
+    // ---------------------------------------------------- end auto-generated code
 
   }
 }

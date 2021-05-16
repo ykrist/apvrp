@@ -602,13 +602,14 @@ pub fn task_incompat(t1: &Task, t2: &Task, data: &Data) -> Option<Incompatibilit
   }
 
   if t1.p == t2.p {
-    if t + data.srv_time[&t1.end] + data.srv_time[&t2.start] > t2.t_deadline {
-      return Some(Incompatibility::Time);
-    }
-
     if t1.end != t2.start {
       // no point in having some other active vehicle do the implied task inbetween t1 and t2
       return Some(Incompatibility::Opt);
+    }
+
+    // t1.end == t2.start, so only add one service time.
+    if t + data.srv_time[&t1.end] > t2.t_deadline {
+      return Some(Incompatibility::Time);
     }
   }
 

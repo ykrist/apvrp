@@ -3,3 +3,4 @@ scrap
 *.log
 *.ndjson
 *.lp
+dbg.filter
