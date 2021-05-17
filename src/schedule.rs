@@ -65,13 +65,16 @@ pub fn av_route(data: &Data, tasks: &[Task]) -> Vec<Time> {
   schedule
 }
 
+#[tracing::instrument(level="trace", skip(data))]
 pub fn check_av_route(data: &Data, tasks: &[Task]) -> bool {
   let mut t = tasks[0].t_release;
   for (t1, t2) in tasks.iter().tuple_windows() {
     av_forward_step(&mut t, data, t1, t2);
     if t + t2.tt > t2.t_deadline {
+      trace!(?t1, ?t2, t, t2.tt, t2.t_deadline, "illegal");
       return false;
     }
+    trace!(?t1, ?t2, t, "step");
   }
   true
 }

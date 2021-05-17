@@ -164,10 +164,10 @@ impl<'a> Cb<'a> {
     {
       let (lhs, rhs) = cut.evaluate(&self.var_vals);
       if lhs <= rhs + 1e-6  {
-        error!(?lhs, ?rhs, cut=?cut.with_names(&self.var_names), "cut is not violated!");
-        panic!("found a bug!"); // FIXME INDEX 1 crashes here quickly
+        error!(?lhs, ?rhs, index=i, cut=?cut.with_names(&self.var_names), "cut is not violated!");
+        panic!("found a bug!");
       }
-      trace!(?lhs, ?rhs, cut=?cut.with_names(&self.var_names));
+      trace!(?lhs, ?rhs, index=i, cut=?cut.with_names(&self.var_names));
     }
 
     self.cut_cache.push((name, cut));
@@ -219,17 +219,22 @@ impl<'a> Cb<'a> {
     let chain = &chain[1..];
     let t2 = *chain.first().expect("chain should have at least three tasks");
     let n = chain.len() - 1; // number of arcs in legal chain
-
+    let y = &self.mp_vars.y;
     debug_assert!(schedule::check_av_route(self.data, chain));
 
     let rhs_sum = chain.av_legal_before(self.data, self.tasks)
       .flat_map(|t1| {
-        let y = &self.mp_vars.y;
         self.sets.avs().filter_map(move |av| y.get(&(av, t1, t2)).copied())
       })
       .grb_sum();
 
-    let lhs = self.av_chain_fork_lhs(chain);
+    // let lhs = self.av_chain_fork_lhs(chain);
+
+    let lhs =    self.tasks.similar_tasks[&chain[1]].iter()
+      .cartesian_product(self.sets.avs())
+      .filter_map(move |(&t2, a)| y.get(&(a, chain[0], t2)).copied())
+      .grb_sum() + self.av_chain_fork_lhs(&chain[1..]);
+
     self.enqueue_cut(c!(lhs <= n - 1 + rhs_sum), CutType::AvChainInfork);
   }
 
@@ -238,18 +243,23 @@ impl<'a> Cb<'a> {
     let chain = &chain[..chain.len()-1];
     let t1 = *chain.last().expect("chain should have at least three tasks");
     let n = chain.len() - 1;  // number of arcs in legal chain
-
+    let y = &self.mp_vars.y;
 
     debug_assert!(schedule::check_av_route(self.data, chain));
 
     let rhs_sum = chain.av_legal_after(self.data, self.tasks)
       .flat_map(|t2| {
-        let y = &self.mp_vars.y;
         self.sets.avs().filter_map(move |av| y.get(&(av, t1, t2)).copied())
       })
       .grb_sum();
 
-    let lhs = self.av_chain_fork_lhs(chain);
+
+
+    let lhs = self.tasks.similar_tasks[&chain[n-1]].iter()
+      .cartesian_product(self.sets.avs())
+      .filter_map(move |(&t1, a)| y.get(&(a, t1, chain[n])).copied())
+      .grb_sum() + self.av_chain_fork_lhs(&chain[..n]);
+
     self.enqueue_cut(c!(lhs <= n - 1 + rhs_sum), CutType::AvChainOutfork);
   }
 

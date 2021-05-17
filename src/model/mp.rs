@@ -2,12 +2,14 @@ use crate::*;
 use crate::tasks::TaskId;
 use grb::prelude::*;
 use fnv::FnvHashSet;
-use tracing::{info, trace};
+use tracing::{info, trace, error, debug};
+use crate::solution::Solution;
 
 #[derive(Clone)]
 pub struct MpVars {
   pub x: Map<Task, Var>,
-  pub y: Map<(Av, Task, Task), Var>, /// These will be (Av, PvirTaskId, PvirTaskId)
+  pub y: Map<(Av, Task, Task), Var>,
+   /// These will be (Av, PvirTaskId, PvirTaskId)
   pub u: Map<Req, Var>,
   pub theta: Map<(Av, Task), Var>,
 }
@@ -21,7 +23,7 @@ pub struct ObjWeights {
 
 impl std::default::Default for ObjWeights {
   // fn default() -> Self { ObjWeights { tt: 10.0, av_finish_time: 10.0, cover: 10_000.0 }}
-  fn default() -> Self { ObjWeights { tt: 10.0, av_finish_time: 1.0, cover: 10_000.0 }}
+  fn default() -> Self { ObjWeights { tt: 10.0, av_finish_time: 1.0, cover: 10_000.0 } }
   // fn default() -> Self { ObjWeights { tt: 10.0, av_finish_time: 0.0, cover: 10_000.0 }}
   // fn default() -> Self { ObjWeights { tt: 0.0, av_finish_time: 0.0, cover: 1.0 }}
 }
@@ -31,8 +33,7 @@ impl MpVars {
     let mut x = map_with_capacity(tasks.all.len());
     for &t in &tasks.all {
       let obj_coeff =
-        if !t.is_depot() { obj_param.tt * ( data.travel_cost[&(t.start, t.end)] as f64) }
-        else { 0.0 };
+        if !t.is_depot() { obj_param.tt * (data.travel_cost[&(t.start, t.end)] as f64) } else { 0.0 };
       x.insert(t, add_binvar!(model, name: &format!("X[{:?}]", &t), obj: obj_coeff)?);
     }
 
@@ -44,7 +45,7 @@ impl MpVars {
         for &t2 in &tasks.succ[&t1] {
           if av_tasks.contains(&t2) {
             let obj_coeff = obj_param.tt * (data.travel_cost[&(t1.end, t2.start)] as f64);
-            y.insert((av, t1, t2), add_binvar!(model, name: &format!("Y[{:?}-{:?}|{}]", &t1, &t2, av))?);
+            y.insert((av, t1, t2), add_binvar!(model, name: &format!("Y[{:?}-{:?}|{}]", &t1, &t2, av), obj: obj_coeff)?);
           }
         }
       }
@@ -149,7 +150,7 @@ impl MpConstraints {
       for (&av, av_tasks) in &tasks.compat_with_av {
         tracing::trace!(av, ?av_tasks);
         for &t1 in av_tasks {
-          if t1.is_depot() { continue }
+          if t1.is_depot() { continue; }
 
           let lhs = tasks.succ[&t1].iter()
             .filter_map(|&t2| vars.y.get(&(av, t1, t2)))
@@ -172,7 +173,7 @@ impl MpConstraints {
     let xy_link = {
       let mut cmap = map_with_capacity(tasks.all.capacity());
       for &t2 in &tasks.all {
-        if t2.is_depot() { continue }
+        if t2.is_depot() { continue; }
         let ysum = tasks.pred[&t2].iter()
           .flat_map(|&t1| sets.avs().into_iter().map(move |av| (av, t1, t2)))
           .filter_map(|k| vars.y.get(&k))
@@ -205,7 +206,7 @@ impl TaskModelMaster {
     for (&(av, t, td), &y) in vars.y.iter() {
       if td.ty == TaskType::DDepot {
         let tt_d = data.travel_time[&(t.end, td.start)];
-        model.add_constr(&format!("initial_bc[{:?}|{}]", &t, av),c!(vars.theta[&(av, t)] >= (t.t_release + t.tt + tt_d)*y ))?;
+        model.add_constr(&format!("initial_bc[{:?}|{}]", &t, av), c!(vars.theta[&(av, t)] >= (t.t_release + t.tt + tt_d)*y ))?;
       }
     }
 
@@ -216,6 +217,37 @@ impl TaskModelMaster {
     };
 
     Ok(TaskModelMaster { vars, cons, model, sp_env })
+  }
+
+  #[tracing::instrument(level="error", skip(self, sol))]
+  pub fn fix_solution(&mut self, sol: &Solution) -> Result<()> {
+    for (p, r) in &sol.pv_routes {
+      trace!(p, ?r, "fix PV route");
+      self.model.set_obj_attr_batch(attr::LB, r.iter().map(|t| (self.vars.x[t], 1.0)))?;
+    }
+
+    for (a, r) in &sol.av_routes {
+      trace!(a, ?r, "fix AV route");
+      for (t1, t2) in r.iter().tuple_windows() {
+        if let Some(y) = self.vars.y.get(&(*a, *t1, *t2)) {
+          self.model.set_obj_attr(attr::LB, y, 1.0)?;
+        } else {
+          error!(?a, ?t1, ?t2, "missing task-task connection");
+          panic!("bugalug")
+        }
+      }
+    }
+    Ok(())
+  }
+
+  pub fn unfix_solution(&mut self) -> Result<()> {
+    debug!("unfix solution");
+    self.model.set_obj_attr_batch(attr::LB,
+                                  self.vars.x.values().copied()
+                                    .chain(self.vars.y.values().copied())
+                                    .map(|var| (var, 0.0)),
+    )?;
+    Ok(())
   }
 }
 

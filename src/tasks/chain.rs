@@ -1,4 +1,5 @@
 use crate::*;
+use tracing::{trace_span, trace};
 
 /// Returns `true` if chain does not visit the same two locations (except AV depots) more than once.
 /// Returns `false` otherwise.
@@ -61,16 +62,21 @@ pub fn pv_chain_full(data: &Data, chain: &[Task]) -> bool {
   schedule::check_pv_route(data, chain) && av_chain_cover_pred(chain) // AV check for cover and precedence should be correct should do for now
 }
 
+#[tracing::instrument(level="trace", name="check_chain_cover_pred")]
 fn impl_chain_cover_and_pred(chain: &[Task], cover_only: bool) -> bool {
   use TaskType::*;
 
   let mut locs_visited_by_chain = set_with_capacity(chain.len() * 2);
 
   for t in chain {
-    // chain[k].end may be equal to chain[k+1].start
-    locs_visited_by_chain.insert(t.start);
+
+    if !t.is_depot() {
+      // chain[k].end may be equal to chain[k+1].start.  For AV depot tasks, t.start = t.end
+      locs_visited_by_chain.insert(t.start);
+    }
     if !locs_visited_by_chain.insert(t.end) {
       // Direct cover violation
+      trace!("cover violation");
       return false;
     }
   }
@@ -103,6 +109,7 @@ fn impl_chain_cover_and_pred(chain: &[Task], cover_only: bool) -> bool {
           && lv.implied_after(Loc::Pd(t.p.unwrap())),
     };
     if !precedence_is_consistent {
+      trace!("predecence violation");
       return false;
     }
   }
@@ -173,12 +180,15 @@ impl Iterator for AvLegalEndsIter<'_> {
   type Item = Task;
 
   fn next(&mut self) -> Option<Task> {
+    let _s = trace_span!("av_legal_end_next", replace_idx=self.replace_idx).entered();
     while let Some(&task) = self.candidate_iter.next() {
       // Safety: replace_idx is a valid index because it is never modified, and is valid in the constructors.
       let task_to_replace = unsafe { self.chain_template.get_unchecked_mut(self.replace_idx) };
       *task_to_replace = task;
       if av_chain_full(self.data, &self.chain_template) {
         return Some(task)
+      } else {
+        trace!(?task, "illegal");
       }
     }
     None
@@ -223,6 +233,7 @@ impl Iterator for PvLegalEndsIter<'_> {
   type Item = Task;
 
   fn next(&mut self) -> Option<Task> {
+    let _s = trace_span!("pv_legal_end_next", replace_idx=self.replace_idx).entered();
     while let Some(&task) = self.candidate_iter.next() {
       // Safety: replace_idx is a valid index because it is never modified, and is valid in the constructors.
       let task_to_replace = unsafe { self.chain_template.get_unchecked_mut(self.replace_idx) };

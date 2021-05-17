@@ -4,7 +4,7 @@ use instances::dataset::{Dataset, apvrp::ApvrpInstance};
 use tracing::{info, info_span};
 use apvrp::model::mp::ObjWeights;
 use instances::dataset::apvrp::LocSetStarts;
-use tracing::trace;
+use tracing::{error, trace};
 use grb::prelude::*;
 use slurm_harray::{Experiment, handle_slurm_args};
 use itertools::Itertools;
@@ -74,25 +74,12 @@ fn main() -> Result<()> {
   let mut mp = model::mp::TaskModelMaster::build(&data, &sets, &tasks, ObjWeights::default())?;
   mp.model.update()?;
 
-  let soln = solution::load_michael_soln(
+  let true_soln = solution::load_michael_soln(
     format!("/home/yannik/phd/src/apvrp/scrap/soln/{}.json", exp.inputs.index),
     &tasks,
     &LocSetStarts::new(data.n_passive, data.n_req))?;
 
-  for (_, r) in &soln.pv_routes {
-    mp.model.set_obj_attr_batch(attr::LB, r.iter().map(|t| (mp.vars.x[t], 1.0)))?;
-  }
 
-  for (a, r) in &soln.av_routes {
-    for (t1, t2) in r.iter().tuple_windows() {
-      if let Some(y) = mp.vars.y.get(&(*a, *t1, *t2)) {
-        mp.model.set_obj_attr(attr::LB, y, 1.0)?;
-      } else {
-        tracing::error!(?a, ?t1, ?t2, "missing task-task connection");
-        panic!("bugalug")
-      }
-    }
-  }
 
   mp.model.set_obj_attr_batch(attr::BranchPriority, mp.vars.u.values().map(|&u| (u, 100)))?;
   mp.model.set_obj_attr_batch(attr::UB, mp.vars.u.values().map(|&u| (u, 0.0)))?;
@@ -114,17 +101,64 @@ fn main() -> Result<()> {
   };
 
   let sol = solution::Solution::from_mp(&mp)?;
+
   let sol = sol.solve_for_times(callback.sp_env(), &data, &tasks)?;
   sol.pretty_print(&data);
 
-  callback.flush_cut_cache(&mut mp.model)?;
-  mp.model.update()?;
-  // mp.model.write("master_problem.lp")?;
 
   for (cut_ty, num) in callback.stats.get_cut_counts() {
     println!("Num {:?} Cuts: {}", cut_ty, num);
   }
 
+  let pv_costs : f64 = mp.model.get_obj_attr_batch(attr::X, mp.vars.x.values().copied())?.into_iter()
+    .zip(mp.model.get_obj_attr_batch(attr::Obj, mp.vars.x.values().copied())?)
+    .map(|(x, obj)| x*obj)
+    .sum();
+
+  let av_costs : f64 = mp.model.get_obj_attr_batch(attr::X, mp.vars.y.values().copied())?.into_iter()
+    .zip(mp.model.get_obj_attr_batch(attr::Obj, mp.vars.y.values().copied())?)
+    .map(|(x, obj)| x*obj)
+    .sum();
+
+  let theta_sum : f64 = mp.model.get_obj_attr_batch(attr::X, mp.vars.theta.values().copied())?.into_iter()
+    .zip(mp.model.get_obj_attr_batch(attr::Obj, mp.vars.theta.values().copied())?)
+    .map(|(x, obj)| x*obj)
+    .sum();
+
+  let obj = mp.model.get_attr(attr::ObjVal)?.round() as Cost;
+  println!("Obj = {}", obj);
+  println!("PV = {:.2}", pv_costs);
+  println!("AV = {:.2}", av_costs);
+  println!("Theta = {:.2}", theta_sum);
+
+
+  callback.flush_cut_cache(&mut mp.model)?;
+  mp.model.update()?;
+  mp.model.write("master_problem.lp")?;
+
+
+  if true_soln.objective != obj {
+    error!(correct=true_soln.objective, obj, "objective mismatch");
+    mp.fix_solution(&true_soln)?;
+    mp.model.optimize()?;
+    if mp.model.status()? == Status::Infeasible {
+      let _s = tracing::error_span!("infeasible_model").entered();
+      mp.model.compute_iis()?;
+
+      let constrs = mp.model.get_constrs()?;
+      let iis_constrs : Vec<_> = constrs.iter()
+        .copied()
+        .zip(mp.model.get_obj_attr_batch(attr::IISConstr, constrs.iter().copied())?)
+        .filter(|(_, is_iis)| *is_iis > 0)
+        .map(|(c, _)| c)
+        .collect();
+
+      for name in mp.model.get_obj_attr_batch(attr::ConstrName, iis_constrs)? {
+        error!(constr=%name, "iis constr");
+      }
+    }
+    panic!("bugalug");
+  }
 
   // let tasks: Vec<RawPvTask> = tasks.all.into_iter().filter_map(RawPvTask::new).collect();
   // let task_filename = format!("scrap/tasks/{}.json", idx);
