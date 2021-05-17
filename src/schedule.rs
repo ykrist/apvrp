@@ -65,6 +65,17 @@ pub fn av_route(data: &Data, tasks: &[Task]) -> Vec<Time> {
   schedule
 }
 
+
+/// Computes an understimate of the earliest time this AV route can be back at the depot.  Expects `tasks[0] != ODp` and that
+/// the last task is `DDp`
+pub fn av_route_finish_time(data: &Data, tasks: &[Task]) -> Time {
+  let mut t = max(tasks[0].t_release, data.travel_time[&(Loc::Ao, tasks[0].start)]);
+  for (t1, t2) in tasks.iter().tuple_windows() {
+    av_forward_step(&mut t, data, t1, t2);
+  }
+  t
+}
+
 #[tracing::instrument(level="trace", skip(data))]
 pub fn check_av_route(data: &Data, tasks: &[Task]) -> bool {
   let mut t = tasks[0].t_release;

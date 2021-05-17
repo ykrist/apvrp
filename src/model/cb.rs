@@ -15,6 +15,7 @@ use std::env::var;
 use std::collections::{HashSet, HashMap};
 use experiment::Params;
 use slurm_harray::ExperimentAuto;
+use crate::model::cb::CutType::EndTime;
 
 #[derive(Debug, Clone)]
 pub enum CbError {
@@ -55,6 +56,7 @@ pub enum CutType {
   PvCycle,
   PvChainInfork,
   PvChainOutfork,
+  EndTime,
 }
 
 #[derive(Clone)]
@@ -448,6 +450,22 @@ impl<'a> Cb<'a> {
     }
   }
 
+  #[tracing::instrument(level="trace", skip(self))]
+  fn endtime_cut(&mut self, finish_time: Time, av: Av, av_route: &[Task]) {
+    // first task is ODp, last is DDp
+    let n = av_route.len() - 2;
+    let mut lhs = finish_time * self.mp_vars.y[&(av, av_route[n], av_route[n + 1])];
+
+    for k in 1..n {
+      let partial_finish_time = schedule::av_route_finish_time(self.data, &av_route[k+1..]);
+      if partial_finish_time != finish_time {
+        lhs = lhs + (finish_time - partial_finish_time)*(self.mp_vars.y[&(av, av_route[k], av_route[k+1])] - 1)
+      }
+    }
+
+    self.enqueue_cut(c!( lhs <= self.mp_vars.theta[&(av, av_route[n])] ), EndTime);
+  }
+
   fn sep_av_cuts(&mut self, ctx: &MIPSolCtx) -> Result<Vec<(Av, AvPath)>> {
     let task_pairs = get_task_pairs_by_av(ctx, &self.mp_vars.y)?;
     let mut av_routes = Vec::with_capacity(task_pairs.len());
@@ -470,6 +488,16 @@ impl<'a> Cb<'a> {
         if !schedule::check_av_route(self.data, &av_path) {
           let chain = self.shorten_illegal_av_chain(&av_path);
           self.av_chain_cuts(chain);
+        } else {
+          let finish_time = schedule::av_route_finish_time(self.data, &av_path[1..]);
+          let n = av_path.len() - 2;
+          let theta_val = ctx.get_solution(std::iter::once(self.mp_vars.theta[&(av, av_path[n])]))?[0];
+
+          if (theta_val.round() as Time) < finish_time {
+            self.endtime_cut(finish_time, av, &av_path);
+          }
+
+
         }
         av_routes.push((av, av_path));
       }
@@ -481,7 +509,8 @@ impl<'a> Cb<'a> {
     #[cfg(debug_assertions)]
       {
         let vars = self.mp_vars.x.values()
-          .chain(self.mp_vars.y.values());
+          .chain(self.mp_vars.y.values())
+          .chain(self.mp_vars.theta.values());
 
         for (&var, val) in vars.clone().zip(ctx.get_solution(vars)?) {
           self.var_vals.insert(var, val);
