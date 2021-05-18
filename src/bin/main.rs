@@ -7,7 +7,7 @@ use instances::dataset::apvrp::LocSetStarts;
 use tracing::{error, trace};
 use grb::prelude::*;
 use slurm_harray::{Experiment, handle_slurm_args};
-use itertools::Itertools;
+
 
 fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
   use instances::{

@@ -5,7 +5,7 @@ use grb::prelude::*;
 use grb::callback::{Callback, Where, CbResult, MIPSolCtx};
 use fnv::FnvHashSet;
 use super::sp::{BendersCut, TimingSubproblem};
-use tracing::{info, info_span, debug, trace, error_span, warn, error};
+use tracing::{info, info_span, debug, trace, error_span, warn, error, trace_span};
 use std::fmt;
 use grb::constr::IneqExpr;
 use variant_count::VariantCount;
@@ -103,6 +103,28 @@ impl CbStats {
   }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Phase {
+  NoWaitCost,
+  Final,
+}
+
+impl Phase {
+  #[inline]
+  pub fn next(&self) -> Self {
+    use Phase::*;
+    match self {
+      NoWaitCost => Final,
+      _ => unimplemented!("in Final phase"),
+    }
+  }
+
+  #[inline]
+  pub fn set_next(&mut self) {
+    *self = self.next();
+  }
+}
+
 pub struct Cb<'a> {
   data: &'a Data,
   sets: &'a Sets,
@@ -157,21 +179,23 @@ impl<'a> Cb<'a> {
     })
   }
 
-  #[tracing::instrument(level = "trace", skip(self, cut))]
+  #[tracing::instrument(level = "info", skip(self, cut))]
   pub fn enqueue_cut(&mut self, cut: IneqExpr, ty: CutType) {
     let i = self.stats.inc_cut_count(ty, 1);
     let name = format!("{:?}[{}]", ty, i);
 
     #[cfg(debug_assertions)]
-    {
-      let (lhs, rhs) = cut.evaluate(&self.var_vals);
-      if lhs <= rhs + 1e-6  {
-        error!(?lhs, ?rhs, index=i, cut=?cut.with_names(&self.var_names), "cut is not violated!");
-        panic!("found a bug!");
-      }
-      trace!(?lhs, ?rhs, index=i, cut=?cut.with_names(&self.var_names));
-    }
+      let _s = {
+        let (lhs, rhs) = cut.evaluate(&self.var_vals);
+        let span = trace_span!("cut_check", ?lhs, ?rhs, cut=?cut.with_names(&self.var_names)).entered();
+        if lhs <= rhs + 1e-6  {
+          error!(index=i, "cut is not violated!");
+          panic!("bugalug");
+        }
+        span
+      };
 
+    info!(index=i, "add cut");
     self.cut_cache.push((name, cut));
   }
 
@@ -344,6 +368,7 @@ impl<'a> Cb<'a> {
   /// Given a `cycle` where `cycle.first() == cycle.last()`, returns the shortest acyclic subchain
   /// that violates the AV timing constraints, if one exists.
   fn illegal_av_chain_in_cycle(&self, cycle: &[Task]) -> Option<Vec<Task>> {
+    debug_assert_eq!(cycle.first(), cycle.last());
     // If cycle is
     // [0, 1, 2, 3, 4, 0] // .len() = 6
     // then cycle rep holds
@@ -370,12 +395,14 @@ impl<'a> Cb<'a> {
 
   #[tracing::instrument(level="trace", skip(self))]
   fn pv_cycle_cut(&mut self, cycle: &PvPath) {
+    debug_assert!(cycle.first() != cycle.last());
     let xsum = cycle.iter()
       .flat_map(|t|
         self.tasks.by_locs[&(t.start, t.end)].iter()
           .map(|t| self.mp_vars.x[t]))
       .grb_sum();
-    self.enqueue_cut(c!(xsum <= cycle.len() - 2), CutType::PvCycle); // cycle is a list of n+1 nodes (start = end), which form n arcs
+    // cycle is a list of n nodes (start != end), which form n-1 arcs
+    self.enqueue_cut(c!(xsum <= cycle.len() - 1), CutType::PvCycle);
   }
 
   // #[allow(unused_variables)]
@@ -426,8 +453,8 @@ impl<'a> Cb<'a> {
 
       if !schedule::check_pv_route(self.data, &pv_path) {
         let chain = self.shorten_illegal_pv_chain(&pv_path);
-        if chain.len() >= self.params.pv_fork_cuts_min_chain_len
-          && chain.len() <= self.params.pv_fork_cuts_max_chain_len {
+        let n = chain.len() as u32;
+        if self.params.pv_fork_cuts_min_chain_len <= n && n <= self.params.pv_fork_cuts_max_chain_len {
           self.pv_chain_infork_cut(chain);
           self.pv_chain_outfork_cut(chain);
         }
@@ -438,14 +465,13 @@ impl<'a> Cb<'a> {
   }
 
   fn av_chain_cuts(&mut self, chain: &[Task]) {
-    if self.params.av_fork_cuts_min_chain_len <= chain.len() &&
-      chain.len() <= self.params.av_fork_cuts_max_chain_len {
+    let n = chain.len() as u32;
+    if self.params.av_fork_cuts_min_chain_len  <= n && n <= self.params.av_fork_cuts_max_chain_len {
       self.av_chain_infork_cut(&chain);
       self.av_chain_outfork_cut(&chain);
     }
 
-    if self.params.av_tournament_cuts_min_chain_len <= chain.len()
-      && chain.len() <= self.params.av_tournament_cuts_max_chain_len {
+    if self.params.av_tournament_cuts_min_chain_len <= n && n <= self.params.av_tournament_cuts_max_chain_len {
       self.av_chain_tournament_cut(&chain);
     }
   }

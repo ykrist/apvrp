@@ -50,7 +50,7 @@ pub fn construct_av_routes(task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvP
   impl DecomposableDigraph<Task, (Task, Task), u8> for AvGraph {
     fn is_sink(&self, node: &Task) -> bool { node.ty == TaskType::DDepot }
 
-    #[tracing::instrument(level = "error", name = "find_start", fields(succ = ? & self.succ, od_arcs = ? & self.odepot_arcs), skip(self))]
+    #[tracing::instrument(level = "trace", name = "find_start", fields(succ = ? & self.succ, od_arcs = ? & self.odepot_arcs), skip(self))]
     fn next_start(&self) -> Option<Task> {
       self.odepot_arcs.iter().next()
         .map(|(od, _)| *od)
@@ -60,7 +60,7 @@ pub fn construct_av_routes(task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvP
         })
     }
 
-    #[tracing::instrument(level = "error", name = "find_succ", fields(succ = ? & self.succ, od_arcs = ? & self.odepot_arcs), skip(self))]
+    #[tracing::instrument(level = "trace", name = "find_succ", fields(succ = ? & self.succ, od_arcs = ? & self.odepot_arcs), skip(self))]
     fn next_outgoing_arc(&self, task: &Task) -> ((Task, Task), Task, u8) {
       let arc = if task.ty == TaskType::ODepot {
         *self.odepot_arcs.iter().next().unwrap()
@@ -71,7 +71,7 @@ pub fn construct_av_routes(task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvP
       (arc, arc.1, 1)
     }
 
-    #[tracing::instrument(level = "error", fields(succ = ? & self.succ, od_arcs = ? & self.odepot_arcs), skip(self))]
+    #[tracing::instrument(level = "trace", fields(succ = ? & self.succ, od_arcs = ? & self.odepot_arcs), skip(self))]
     fn subtract_arc(&mut self, arc: &(Task, Task), _: u8) {
       let value_removed =
         if arc.0.ty == TaskType::ODepot {
@@ -103,7 +103,7 @@ pub fn construct_av_routes(task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvP
 }
 
 /// Given a list of tasks, construct the route for a Passive vehicle, plus any cycles which occur.
-#[tracing::instrument(skip(tasks_used))]
+#[tracing::instrument(level="trace", skip(tasks_used))]
 pub fn construct_pv_route(tasks_used: &[Task]) -> (PvPath, Vec<PvPath>) {
   trace!(?tasks_used);
   debug_assert!(!tasks_used.is_empty());
