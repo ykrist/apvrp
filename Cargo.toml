@@ -9,7 +9,8 @@ edition = "2018"
 [dependencies]
 anyhow = "1.0.38"
 #grb = "^1.0.3"
-grb = { git = "https://github.com/ykrist/rust-grb", branch="dogfood" }
+#grb = { git = "https://github.com/ykrist/rust-grb", branch="dogfood" }
+grb = { path = "./grb"}
 itertools = "0.10.0"
 instances = {path = "../instances"}
 fnv = "1.0.7"

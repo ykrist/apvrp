@@ -4,7 +4,10 @@ use crate::solution::*;
 use grb::prelude::*;
 use grb::callback::{Callback, Where, CbResult, MIPSolCtx};
 use fnv::FnvHashSet;
-use super::sp::{BendersCut, TimingSubproblem};
+use super::sp::{
+  // BendersCut,
+  TimingSubproblem
+};
 use tracing::{info, info_span, debug, trace, error_span, warn, error, trace_span};
 use std::fmt;
 use grb::constr::IneqExpr;
@@ -126,17 +129,17 @@ impl Phase {
 }
 
 pub struct Cb<'a> {
-  data: &'a Data,
-  sets: &'a Sets,
-  tasks: &'a Tasks,
+  pub data: &'a Data,
+  pub sets: &'a Sets,
+  pub tasks: &'a Tasks,
+  pub params: &'a Params,
   var_names: Map<Var, String>,
-  mp_vars: super::mp::MpVars,
+  pub mp_vars: super::mp::MpVars,
   // needs to be owned to avoid mutability issues with the Model object.
   pub stats: CbStats,
   cut_cache: Vec<(String, IneqExpr)>,
   av_cycles: HashMap<Vec<Task>, usize>,
   sp_env: Env,
-  params: &'a Params,
   #[cfg(debug_assertions)]
   var_vals: Map<Var, f64>,
 }
@@ -585,31 +588,32 @@ impl<'a> Callback for Cb<'a> {
             let theta: Map<_, _> = get_var_values(&ctx, &self.mp_vars.theta)?.collect();
             trace!(?theta);
             let estimate = theta.values().sum::<f64>().round() as Time;
-            let cuts = match sp.solve(self.tasks, estimate) {
-              Err(e) => {
-                // ctx.terminate();
-                return Err(e);
-                // return Ok(())
-              }
-              Ok(cuts) => cuts
-            };
-
-            for cut in cuts {
-              let name = match &cut {
-                BendersCut::Optimality(_) => {
-                  // continue;
-                  info!("LP optimality cut generated");
-                  format!("sp_opt[{}]", self.stats.inc_cut_count(CutType::LpOpt, 1))
-                }
-                BendersCut::Feasibility(_) => {
-                  info!("LP feasibility cut generated");
-                  format!("sp_feas[{}]", self.stats.inc_cut_count(CutType::LpFeas, 1))
-                }
-              };
-              let cut = cut.into_ineq(self.sets, self.tasks, &self.mp_vars);
-              trace!(cut=?cut.with_names(&self.var_names));
-              self.cut_cache.push((name.to_string(), cut));
-            }
+            sp.add_cuts(self, estimate)?;
+            // let cuts = match sp.solve(self.tasks, estimate) {
+            //   Err(e) => {
+            //     // ctx.terminate();
+            //     return Err(e);
+            //     // return Ok(())
+            //   }
+            //   Ok(cuts) => cuts
+            // };
+            //
+            // for cut in cuts {
+            //   let name = match &cut {
+            //     BendersCut::Optimality(_) => {
+            //       // continue;
+            //       info!("LP optimality cut generated");
+            //       format!("sp_opt[{}]", self.stats.inc_cut_count(CutType::LpOpt, 1))
+            //     }
+            //     BendersCut::Feasibility(_) => {
+            //       info!("LP feasibility cut generated");
+            //       format!("sp_feas[{}]", self.stats.inc_cut_count(CutType::LpFeas, 1))
+            //     }
+            //   };
+            //   let cut = cut.into_ineq(self.sets, self.tasks, &self.mp_vars);
+            //   trace!(cut=?cut.with_names(&self.var_names));
+            //   self.cut_cache.push((name.to_string(), cut));
+            // }
           }
         }
 

@@ -96,7 +96,10 @@ fn main() -> Result<()> {
   let mut callback = model::cb::Cb::new(&data, &exp, &sets, &tasks, &mp)?;
   let opt_res = mp.model.optimize_with_callback(&mut callback);
   match opt_res {
-    Err(e) => tracing::error!(err=%e, "error during optimisation"),
+    Err(e) => {
+      tracing::error!(err=%e, "error during optimisation");
+      return Err(e.into())
+    },
     Ok(_) => {}
   };
 
@@ -140,20 +143,27 @@ fn main() -> Result<()> {
   if true_soln.objective != obj {
     error!(correct=true_soln.objective, obj, "objective mismatch");
     mp.fix_solution(&true_soln)?;
+    mp.model.update()?;
+    mp.model.write("master_problem.lp")?;
     mp.model.optimize()?;
-    if mp.model.status()? == Status::Infeasible {
-      let _s = tracing::error_span!("infeasible_model").entered();
-      mp.model.compute_iis()?;
+    error!("wrote");
 
-      let constrs = mp.model.get_constrs()?;
+    let mut model = grb::Model::read_from("master_problem.lp", &Env::new("")?)?;
+    error!("read");
+    model.optimize()?;
+    if model.status()? == Status::Infeasible {
+      let _s = tracing::error_span!("infeasible_model").entered();
+      model.compute_iis()?;
+
+      let constrs = model.get_constrs()?;
       let iis_constrs : Vec<_> = constrs.iter()
         .copied()
-        .zip(mp.model.get_obj_attr_batch(attr::IISConstr, constrs.iter().copied())?)
+        .zip(model.get_obj_attr_batch(attr::IISConstr, constrs.iter().copied())?)
         .filter(|(_, is_iis)| *is_iis > 0)
         .map(|(c, _)| c)
         .collect();
 
-      for name in mp.model.get_obj_attr_batch(attr::ConstrName, iis_constrs)? {
+      for name in model.get_obj_attr_batch(attr::ConstrName, iis_constrs)? {
         error!(constr=%name, "iis constr");
       }
     }
@@ -163,7 +173,6 @@ fn main() -> Result<()> {
   // let tasks: Vec<RawPvTask> = tasks.all.into_iter().filter_map(RawPvTask::new).collect();
   // let task_filename = format!("scrap/tasks/{}.json", idx);
   // std::fs::write(task_filename, serde_json::to_string_pretty(&tasks)?)?;
-  // FIXME index 62 is wrong
 
   Ok(())
 }

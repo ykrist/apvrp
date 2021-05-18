@@ -36,7 +36,7 @@ pub struct Params {
 impl std::default::Default for Params {
   fn default() -> Self {
     Params {
-      timelimit: 3600,
+      timelimit: 7200,
       cpus: 4,
       param_name: String::new(),
       av_fork_cuts_min_chain_len: 0,
