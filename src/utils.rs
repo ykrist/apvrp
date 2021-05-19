@@ -5,7 +5,7 @@ use grb::{attr, Var};
 use std::fmt;
 use std::fmt::{Write, Debug};
 use std::collections::HashMap;
-use std::hash::BuildHasher;
+use std::hash::{Hash, BuildHasher};
 use std::cell::{RefCell, Ref};
 use std::rc::Rc;
 
@@ -108,6 +108,44 @@ pub fn factorial(n: usize) -> usize {
   if n <= 1 { 1 }
   else { n*factorial(n-1) }
 }
+
+pub trait HashMapExt<K, V> {
+  fn retain_ok<F, E>(&mut self, filter: F) -> std::result::Result<(), E>
+    where
+      F: FnMut(&K, &mut V) -> std::result::Result<bool, E>;
+}
+
+
+impl<K, V, S> HashMapExt<K, V> for HashMap<K, V, S>
+where
+  K: Hash + Eq,
+  S: BuildHasher,
+{
+  fn retain_ok<F, E>(&mut self, mut f: F) -> std::result::Result<(), E>
+    where
+      F: FnMut(&K, &mut V) -> std::result::Result<bool, E>
+  {
+    let mut ret = Ok(());
+
+    let wrapper = |key: &K, val: &mut V| -> bool {
+      if ret.is_err() {
+        true
+      } else {
+        match f(key, val) {
+          Ok(keep) => keep,
+          Err(e) => {
+            ret = Err(e);
+            true // keep on error
+          }
+        }
+      }
+    };
+
+    self.retain(wrapper);
+    ret
+  }
+}
+
 
 #[cfg(test)]
 mod tests {

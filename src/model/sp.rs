@@ -10,7 +10,9 @@ use crate::TaskType::ODepot;
 use itertools::Itertools;
 use crate::solution::*;
 use crate::model::cb::{CutType, Cb};
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
+use std::hash::{Hash, BuildHasher};
+use crate::utils::HashMapExt;
 
 pub struct SpConstraints {
   av_sync: Map<(Task, Task), Constr>,
@@ -299,20 +301,26 @@ impl<'a> TimingSubproblem<'a> {
     let mut lhs = tasks.iter().map(|t| cb.mp_vars.x[t]).grb_sum();
     let mut n = tasks.len();
 
-    for (&(t1, t2), &c) in &self.cons.av_sync {
-      if self.model.get_obj_attr(attr::IISConstr, &c)? > 0 {
-        self.model.remove(c)?;
+    let model = &mut self.model;
+    self.cons.av_sync.retain_ok(|&(t1, t2), &mut c| -> Result<bool> {
+      if model.get_obj_attr(attr::IISConstr, &c)? > 0 {
+        model.remove(c)?;
+
         for a in cb.sets.avs() {
           if let Some(&y) = cb.mp_vars.y.get(&(a, t1, t2)) {
-            lhs = lhs + y;
+            lhs += y;
             n += 1;
           }
         }
+        Ok(false) // remove this constraint
+      } else {
+        Ok(true) // keep this constraint
       }
-    }
+    })?;
 
     Ok(c!( lhs <= n - 1 ))
   }
+    
 
   #[tracing::instrument(level = "trace", skip(self, cb))]
   fn build_mrs_cut(&self, cb: &Cb) -> Result<IneqExpr> {
@@ -326,7 +334,7 @@ impl<'a> TimingSubproblem<'a> {
       if self.model.get_obj_attr(attr::Pi, c)?.abs() > 1e-6 || t2.ty == TaskType::DDepot {
         for a in cb.sets.avs() {
           if let Some(&y) = cb.mp_vars.y.get(&(a, t1, t2)) {
-            ysum = ysum + y;
+            ysum += y;
           }
         }
         n_pairs += 1;
@@ -347,4 +355,3 @@ impl<'a> TimingSubproblem<'a> {
     Ok(c!(sp_obj*(1 - n_pairs + ysum) <= theta_sum))
   }
 }
-

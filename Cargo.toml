@@ -23,6 +23,7 @@ variant_count = "^1.1.0"
 prettytable-rs = "^0.8"
 slurm-harray = { git = "ssh://git@bitbucket.org/yannik_rist/slurm-utils-rs.git" }
 clap = "2.33.3"
+smallvec = "1.6.1"
 
 [[bin]]
 name = "apvrp"
