@@ -32,7 +32,8 @@ pub struct Params {
   pub pv_fork_cuts_max_chain_len: u32,
   pub pv_tournament_cuts_min_chain_len: u32,
   pub pv_tournament_cuts_max_chain_len: u32,
-
+  #[slurm(default="true")]
+  pub endtime_cuts: bool,
 }
 
 impl std::default::Default for Params {
@@ -48,7 +49,8 @@ impl std::default::Default for Params {
       pv_fork_cuts_min_chain_len: 0,
       pv_fork_cuts_max_chain_len: 3,
       pv_tournament_cuts_min_chain_len: 0,
-      pv_tournament_cuts_max_chain_len: u32::max_value(),
+      pv_tournament_cuts_max_chain_len: u32::MAX,
+      endtime_cuts: true,
     }
   }
 }

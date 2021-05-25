@@ -1,6 +1,7 @@
 use crate::*;
 use instances::dataset::apvrp::ApvrpInstance;
-use tracing::trace;
+use tracing::{info, info_span, trace};
+
 /// Group active vehicles into groups based on PV-AV compatibilities.
 #[tracing::instrument(skip(data), fields(?data.id))]
 pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
@@ -98,4 +99,14 @@ pub fn pv_req_timing_compat(data: &mut ApvrpInstance) {
   }
 
   data.compat_req_passive = compat_req_passive;
+}
+
+pub fn full_pipeline(mut data: ApvrpInstance) -> Data {
+  let _span = info_span!("preprocess", id=%data.id).entered();
+  info!("loaded instance");
+  preprocess::pv_req_timing_compat(&mut data);
+  let lss = LocSetStarts::new(data.n_passive, data.n_req);
+  let data = preprocess::av_grouping(data, &lss);
+  info!(num_av_groups = data.av_groups.len(), num_av = data.n_active, "preprocessing finished");
+  data
 }

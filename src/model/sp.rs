@@ -5,7 +5,7 @@ use fnv::FnvHashSet;
 use grb::constr::IneqExpr;
 use super::mp::MpVars;
 use super::cb::{CbError};
-use tracing::{error_span, debug, trace, error, debug_span};
+use tracing::*;
 use crate::TaskType::ODepot;
 use itertools::Itertools;
 use crate::solution::*;
@@ -24,12 +24,12 @@ pub struct SpConstraints {
 }
 
 impl SpConstraints {
-  pub fn build(data: &Data, tasks: &Tasks, av_routes: &Vec<(Avg, AvPath)>, pv_routes: &Vec<(Pv, PvPath)>, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
+  pub fn build(data: &Data, tasks: &Tasks, sol: &Solution, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
     let _span = error_span!("sp_cons").entered();
 
     // Constraints (3b)
     let mut av_sync = map_with_capacity(vars.len()); // slightly too big but close enough
-    for (_, route) in av_routes {
+    for (_, route) in &sol.av_routes {
       for (&t1, &t2) in route.iter().tuple_windows() {
         if t1 != tasks.odepot && t2 != tasks.ddepot {
           trace!(?t1, ?t2, "av_sync");
@@ -52,7 +52,7 @@ impl SpConstraints {
       Ok(())
     };
 
-    for (_, pv_route) in pv_routes {
+    for (_, pv_route) in &sol.pv_routes {
       let mut pv_route = pv_route.iter();
       let mut t1 = *pv_route.next().unwrap();
       add_bounds(t1, model)?;
@@ -83,20 +83,19 @@ pub struct TimingSubproblem<'a> {
   pub second_last_tasks: SmallVec<[Task; NUM_AV_UB]>,
   pub cons: SpConstraints,
   pub model: Model,
-  pub av_routes: &'a Vec<(Avg, AvPath)>,
-  pub pv_routes: &'a Vec<(Pv, PvPath)>,
+  pub mp_sol: &'a Solution,
   pub data: &'a Data,
 }
 
 
 impl<'a> TimingSubproblem<'a> {
-  pub fn build(env: &Env, data: &'a Data, tasks: &Tasks, av_routes: &'a Vec<(Avg, AvPath)>, pv_routes: &'a Vec<(Pv, PvPath)>) -> Result<TimingSubproblem<'a>> {
+  pub fn build(env: &Env, data: &'a Data, tasks: &Tasks, sol: &'a Solution) -> Result<TimingSubproblem<'a>> {
     let _span = error_span!("sp_build").entered();
 
     let mut model = Model::with_env("subproblem", env)?;
     let vars: Map<_, _> = {
-      let mut v = map_with_capacity(pv_routes.iter().map(|(_, tasks)| tasks.len()).sum());
-      for (_, tasks) in pv_routes {
+      let mut v = map_with_capacity(sol.pv_routes.iter().map(|(_, tasks)| tasks.len()).sum());
+      for (_, tasks) in &sol.pv_routes {
         for &t in tasks {
           v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
         }
@@ -104,12 +103,12 @@ impl<'a> TimingSubproblem<'a> {
       v
     };
 
-    let cons = SpConstraints::build(data, tasks, av_routes, pv_routes, &mut model, &vars)?;
+    let cons = SpConstraints::build(data, tasks, sol, &mut model, &vars)?;
 
     let mut obj_constant = 0.0;
     let mut second_last_tasks = SmallVec::new();
 
-    let obj = av_routes.iter()
+    let obj = sol.av_routes.iter()
       .map(|(_, route)| {
         let second_last_task = &route[route.len() - 2];
         second_last_tasks.push(*second_last_task);
@@ -122,7 +121,7 @@ impl<'a> TimingSubproblem<'a> {
     trace!(?obj_constant, obj=?obj.with_names(&model));
     model.set_objective(obj, Minimize)?;
 
-    Ok(TimingSubproblem { vars, cons, model, av_routes, pv_routes, data, second_last_tasks })
+    Ok(TimingSubproblem { vars, cons, model, mp_sol: sol, data, second_last_tasks })
   }
 
   pub fn add_cuts(mut self, cb: &mut super::cb::Cb, estimate: Time) -> Result<()> {
@@ -154,12 +153,14 @@ impl<'a> TimingSubproblem<'a> {
               for (ty, i, cut) in &cb.cut_cache {
                 if ty.is_opt_cut() {
                   let (lhs, rhs) = cut.evaluate(&cb.var_vals);
-                  if (rhs - lhs).abs() < 1e-6 {
-                    error!(?ty, idx=i, ?obj, ?lhs, ?rhs, cut=?cut.with_names(&cb.var_names),  "invalid opt cut");
-                  }
+                  warn!(?ty, idx=i, ?obj, ?lhs, ?rhs, cut=?cut.with_names(&cb.var_names),  "possible invalid opt cut");
                 }
               }
-              return Err(CbError::Assertion.into());
+              let mut solution = self.mp_sol.clone();
+              solution.objective = Some(obj);
+              let err = CbError::InvalidBendersCut { estimate, obj, solution };
+              cb.error = Some(err.clone());
+              return Err(err.into());
             }
           }
 

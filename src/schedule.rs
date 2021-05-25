@@ -66,9 +66,11 @@ pub fn av_route(data: &Data, tasks: &[Task]) -> Vec<Time> {
 }
 
 
-/// Computes an understimate of the earliest time this AV route can be back at the depot.  Expects `tasks[0] != ODp` and that
+/// Computes an underestimate of the earliest time this AV route can be back at the depot.  Expects `tasks[0] != ODp` and that
 /// the last task is `DDp`
 pub fn av_route_finish_time(data: &Data, tasks: &[Task]) -> Time {
+  debug_assert_eq!(tasks.last().unwrap().ty, TaskType::DDepot);
+  debug_assert_ne!(tasks.first().unwrap().ty, TaskType::ODepot);
   let mut t = max(tasks[0].t_release, data.travel_time[&(Loc::Ao, tasks[0].start)]);
   for (t1, t2) in tasks.iter().tuple_windows() {
     av_forward_step(&mut t, data, t1, t2);
@@ -90,3 +92,23 @@ pub fn check_av_route(data: &Data, tasks: &[Task]) -> bool {
   true
 }
 
+/// For each Passive Vehicle-Request pair, computes the earliest time we can *leave* the pickup of the request.
+#[tracing::instrument(level = "trace", skip(data))]
+pub fn earliest_departures(data: &Data) -> Map<(Pv, Req), Time> {
+  data.compat_req_passive.iter()
+    .flat_map(|(&r, pvs)| {
+      pvs.iter()
+        .map(move |&p| {
+          let rp = Loc::ReqP(r);
+          let po = Loc::Po(p);
+          trace!(?rp, ?po);
+          let t = std::cmp::max(
+            data.start_time[&rp],
+            data.travel_time[&(Loc::Ao, po)] + data.travel_time[&(po, rp)] + data.srv_time[&rp],
+          );
+
+          ((p, r), t)
+        })
+    })
+    .collect()
+}

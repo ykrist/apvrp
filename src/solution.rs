@@ -206,9 +206,9 @@ pub fn get_tasks_by_pv<M: QueryVarValues>(ctx: &M, xvars: &Map<Task, Var>) -> Re
 }
 
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Solution {
-  pub objective: Cost,
+  pub objective: Option<Cost>,
   pub av_routes: Vec<(Avg, Vec<Task>)>,
   pub pv_routes: Vec<(Pv, Vec<Task>)>,
 }
@@ -237,11 +237,11 @@ impl Solution {
 
     let objective = mp.model.get_attr(attr::ObjVal)?.round() as Cost;
 
-    Ok(Solution { objective, av_routes, pv_routes })
+    Ok(Solution { objective: Some(objective), av_routes, pv_routes })
   }
 
   pub fn solve_for_times(&self, env: &grb::Env, data: &Data, tasks: &Tasks) -> Result<SpSolution> {
-    let mut sp = TimingSubproblem::build(env, data, tasks, &self.av_routes, &self.pv_routes)?;
+    let mut sp = TimingSubproblem::build(env, data, tasks, self)?;
     sp.model.optimize()?;
     use grb::Status::*;
     match sp.model.status()? {
@@ -264,7 +264,7 @@ impl SpSolution {
       .map(|(task, time)| (task, time.round() as Time))
       .collect();
 
-    let mut avr: Vec<_> = sp.av_routes.iter()
+    let mut avr: Vec<_> = sp.mp_sol.av_routes.iter()
       .map(|(av, route)| {
         let mut sched: Vec<_> = route[..route.len() - 1].iter()
           .map(|task| (*task, *task_start_times.get(task).unwrap_or(&0)))
@@ -280,7 +280,7 @@ impl SpSolution {
 
     avr.sort_by_key(|(av, _)| *av);
 
-    let mut pvr: Vec<_> = sp.pv_routes.iter()
+    let mut pvr: Vec<_> = sp.mp_sol.pv_routes.iter()
       .map(|(pv, route)| {
         let sched = route.iter().map(|t| (*t, task_start_times[t])).collect();
         (*pv, sched)
@@ -433,5 +433,5 @@ pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &Tasks, lss: &LocSetStar
     pv_routes.push((pv, route));
   }
 
-  Ok(Solution { objective:  soln.objective, av_routes, pv_routes })
+  Ok(Solution { objective:  Some(soln.objective), av_routes, pv_routes })
 }

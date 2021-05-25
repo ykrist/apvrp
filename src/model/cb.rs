@@ -23,6 +23,7 @@ use crate::model::cb::CutType::EndTime;
 #[derive(Debug, Clone)]
 pub enum CbError {
   Assertion,
+  InvalidBendersCut{ estimate: Cost, obj: Cost, solution: Solution },
   Status(grb::Status),
   Other(String),
 }
@@ -33,6 +34,8 @@ impl fmt::Display for CbError {
     match self {
       CbError::Status(s) => f.write_fmt(format_args!("unexpected status: {:?}", s))?,
       CbError::Assertion => f.write_str("an assertion failed")?,
+      CbError::InvalidBendersCut { estimate, obj, .. } =>
+        f.write_fmt(format_args!("invalid Benders estimate ( estimate = {} > {} = obj )", estimate, obj))?,
       CbError::Other(s) => f.write_str(s)?,
     }
     Ok(())
@@ -53,7 +56,10 @@ pub enum CutType {
   LpOpt = 0,
   LpFeas,
   AvCycle,
-  AvChainTournament,
+  AvChainForwardTourn,
+  AvChainFullTourn,
+  AvChainFixStartFullTourn,
+  AvChainFixEndFullTourn,
   AvChainInfork,
   AvChainOutfork,
   PvCycle,
@@ -148,6 +154,8 @@ pub struct Cb<'a> {
   sp_env: Env,
   #[cfg(debug_assertions)]
   pub var_vals: Map<Var, f64>,
+  #[cfg(debug_assertions)]
+  pub error: Option<CbError>
 }
 
 impl<'a> Cb<'a> {
@@ -185,6 +193,8 @@ impl<'a> Cb<'a> {
       params: &exp.parameters,
       #[cfg(debug_assertions)]
       var_vals: Map::default(),
+      #[cfg(debug_assertions)]
+      error: None,
     })
   }
 
@@ -194,17 +204,17 @@ impl<'a> Cb<'a> {
 
     #[cfg(debug_assertions)]
       let _s = {
-        let (lhs, rhs) = cut.evaluate(&self.var_vals);
-        let span = trace_span!("cut_check", ?lhs, ?rhs, cut=?cut.with_names(&self.var_names)).entered();
-        if lhs <= rhs + 1e-6  {
-          error!(index=i, "cut is not violated!");
-          panic!("bugalug");
-        }
-        span
-      };
+      let (lhs, rhs) = cut.evaluate(&self.var_vals);
+      let span = trace_span!("cut_check", ?lhs, ?rhs, cut=?cut.with_names(&self.var_names)).entered();
+      if lhs <= rhs + 1e-6 {
+        error!(index = i, "cut is not violated!");
+        panic!("bugalug");
+      }
+      span
+    };
 
 
-    info!(index=i, "add cut");
+    info!(index = i, "add cut");
     self.cut_cache.push((ty, i, cut));
   }
 
@@ -226,7 +236,7 @@ impl<'a> Cb<'a> {
       *count += 1;
     }
 
-    let cycle_tasks = &cycle[..cycle.len()-1];
+    let cycle_tasks = &cycle[..cycle.len() - 1];
 
     let ysum = cycle_tasks.iter()
       .cartesian_product(cycle_tasks.iter())
@@ -266,7 +276,7 @@ impl<'a> Cb<'a> {
 
     // let lhs = self.av_chain_fork_lhs(chain);
 
-    let lhs =    self.tasks.similar_tasks[&chain[1]].iter()
+    let lhs = self.tasks.similar_tasks[&chain[1]].iter()
       .cartesian_product(self.sets.avs())
       .filter_map(move |(&t2, a)| y.get(&(a, chain[0], t2)).copied())
       .grb_sum() + self.av_chain_fork_lhs(&chain[1..]);
@@ -276,7 +286,7 @@ impl<'a> Cb<'a> {
 
   #[tracing::instrument(level = "trace", skip(self))]
   fn av_chain_outfork_cut(&mut self, chain: &[Task]) {
-    let chain = &chain[..chain.len()-1];
+    let chain = &chain[..chain.len() - 1];
     let t1 = *chain.last().expect("chain should have at least three tasks");
     let n = chain.len() - 1;  // number of arcs in legal chain
     let y = &self.mp_vars.y;
@@ -290,8 +300,7 @@ impl<'a> Cb<'a> {
       .grb_sum();
 
 
-
-    let lhs = self.tasks.similar_tasks[&chain[n-1]].iter()
+    let lhs = self.tasks.similar_tasks[&chain[n - 1]].iter()
       .cartesian_product(self.sets.avs())
       .filter_map(move |(&t1, a)| y.get(&(a, t1, chain[n])).copied())
       .grb_sum() + self.av_chain_fork_lhs(&chain[..n]);
@@ -301,50 +310,74 @@ impl<'a> Cb<'a> {
 
   #[tracing::instrument(level = "trace", skip(self))]
   fn av_chain_tournament_cut(&mut self, chain: &[Task]) {
-    // let n = chain.len()-1;
-    // /// Are all permutations illegal?
-    // let mut all_illegal = true;
-    // /// Are all permutations where the first Task in the chain is held fixed illegal?
-    // let mut all_illegal_first_fixed = true;
-    // /// Are all permutations where the last Task in the chain is held fixed illegal?
-    // let mut all_illegal_last_fixed = true;
-    //
-    // for c in chain.permutations() {
-    //   let c = c.as_slice();
-    //   if schedule::check_av_route(self.data, c) {
-    //     all_illegal = false;
-    //
-    //     if c[0] == chain[0] {
-    //       all_illegal_first_fixed = false;
-    //     }
-    //
-    //     if c[n] == chain[n] {
-    //       all_illegal_last_fixed = false
-    //     }
-    //   }
-    // }
-    //
-    // if all_illegal {
-    //   // add cut
-    // } else if all_illegal_last_fixed | all_illegal_first_fixed {
-    //   if all_illegal_first_fixed {
-    //     // add cut
-    //   }
-    //   if all_illegal_last_fixed {
-    //     // add cut
-    //   }
-    // } else {
-    //   // basic forward tornamenting
-    // }
+    let n = chain.len() - 1;
+    // Are all permutations illegal?
+    let mut all_illegal = true;
+    // Are all permutations where the first Task in the chain is held fixed illegal?
+    let mut all_illegal_first_fixed = true;
+    // Are all permutations where the last Task in the chain is held fixed illegal?
+    let mut all_illegal_last_fixed = true;
 
-    // basic forward tornamenting
+    for c in chain.permutations() {
+      let c = c.as_slice();
+      if schedule::check_av_route(self.data, c) {
+        all_illegal = false;
 
-    let lhs = chain.iter().enumerate()
+        if c[0] == chain[0] {
+          all_illegal_first_fixed = false;
+        }
+
+        if c[n] == chain[n] {
+          all_illegal_last_fixed = false
+        }
+
+        if !all_illegal_first_fixed && !all_illegal_last_fixed && !all_illegal {
+          break;
+        }
+      }
+    }
+
+
+    let mut lhs = chain.iter().enumerate()
       .flat_map(|(k, &t1)| chain[(k + 1)..].iter().map(move |&t2| (t1, t2)))
       .flat_map(|(t1, t2)| self.mp_vars.ysum_similar_tasks(self.sets, self.tasks, t1, t2))
       .grb_sum();
 
-    self.enqueue_cut(c!(lhs <= chain.len() - 2), CutType::AvChainTournament)
+    let mut add_similar_tasks_to_lhs = |i,j| {
+      for y in self.mp_vars.ysum_similar_tasks(self.sets, self.tasks, chain[i], chain[j]) {
+        lhs += y;
+      }
+    };
+
+    let ty = if all_illegal {
+      for i in 1..=n {
+        for j in 0..i {
+          add_similar_tasks_to_lhs(i,j);
+        }
+      }
+      CutType::AvChainFullTourn
+
+    } else if all_illegal_last_fixed {
+      for i in 1..n {
+        for j in 0..i {
+          add_similar_tasks_to_lhs(i,j)
+        }
+      }
+      CutType::AvChainFixEndFullTourn
+
+    } else if all_illegal_first_fixed {
+      for i in 1..=n {
+        for j in 1..i {
+          add_similar_tasks_to_lhs(i,j)
+        }
+      }
+      CutType::AvChainFixStartFullTourn
+
+    } else {
+      CutType::AvChainForwardTourn
+    };
+
+    self.enqueue_cut(c!(lhs <= chain.len() - 2), ty)
   }
 
   /// Given `chain`, which violates the AV timing constraints, find the shortest subchain which still violates
@@ -385,7 +418,7 @@ impl<'a> Cb<'a> {
     // [0, 1, 2, 3, 4, 0, 1, 2, 3]
     // which allows us to sweep all the cyclic permutations with slices
     let cycle_rep = {
-      let mut v = Vec::with_capacity(2*cycle.len() - 3);
+      let mut v = Vec::with_capacity(2 * cycle.len() - 3);
       v.extend_from_slice(cycle);
       v.extend_from_slice(&cycle[1..cycle.len() - 2]);
       v
@@ -403,7 +436,7 @@ impl<'a> Cb<'a> {
     None
   }
 
-  #[tracing::instrument(level="trace", skip(self))]
+  #[tracing::instrument(level = "trace", skip(self))]
   fn pv_cycle_cut(&mut self, cycle: &PvPath) {
     debug_assert!(cycle.first() != cycle.last());
     let xsum = cycle.iter()
@@ -421,7 +454,7 @@ impl<'a> Cb<'a> {
   // }
   //
   #[allow(unused_variables)]
-  #[tracing::instrument(level="trace", skip(self))]
+  #[tracing::instrument(level = "trace", skip(self))]
   fn pv_chain_infork_cut(&mut self, chain: &[Task]) {
     let chain = &chain[1..];
     let rhs_sum = chain.pv_legal_before(self.data, self.tasks)
@@ -436,9 +469,9 @@ impl<'a> Cb<'a> {
   }
 
   #[allow(unused_variables)]
-  #[tracing::instrument(level="trace", skip(self))]
+  #[tracing::instrument(level = "trace", skip(self))]
   fn pv_chain_outfork_cut(&mut self, chain: &[Task]) {
-    let chain = &chain[..chain.len()-1];
+    let chain = &chain[..chain.len() - 1];
     let rhs_sum = chain.pv_legal_after(self.data, self.tasks)
       .map(|t| self.mp_vars.x[&t])
       .grb_sum();
@@ -451,7 +484,7 @@ impl<'a> Cb<'a> {
   }
 
 
-  fn sep_pv_cuts(&mut self, ctx: &MIPSolCtx) -> Result<Vec<(Pv, PvPath)>>  {
+  fn sep_pv_cuts(&mut self, ctx: &MIPSolCtx) -> Result<Vec<(Pv, PvPath)>> {
     let pv_tasks = get_tasks_by_pv(ctx, &self.mp_vars.x)?;
     let mut pv_routes = Vec::with_capacity(pv_tasks.len());
     for (&pv, tasks) in &pv_tasks {
@@ -476,7 +509,7 @@ impl<'a> Cb<'a> {
 
   fn av_chain_cuts(&mut self, chain: &[Task]) {
     let n = chain.len() as u32;
-    if self.params.av_fork_cuts_min_chain_len  <= n && n <= self.params.av_fork_cuts_max_chain_len {
+    if self.params.av_fork_cuts_min_chain_len <= n && n <= self.params.av_fork_cuts_max_chain_len {
       self.av_chain_infork_cut(&chain);
       self.av_chain_outfork_cut(&chain);
     }
@@ -486,16 +519,16 @@ impl<'a> Cb<'a> {
     }
   }
 
-  #[tracing::instrument(level="trace", skip(self))]
   fn endtime_cut(&mut self, finish_time: Time, av: Av, av_route: &[Task]) {
+    let _s = trace_span!("endtime_cut", finish_time, av, ?av_route).entered();
     // first task is ODp, last is DDp
     let n = av_route.len() - 2;
     let mut lhs = finish_time * self.mp_vars.y[&(av, av_route[n], av_route[n + 1])];
 
     for k in 1..n {
-      let partial_finish_time = schedule::av_route_finish_time(self.data, &av_route[k+1..]);
+      let partial_finish_time = schedule::av_route_finish_time(self.data, &av_route[k + 1..]);
       if partial_finish_time != finish_time {
-        lhs = lhs + (finish_time - partial_finish_time)*(self.mp_vars.y[&(av, av_route[k], av_route[k+1])] - 1)
+        lhs = lhs + (finish_time - partial_finish_time) * (self.mp_vars.y[&(av, av_route[k], av_route[k + 1])] - 1)
       }
     }
 
@@ -524,7 +557,7 @@ impl<'a> Cb<'a> {
         if !schedule::check_av_route(self.data, &av_path) {
           let chain = self.shorten_illegal_av_chain(&av_path);
           self.av_chain_cuts(chain);
-        } else {
+        } else if self.params.endtime_cuts {
           let finish_time = schedule::av_route_finish_time(self.data, &av_path[1..]);
           let n = av_path.len() - 2;
           let theta_val = ctx.get_solution(std::iter::once(self.mp_vars.theta[&(av, av_path[n])]))?[0];
@@ -532,8 +565,6 @@ impl<'a> Cb<'a> {
           if (theta_val.round() as Time) < finish_time {
             self.endtime_cut(finish_time, av, &av_path);
           }
-
-
         }
         av_routes.push((av, av_path));
       }
@@ -541,7 +572,7 @@ impl<'a> Cb<'a> {
     Ok(av_routes)
   }
 
-  fn update_var_values(&mut self,  ctx: &MIPSolCtx) -> Result<()> {
+  fn update_var_values(&mut self, ctx: &MIPSolCtx) -> Result<()> {
     #[cfg(debug_assertions)]
       {
         let vars = self.mp_vars.x.values()
@@ -555,15 +586,10 @@ impl<'a> Cb<'a> {
 
     Ok(())
   }
-
 }
 
 
-
-
-
 impl<'a> Callback for Cb<'a> {
-
   fn callback(&mut self, w: Where) -> CbResult {
     let _span = info_span!("cb").entered();
 
@@ -579,7 +605,6 @@ impl<'a> Callback for Cb<'a> {
         let pv_routes = self.sep_pv_cuts(&ctx)?;
 
 
-
         if self.cut_cache.len() > initial_cut_cache_len {
           info!(ncuts = self.cut_cache.len() - initial_cut_cache_len, "heuristic cuts added (PV only)");
         } else {
@@ -590,7 +615,8 @@ impl<'a> Callback for Cb<'a> {
           } else {
             let _span = error_span!("lp_sp").entered();
             info!("no heuristic cuts found, solving LP subproblem");
-            let sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &av_routes, &pv_routes)?;
+            let sol = Solution{ objective: None, av_routes, pv_routes };
+            let sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &sol)?;
 
             let theta: Map<_, _> = get_var_values(&ctx, &self.mp_vars.theta)?.collect();
             trace!(?theta);
@@ -602,7 +628,6 @@ impl<'a> Callback for Cb<'a> {
         for (_, _, cut) in &self.cut_cache[initial_cut_cache_len..] {
           ctx.add_lazy(cut.clone())?;
         }
-
       }
 
       _ => {}

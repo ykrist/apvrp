@@ -11,8 +11,22 @@ pub use instances::dataset::apvrp::{
   TILK_AB,
   DSET,
   Av, Pv, Req, Time, Cost, Loc as RawLoc,
+  ApvrpInstance,
 };
 use instances::dataset::apvrp::LocSetStarts;
+use instances::dataset::Dataset;
+
+pub fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
+  use instances::{
+    dataset::{self, apvrp::rescale_distances},
+    modify::DSetModify,
+  };
+  dataset::DSetCollection::new()
+    .push_owned(TILK_AB.map(move |data| rescale_distances(data, tilk_scale)))
+    .push_ref(&*MEISEL_A)
+    .finish()
+}
+
 
 /// Active Vehicle Group.
 pub type Avg = Av;

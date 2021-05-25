@@ -83,10 +83,11 @@ pub struct MpConstraints {
   pub num_av: Map<Av, Constr>,
   pub av_flow: Map<(Av, Task), Constr>,
   pub xy_link: Map<Task, Constr>,
+  // TODO add trivial lb on theta here
 }
 
 impl MpConstraints {
-  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model, vars: &MpVars, obj_param: ObjWeights) -> Result<Self> {
+  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model, vars: &MpVars, obj_param: &ObjWeights) -> Result<Self> {
     let req_cover = {
       let mut cmap = map_with_capacity(data.n_req as usize);
       for r in sets.reqs() {
@@ -219,6 +220,7 @@ pub struct TaskModelMaster {
   pub cons: MpConstraints,
   pub model: Model,
   pub sp_env: Env,
+  pub obj_param: ObjWeights,
 }
 
 
@@ -226,7 +228,7 @@ impl TaskModelMaster {
   pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, obj_param: ObjWeights) -> Result<Self> {
     let mut model = Model::new("Task Model MP")?;
     let vars = MpVars::build(data, sets, tasks, &mut model)?;
-    let cons = MpConstraints::build(data, sets, tasks, &mut model, &vars, obj_param)?;
+    let cons = MpConstraints::build(data, sets, tasks, &mut model, &vars, &obj_param)?;
 
     // initial Benders Cuts
     for (&(av, t, td), &y) in vars.y.iter() {
@@ -242,7 +244,7 @@ impl TaskModelMaster {
       e.start()?
     };
 
-    Ok(TaskModelMaster { vars, cons, model, sp_env })
+    Ok(TaskModelMaster { vars, cons, model, sp_env, obj_param })
   }
 
   #[tracing::instrument(level = "error", skip(self, sol))]
@@ -263,9 +265,10 @@ impl TaskModelMaster {
         }
       }
     }
-    self.model.set_obj_attr(attr::UB, &self.vars.obj, sol.objective as f64)?;
-    self.model.set_obj_attr(attr::LB, &self.vars.obj, sol.objective as f64)?;
-
+    if let Some(obj) = sol.objective {
+      self.model.set_obj_attr(attr::UB, &self.vars.obj, obj as f64)?;
+      self.model.set_obj_attr(attr::LB, &self.vars.obj, obj as f64)?;
+    }
     Ok(())
   }
 
