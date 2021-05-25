@@ -5,7 +5,7 @@ use fnv::FnvHashSet;
 use grb::constr::IneqExpr;
 use super::mp::MpVars;
 use super::cb::{CbError};
-use tracing::{error_span, debug, trace, error};
+use tracing::{error_span, debug, trace, error, debug_span};
 use crate::TaskType::ODepot;
 use itertools::Itertools;
 use crate::solution::*;
@@ -13,6 +13,7 @@ use crate::model::cb::{CutType, Cb};
 use std::collections::{HashSet, HashMap};
 use std::hash::{Hash, BuildHasher};
 use crate::utils::HashMapExt;
+use smallvec::SmallVec;
 
 pub struct SpConstraints {
   av_sync: Map<(Task, Task), Constr>,
@@ -75,131 +76,11 @@ impl SpConstraints {
     Ok(SpConstraints { av_sync, start_req, end_req, ub, lb })
   }
 }
-//
-// #[derive(Clone)]
-// pub enum BendersCut {
-//   Optimality(OptCut),
-//   Feasibility(FeasCut),
-// }
-//
-// impl BendersCut {
-//   pub fn into_ineq(self, sets: &Sets, tasks: &Tasks, vars: &MpVars) -> IneqExpr {
-//     match self {
-//       BendersCut::Optimality(cut) => cut.into_ineq(sets, vars),
-//       BendersCut::Feasibility(cut) => cut.into_ineq(sets, vars),
-//     }
-//   }
-// }
-
-#[derive(Clone, Debug)]
-pub struct OptCut {
-  /// Subproblem objective when this cut is active.
-  pub sp_obj: f64,
-  /// Task-to-task pairs which must ALL be active for the cut to be active
-  pub task_pairs: Vec<(Task, Task)>,
-  /// Tasks which appear in the subproblem objective.
-  pub obj_tasks: Vec<Task>,
-}
-
-impl OptCut {
-  pub fn build(sp: &TimingSubproblem) -> Result<Self> {
-    let _span = error_span!("opt_cut").entered();
-
-    let sp_obj = sp.model.get_attr(attr::ObjVal)?;
-    let mut task_pairs = Vec::new();
-    for (&(t1, t2), c) in &sp.cons.av_sync {
-      trace!(?t1, ?t2, dual=?sp.model.get_obj_attr(attr::Pi, c));
-      // if t2.ty == TaskType::DDepot
-      //   || model.get_obj_attr(attr::Pi, c)?.abs() > 1e-8
-      // {
-      task_pairs.push((t1, t2));
-      // }
-    }
-
-    let mut obj_tasks = Vec::with_capacity(sp.vars.len());
-    for (t, var) in &sp.vars {
-      if sp.model.get_obj_attr(attr::Obj, var)? > 0.001 {
-        obj_tasks.push(*t);
-      }
-    }
-    trace!(task_pairs=?&task_pairs);
-
-    Ok(OptCut { sp_obj, task_pairs, obj_tasks })
-  }
-
-  pub fn into_ineq(self, sets: &Sets, vars: &MpVars) -> IneqExpr {
-    let _span = error_span!("opt_cut").entered();
-
-    let lhs = sets.avs()
-      .cartesian_product(self.obj_tasks)
-      .filter_map(|(av, t)| vars.theta.get(&(av, t)))
-      .grb_sum();
-
-    let mut ysum = Expr::default();
-    let n_pairs = self.task_pairs.len() as isize;
-
-    for (t1, t2) in self.task_pairs {
-      trace!(?t1, ?t2);
-      for av in sets.avs() {
-        if let Some(&y) = vars.y.get(&(av, t1, t2)) {
-          ysum = ysum + y;
-        }
-      }
-    }
-
-    c!(lhs >= self.sp_obj*(1 - n_pairs + ysum))
-  }
-}
-
-// #[derive(Clone)]
-// pub struct FeasCut {
-//   pub iis_constr: Vec<Constr>,
-//   pub task_pairs: Vec<(Task, Task)>,
-//   pub tasks: HashSet<Task>,
-// }
-//
-// impl FeasCut {
-//   pub fn build(model: &Model, cons: &SpConstraints) -> Result<Self> {
-//     let mut tasks = HashSet::new();
-//     let mut task_pairs = Vec::new();
-//
-//     let x_cons = cons.end_req.iter()
-//       .chain(&cons.start_req)
-//       .chain(&cons.lb)
-//       .chain(&cons.ub);
-//
-//     for (&t, c) in x_cons {
-//       if model.get_obj_attr(attr::IISConstr, c)? > 0 {
-//         tasks.push(t);
-//       }
-//     }
-//
-//     for (&pair, c) in &cons.av_sync {
-//       if model.get_obj_attr(attr::IISConstr, c)? > 0 {
-//         task_pairs.push(pair);
-//       }
-//     }
-//     Ok(FeasCut { tasks, task_pairs })
-//   }
-//
-//   pub fn into_ineq(self, sets: &Sets, vars: &MpVars) -> IneqExpr {
-//     let n_pairs = self.task_pairs.len();
-//     let n_x = self.tasks.len();
-//     let xsum = self.tasks.iter()
-//       .map(|t| vars.x[t])
-//       .grb_sum();
-//     let ysum = self.task_pairs.into_iter()
-//       .flat_map(|(t1, t2)|
-//         sets.avs().filter_map(move |av| vars.y.get(&(av, t1, t2))))
-//       .grb_sum();
-//
-//     c!(xsum + ysum <= n_pairs + n_x - 1)
-//   }
-// }
 
 
 pub struct TimingSubproblem<'a> {
   pub vars: Map<Task, Var>,
+  pub second_last_tasks: SmallVec<[Task; NUM_AV_UB]>,
   pub cons: SpConstraints,
   pub model: Model,
   pub av_routes: &'a Vec<(Avg, AvPath)>,
@@ -226,9 +107,12 @@ impl<'a> TimingSubproblem<'a> {
     let cons = SpConstraints::build(data, tasks, av_routes, pv_routes, &mut model, &vars)?;
 
     let mut obj_constant = 0.0;
+    let mut second_last_tasks = SmallVec::new();
+
     let obj = av_routes.iter()
       .map(|(_, route)| {
         let second_last_task = &route[route.len() - 2];
+        second_last_tasks.push(*second_last_task);
         obj_constant += (second_last_task.tt + data.travel_time[&(second_last_task.end, Loc::Ad)]) as f64;
         trace!(?second_last_task);
         vars[second_last_task]
@@ -238,16 +122,18 @@ impl<'a> TimingSubproblem<'a> {
     trace!(?obj_constant, obj=?obj.with_names(&model));
     model.set_objective(obj, Minimize)?;
 
-    Ok(TimingSubproblem { vars, cons, model, av_routes, pv_routes, data })
+    Ok(TimingSubproblem { vars, cons, model, av_routes, pv_routes, data, second_last_tasks })
   }
 
-  #[tracing::instrument(level = "error", skip(self, cb))]
   pub fn add_cuts(mut self, cb: &mut super::cb::Cb, estimate: Time) -> Result<()> {
-    let mut round = 0;
+    let _s = error_span!("add_cuts", estimate).entered();
+
+    let mut iter = 0;
     loop {
       self.model.optimize()?;
       let status = self.model.status();
-      debug!(?status, round);
+      let _s = debug_span!("lp_solve_loop", ?iter).entered();
+      debug!(?status);
       match status? {
         Status::Infeasible => {
           self.model.compute_iis()?;
@@ -255,18 +141,29 @@ impl<'a> TimingSubproblem<'a> {
         }
 
         Status::Optimal => {
+          if iter > 0 {
+            return Ok(());
+          }
           let obj = self.model.get_attr(attr::ObjVal)?.round() as Time;
-          debug!(obj);
-          trace!(T=?get_var_values(&self.model, &self.vars)?.collect_vec());
-          if estimate > obj {
-            SpSolution::from_sp(&self)?.pretty_print(self.data);
-            error!(obj, "invalid Benders cut");
-            return Err(CbError::Assertion.into());
+          trace!(obj);
+          #[cfg(debug_assertions)] {
+            if estimate > obj {
+              error!(obj,T=?get_var_values(&self.model, &self.vars)?.collect_vec(), "invalid Benders cut(s)");
+              let sol = SpSolution::from_sp(&self)?;
+              sol.pretty_print(&self.data);
+              for (ty, i, cut) in &cb.cut_cache {
+                if ty.is_opt_cut() {
+                  let (lhs, rhs) = cut.evaluate(&cb.var_vals);
+                  if (rhs - lhs).abs() < 1e-6 {
+                    error!(?ty, idx=i, ?obj, ?lhs, ?rhs, cut=?cut.with_names(&cb.var_names),  "invalid opt cut");
+                  }
+                }
+              }
+              return Err(CbError::Assertion.into());
+            }
           }
 
           if estimate < obj {
-            // let cut = OptCut::build(&self)?;
-            // cb.enqueue_cut(cut.into_ineq(cb.sets, &cb.mp_vars), CutType::LpOpt);
             cb.enqueue_cut(self.build_mrs_cut(cb)?, CutType::LpOpt);
           }
 
@@ -279,24 +176,30 @@ impl<'a> TimingSubproblem<'a> {
           return Err(err.into());
         }
       }
-      round += 1;
+      iter += 1;
     }
   }
 
+  #[tracing::instrument(level = "trace", skip(self, cb))]
   fn build_iis_cut(&mut self, cb: &Cb) -> Result<IneqExpr> {
     let mut tasks = HashSet::new();
 
-    let x_cons = self.cons.end_req.iter()
-      .chain(&self.cons.start_req)
-      .chain(&self.cons.lb)
-      .chain(&self.cons.ub);
-
-    for (&t, &c) in x_cons {
-      if self.model.get_obj_attr(attr::IISConstr, &c)? > 0 {
-        self.model.remove(c)?;
-        tasks.insert(t);
+    let model = &mut self.model;
+    let mut retain_non_iis_constr = |t: &Task, c: &mut Constr| -> Result<bool> {
+      if model.get_obj_attr(attr::IISConstr, &c)? > 0 {
+        trace!(?t, ?c, c_group="x_cons", "remove SP constr");
+        tasks.insert(*t);
+        model.remove(*c)?;
+        Ok(false)
+      } else {
+        Ok(true)
       }
-    }
+    };
+
+    self.cons.end_req.retain_ok(&mut retain_non_iis_constr)?;
+    self.cons.start_req.retain_ok(&mut retain_non_iis_constr)?;
+    self.cons.lb.retain_ok(&mut retain_non_iis_constr)?;
+    self.cons.ub.retain_ok(&mut retain_non_iis_constr)?;
 
     let mut lhs = tasks.iter().map(|t| cb.mp_vars.x[t]).grb_sum();
     let mut n = tasks.len();
@@ -304,6 +207,7 @@ impl<'a> TimingSubproblem<'a> {
     let model = &mut self.model;
     self.cons.av_sync.retain_ok(|&(t1, t2), &mut c| -> Result<bool> {
       if model.get_obj_attr(attr::IISConstr, &c)? > 0 {
+        trace!(?t1, ?t2, c_group="y_cons", "remove SP constr");
         model.remove(c)?;
 
         for a in cb.sets.avs() {
@@ -320,38 +224,75 @@ impl<'a> TimingSubproblem<'a> {
 
     Ok(c!( lhs <= n - 1 ))
   }
-    
+
 
   #[tracing::instrument(level = "trace", skip(self, cb))]
   fn build_mrs_cut(&self, cb: &Cb) -> Result<IneqExpr> {
     let sp_obj = self.model.get_attr(attr::ObjVal)?;
 
     let mut ysum = Expr::default();
-    let mut n_pairs = 0i32;
+    let mut n_x_y_terms = 0i32;
 
     for (&(t1, t2), c) in &self.cons.av_sync {
-      trace!(?t1, ?t2, dual=?self.model.get_obj_attr(attr::Pi, c));
-      if self.model.get_obj_attr(attr::Pi, c)?.abs() > 1e-6 || t2.ty == TaskType::DDepot {
+      trace!(?t1, ?t2, dual=?self.model.get_obj_attr(attr::Pi, c), slack=?self.model.get_obj_attr(attr::Slack, c));
+      if self.model.get_obj_attr(attr::Pi, c)?.abs() > 1e-6 {
         for a in cb.sets.avs() {
           if let Some(&y) = cb.mp_vars.y.get(&(a, t1, t2)) {
             ysum += y;
           }
         }
-        n_pairs += 1;
-      }
-    }
-    assert!(n_pairs > 0);
-    let mut theta_sum = Expr::default();
-    for (&t, var) in &self.vars {
-      if self.model.get_obj_attr(attr::Obj, var)? > 0.001 {
-        for a in cb.sets.avs() {
-          if let Some(&theta) = cb.mp_vars.theta.get(&(a, t)) {
-            theta_sum = theta_sum + theta;
-          }
-        }
+        n_x_y_terms += 1;
       }
     }
 
-    Ok(c!(sp_obj*(1 - n_pairs + ysum) <= theta_sum))
+    #[cfg(debug_assertions)] {
+      fn log_nonzero_dual_tasks<'a>(model: &grb::Model, cgroup: &str, cons: impl IntoIterator<Item=(&'a Task,&'a Constr)>) -> Result<()> {
+        for (t, c) in cons {
+          let dual =model.get_obj_attr(attr::Pi, c)?;
+          if dual.abs() > 0.0001  {
+            trace!(?t, ?dual, ?cgroup, "non-zero dual");
+          }
+        }
+        Ok(())
+      }
+
+      log_nonzero_dual_tasks(&self.model, "start_req", &self.cons.start_req)?;
+      log_nonzero_dual_tasks(&self.model, "end_req", &self.cons.end_req)?;
+      log_nonzero_dual_tasks(&self.model, "ub", &self.cons.ub)?;
+      log_nonzero_dual_tasks(&self.model, "lb", &self.cons.lb)?;
+    }
+
+    fn add_tasks_with_nonzero_dual<'a>(model: &grb::Model, taskset: &mut Set<Task>, cons: impl IntoIterator<Item=(&'a Task,&'a Constr)>) -> Result<()> {
+      for (t, c) in cons {
+        if model.get_obj_attr(attr::Pi, c)?.abs() > 0.0001  {
+           taskset.insert(*t);
+        }
+      }
+      Ok(())
+    }
+
+    let mut critial_tasks = Set::default();
+    add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.end_req)?;
+    add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.start_req)?;
+    add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.ub)?;
+    add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.lb)?;
+    n_x_y_terms += critial_tasks.len() as i32;
+
+    let xsum = critial_tasks.into_iter().map(|t| cb.mp_vars.x[&t]).grb_sum();
+
+    let mut theta_sum = Expr::default();
+    for &t in &self.second_last_tasks {
+      for a in cb.sets.avs() {
+        if let Some(&theta) = cb.mp_vars.theta.get(&(a, t)) {
+          theta_sum += theta;
+          ysum += cb.mp_vars.y[&(a, t, cb.tasks.ddepot)];
+          n_x_y_terms += 1;
+        }
+      }
+    }
+    let sol = SpSolution::from_sp(self)?;
+    let cut = c!(sp_obj*(1 - n_x_y_terms + ysum + xsum) <= theta_sum);
+    trace!(n_x_y_terms, cut=?cut.with_names(&cb.var_names), ?sol);
+    Ok(cut)
   }
 }

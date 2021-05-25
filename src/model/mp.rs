@@ -7,9 +7,10 @@ use crate::solution::Solution;
 
 #[derive(Clone)]
 pub struct MpVars {
+  pub obj: Var,
   pub x: Map<Task, Var>,
   pub y: Map<(Av, Task, Task), Var>,
-   /// These will be (Av, PvirTaskId, PvirTaskId)
+  /// These will be (Av, PvirTaskId, PvirTaskId)
   pub u: Map<Req, Var>,
   pub theta: Map<(Av, Task), Var>,
 }
@@ -29,12 +30,10 @@ impl std::default::Default for ObjWeights {
 }
 
 impl MpVars {
-  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model, obj_param: ObjWeights) -> Result<Self> {
+  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model) -> Result<Self> {
     let mut x = map_with_capacity(tasks.all.len());
     for &t in &tasks.all {
-      let obj_coeff =
-        if !t.is_depot() { obj_param.tt * (data.travel_cost[&(t.start, t.end)] as f64) } else { 0.0 };
-      x.insert(t, add_binvar!(model, name: &format!("X[{:?}]", &t), obj: obj_coeff)?);
+      x.insert(t, add_binvar!(model, name: &format!("X[{:?}]", &t))?);
     }
 
     let n_yvars: usize = tasks.succ.values().map(|s| s.len()).sum();
@@ -44,8 +43,7 @@ impl MpVars {
       for &t1 in av_tasks {
         for &t2 in &tasks.succ[&t1] {
           if av_tasks.contains(&t2) {
-            let obj_coeff = obj_param.tt * (data.travel_cost[&(t1.end, t2.start)] as f64);
-            y.insert((av, t1, t2), add_binvar!(model, name: &format!("Y[{:?}-{:?}|{}]", &t1, &t2, av), obj: obj_coeff)?);
+            y.insert((av, t1, t2), add_binvar!(model, name: &format!("Y[{:?}-{:?}|{}]", &t1, &t2, av))?);
           }
         }
       }
@@ -53,17 +51,19 @@ impl MpVars {
 
     let mut u = map_with_capacity(data.n_req as usize);
     for r in sets.reqs() {
-      u.insert(r, add_binvar!(model, name: &format!("U[{}]", r), obj: obj_param.cover)?);
+      u.insert(r, add_binvar!(model, name: &format!("U[{}]", r))?);
     }
 
     let mut theta = map_with_capacity(data.n_active as usize * tasks.all.len());
     for a in sets.avs() {
       for &t in &tasks.compat_with_av[&a] {
-        theta.insert((a, t), add_ctsvar!(model, name: &format!("Theta[{:?}|{}]", &t, a), obj: obj_param.av_finish_time)?);
+        theta.insert((a, t), add_ctsvar!(model, name: &format!("Theta[{:?}|{}]", &t, a))?);
       }
     }
 
-    Ok(MpVars { x, y, theta, u })
+    let obj = add_ctsvar!(model, name: "Obj", obj: 1)?;
+
+    Ok(MpVars { obj, x, y, theta, u })
   }
 
 
@@ -76,6 +76,7 @@ impl MpVars {
 }
 
 pub struct MpConstraints {
+  pub obj: Constr,
   pub req_cover: Map<Req, Constr>,
   pub pv_cover: Map<Pv, Constr>,
   pub pv_flow: Map<(Pv, Loc), Constr>,
@@ -85,7 +86,7 @@ pub struct MpConstraints {
 }
 
 impl MpConstraints {
-  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model, vars: &MpVars) -> Result<Self> {
+  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model, vars: &MpVars, obj_param: ObjWeights) -> Result<Self> {
     let req_cover = {
       let mut cmap = map_with_capacity(data.n_req as usize);
       for r in sets.reqs() {
@@ -184,7 +185,32 @@ impl MpConstraints {
       cmap
     };
 
-    Ok(MpConstraints { req_cover, pv_cover, pv_flow, num_av, av_flow, xy_link })
+    let obj = {
+      let mut rhs = Expr::default();
+
+      for (t, &x) in &vars.x {
+        let obj = if !t.is_depot() {
+          obj_param.tt * (data.travel_cost[&(t.start, t.end)] as f64)
+        } else { 0.0 };
+        rhs += obj * x;
+      }
+
+      for ((_, t1, t2), &y) in &vars.y {
+        let obj = obj_param.tt * (data.travel_cost[&(t1.end, t2.start)] as f64);
+        rhs += obj * y;
+      }
+
+      for (_, &u) in &vars.u {
+        rhs += obj_param.cover * u;
+      }
+
+      for (_, &theta) in &vars.theta {
+        rhs += obj_param.av_finish_time * theta;
+      }
+
+      model.add_constr("Obj", c!(vars.obj == rhs))?
+    };
+    Ok(MpConstraints { obj, req_cover, pv_cover, pv_flow, num_av, av_flow, xy_link })
   }
 }
 
@@ -199,8 +225,8 @@ pub struct TaskModelMaster {
 impl TaskModelMaster {
   pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, obj_param: ObjWeights) -> Result<Self> {
     let mut model = Model::new("Task Model MP")?;
-    let vars = MpVars::build(data, sets, tasks, &mut model, obj_param)?;
-    let cons = MpConstraints::build(data, sets, tasks, &mut model, &vars)?;
+    let vars = MpVars::build(data, sets, tasks, &mut model)?;
+    let cons = MpConstraints::build(data, sets, tasks, &mut model, &vars, obj_param)?;
 
     // initial Benders Cuts
     for (&(av, t, td), &y) in vars.y.iter() {
@@ -219,7 +245,7 @@ impl TaskModelMaster {
     Ok(TaskModelMaster { vars, cons, model, sp_env })
   }
 
-  #[tracing::instrument(level="error", skip(self, sol))]
+  #[tracing::instrument(level = "error", skip(self, sol))]
   pub fn fix_solution(&mut self, sol: &Solution) -> Result<()> {
     for (p, r) in &sol.pv_routes {
       trace!(p, ?r, "fix PV route");
@@ -237,6 +263,9 @@ impl TaskModelMaster {
         }
       }
     }
+    self.model.set_obj_attr(attr::UB, &self.vars.obj, sol.objective as f64)?;
+    self.model.set_obj_attr(attr::LB, &self.vars.obj, sol.objective as f64)?;
+
     Ok(())
   }
 
@@ -247,6 +276,8 @@ impl TaskModelMaster {
                                     .chain(self.vars.y.values().copied())
                                     .map(|var| (var, 0.0)),
     )?;
+    self.model.set_obj_attr(attr::UB, &self.vars.obj, grb::INFINITY)?;
+    self.model.set_obj_attr(attr::LB, &self.vars.obj, 0.0)?;
     Ok(())
   }
 }

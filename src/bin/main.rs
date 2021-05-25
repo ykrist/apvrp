@@ -1,12 +1,13 @@
-use apvrp::*;
+
 use anyhow::Result;
 use instances::dataset::{Dataset, apvrp::ApvrpInstance};
-use tracing::{info, info_span};
-use apvrp::model::mp::ObjWeights;
+use tracing::{info, info_span, error, trace};
 use instances::dataset::apvrp::LocSetStarts;
-use tracing::{error, trace};
 use grb::prelude::*;
 use slurm_harray::{Experiment, handle_slurm_args};
+
+use apvrp::model::mp::ObjWeights;
+use apvrp::*;
 
 
 fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
@@ -146,30 +147,36 @@ fn main() -> Result<()> {
     mp.model.update()?;
     mp.model.write("master_problem.lp")?;
     mp.model.optimize()?;
-    error!("wrote");
 
-    let mut model = grb::Model::read_from("master_problem.lp", &Env::new("")?)?;
-    error!("read");
-    model.optimize()?;
-    if model.status()? == Status::Infeasible {
+
+    if mp.model.status()? == Status::Infeasible {
       let _s = tracing::error_span!("infeasible_model").entered();
-      model.compute_iis()?;
+      mp.model.compute_iis()?;
 
-      let constrs = model.get_constrs()?;
+      let constrs = mp.model.get_constrs()?;
       let iis_constrs : Vec<_> = constrs.iter()
         .copied()
-        .zip(model.get_obj_attr_batch(attr::IISConstr, constrs.iter().copied())?)
+        .zip(mp.model.get_obj_attr_batch(attr::IISConstr, constrs.iter().copied())?)
         .filter(|(_, is_iis)| *is_iis > 0)
         .map(|(c, _)| c)
         .collect();
 
-      for name in model.get_obj_attr_batch(attr::ConstrName, iis_constrs)? {
+      for name in mp.model.get_obj_attr_batch(attr::ConstrName, iis_constrs)? {
         error!(constr=%name, "iis constr");
       }
     }
     panic!("bugalug");
   }
 
+
+  let info = experiment::Info {
+    gurobi: experiment::GurobiInfo::new(&mp.model)?,
+  };
+
+  std::fs::write(
+    exp.get_output_path(&exp.outputs.info),
+  serde_json::to_string_pretty(&info)?,
+  )?;
   // let tasks: Vec<RawPvTask> = tasks.all.into_iter().filter_map(RawPvTask::new).collect();
   // let task_filename = format!("scrap/tasks/{}.json", idx);
   // std::fs::write(task_filename, serde_json::to_string_pretty(&tasks)?)?;

@@ -3,6 +3,7 @@ use tracing_appender::{non_blocking, non_blocking::WorkerGuard};
 use std::fs::OpenOptions;
 use std::path::Path;
 use tracing::{info, warn};
+use std::env;
 
 fn build_and_set_global_subscriber(logfile: Option<impl AsRef<Path>>, logfilter_file: Option<impl AsRef<Path>>, is_test: bool) -> Option<WorkerGuard>
 {

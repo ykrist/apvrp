@@ -62,6 +62,12 @@ pub enum CutType {
   EndTime,
 }
 
+impl CutType {
+  pub fn is_opt_cut(&self) -> bool {
+    matches!(self, Self::EndTime | Self::LpOpt)
+  }
+}
+
 #[derive(Clone)]
 pub struct CbStats {
   n_cuts: Vec<usize>,
@@ -133,15 +139,15 @@ pub struct Cb<'a> {
   pub sets: &'a Sets,
   pub tasks: &'a Tasks,
   pub params: &'a Params,
-  var_names: Map<Var, String>,
+  pub var_names: Map<Var, String>,
   pub mp_vars: super::mp::MpVars,
   // needs to be owned to avoid mutability issues with the Model object.
   pub stats: CbStats,
-  cut_cache: Vec<(String, IneqExpr)>,
+  pub cut_cache: Vec<(CutType, usize, IneqExpr)>,
   av_cycles: HashMap<Vec<Task>, usize>,
   sp_env: Env,
   #[cfg(debug_assertions)]
-  var_vals: Map<Var, f64>,
+  pub var_vals: Map<Var, f64>,
 }
 
 impl<'a> Cb<'a> {
@@ -185,7 +191,6 @@ impl<'a> Cb<'a> {
   #[tracing::instrument(level = "info", skip(self, cut))]
   pub fn enqueue_cut(&mut self, cut: IneqExpr, ty: CutType) {
     let i = self.stats.inc_cut_count(ty, 1);
-    let name = format!("{:?}[{}]", ty, i);
 
     #[cfg(debug_assertions)]
       let _s = {
@@ -198,12 +203,14 @@ impl<'a> Cb<'a> {
         span
       };
 
+
     info!(index=i, "add cut");
-    self.cut_cache.push((name, cut));
+    self.cut_cache.push((ty, i, cut));
   }
 
   pub fn flush_cut_cache(&mut self, mp: &mut Model) -> Result<()> {
-    for (name, cut) in self.cut_cache.drain(0..) {
+    for (ty, i, cut) in self.cut_cache.drain(0..) {
+      let name = format!("{:?}[{}]", ty, i);
       mp.add_constr(&name, cut)?;
     }
     Ok(())
@@ -589,36 +596,10 @@ impl<'a> Callback for Cb<'a> {
             trace!(?theta);
             let estimate = theta.values().sum::<f64>().round() as Time;
             sp.add_cuts(self, estimate)?;
-            // let cuts = match sp.solve(self.tasks, estimate) {
-            //   Err(e) => {
-            //     // ctx.terminate();
-            //     return Err(e);
-            //     // return Ok(())
-            //   }
-            //   Ok(cuts) => cuts
-            // };
-            //
-            // for cut in cuts {
-            //   let name = match &cut {
-            //     BendersCut::Optimality(_) => {
-            //       // continue;
-            //       info!("LP optimality cut generated");
-            //       format!("sp_opt[{}]", self.stats.inc_cut_count(CutType::LpOpt, 1))
-            //     }
-            //     BendersCut::Feasibility(_) => {
-            //       info!("LP feasibility cut generated");
-            //       format!("sp_feas[{}]", self.stats.inc_cut_count(CutType::LpFeas, 1))
-            //     }
-            //   };
-            //   let cut = cut.into_ineq(self.sets, self.tasks, &self.mp_vars);
-            //   trace!(cut=?cut.with_names(&self.var_names));
-            //   self.cut_cache.push((name.to_string(), cut));
-            // }
           }
         }
 
-        for (_, cut) in &self.cut_cache[initial_cut_cache_len..] {
-          trace!("add cut {:?}", cut.with_names(&self.var_names));
+        for (_, _, cut) in &self.cut_cache[initial_cut_cache_len..] {
           ctx.add_lazy(cut.clone())?;
         }
 

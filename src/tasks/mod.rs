@@ -222,7 +222,7 @@ pub struct Tasks {
 
 impl Tasks {
   pub fn generate(data: &Data, sets: &Sets, pv_req_t_start: &Map<(Pv, Req), Time>) -> Self {
-    let _span = error_span!("task generation").entered();
+    let _span = error_span!("task_gen").entered();
 
     let mut all = Vec::with_capacity(500); // TODO improve this estimate
     let mut by_cover = map_with_capacity(data.n_req as usize);

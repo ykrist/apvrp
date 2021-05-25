@@ -251,7 +251,7 @@ impl Solution {
   }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SpSolution {
   pub av_routes: Vec<(Avg, Vec<(Task, Time)>)>,
   pub pv_routes: Vec<(Pv, Vec<(Task, Time)>)>,
@@ -298,6 +298,7 @@ impl SpSolution {
     for (av, route) in &self.av_routes {
       let mut table = Table::new();
       let mut task_row = vec![cell!("Task")];
+      let mut release_time = vec![cell!("Rel")];
       let mut st_row = vec![cell!("ST")];
       let mut tt_time = vec![cell!("TT")];
 
@@ -309,15 +310,19 @@ impl SpSolution {
         st_row.push(cell!(format!("")));
         tt_time.push(cell!(format!("{:?}", task1.tt)));
         tt_time.push(cell!(data.travel_time[&(task1.end, task2.start)]));
+        release_time.push(cell!(format!("{}", task1.t_release)));
+        release_time.push(cell!(""));
       }
 
       if let Some((task, t)) = route.last() {
         task_row.push(cell!(format!("{:?}", task)));
         st_row.push(cell!(format!("{:?}", t)));
         tt_time.push(cell!(format!("{:?}", task.tt)));
+        release_time.push(cell!(format!("{}", task.t_release)));
       }
 
       table.add_row(Row::new(task_row));
+      table.add_row(Row::new(release_time));
       table.add_row(Row::new(st_row));
       table.add_row(Row::new(tt_time));
       table.printstd();
@@ -352,7 +357,6 @@ impl SpSolution {
 
       println!("Passive Vehicle {}", pv);
       table.printstd();
-
     }
   }
 }

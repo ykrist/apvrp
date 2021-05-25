@@ -153,16 +153,19 @@ impl Loc {
 mod sets;
 pub use sets::Sets;
 
+mod utils;
+pub use utils::{iter_cycle};
+
+mod constants;
+pub use constants::*;
+
 pub mod model;
 pub mod preprocess;
 pub mod graph;
 pub mod logging;
 pub mod solution;
-mod utils;
-pub use utils::{iter_cycle};
 use fnv::FnvHashSet;
 
 pub mod schedule;
 pub mod experiment;
-
 // TODO tests for encode and decode.

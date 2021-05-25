@@ -1,6 +1,8 @@
 use slurm_harray::*;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use anyhow::Result;
+use grb::prelude::*;
 
 #[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
 #[slurm(inputs)]
@@ -56,7 +58,12 @@ impl ExpParameters for Params {
     if self.param_name.len() > 0 {
       self.param_name.clone()
     } else {
-      id_from_serialised(self)
+      #[cfg(debug_assertions)] {
+        String::from("debug")
+      }
+      #[cfg(not(debug_assertions))] {
+        id_from_serialised(self)
+      }
     }
   }
 }
@@ -64,6 +71,7 @@ impl ExpParameters for Params {
 #[derive(Debug, Clone, Serialize)]
 pub struct Outputs {
   pub trace_log: String,
+  pub info: String,
 }
 
 impl ExpOutputs for Outputs {
@@ -72,7 +80,8 @@ impl ExpOutputs for Outputs {
 
   fn new(inputs: &Inputs, _params: &Params) -> Self {
     Outputs{
-      trace_log: format!("{}-log.ndjson", inputs.index).into()
+      trace_log: format!("{}-log.ndjson", inputs.index).into(),
+      info: format!("{}-info.json", inputs.index).into(),
     }
   }
 }
@@ -91,4 +100,23 @@ impl ResourcePolicy for ApvrpExp {
   fn memory(&self) -> MemoryAmount { MemoryAmount::from_gb(4) }
   fn script(&self) -> String { String::from("#!/bin/bash\nconda activate or") }
   fn cpus(&self) -> usize { self.parameters.cpus as usize }
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct GurobiInfo {
+  pub fingerprint: u32,
+}
+
+impl GurobiInfo {
+  pub fn new(model: &grb::Model) -> Result<Self> {
+    let fingerprint = unsafe{ std::mem::transmute(model.get_attr(attr::Fingerprint)?) }; // don't care about the value, only the bit-pattern
+    Ok(GurobiInfo {
+      fingerprint
+    })
+  }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Info {
+  pub gurobi: GurobiInfo
 }
