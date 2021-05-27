@@ -5,3 +5,4 @@ scrap
 *.lp
 dbg.filter
 routes.json
+*.svg
