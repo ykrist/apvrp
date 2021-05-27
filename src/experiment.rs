@@ -34,6 +34,8 @@ pub struct Params {
   pub pv_tournament_cuts_max_chain_len: u32,
   #[slurm(default="true")]
   pub endtime_cuts: bool,
+  #[slurm(default="true")]
+  pub soln_log: bool,
 }
 
 impl std::default::Default for Params {
@@ -51,6 +53,7 @@ impl std::default::Default for Params {
       pv_tournament_cuts_min_chain_len: 0,
       pv_tournament_cuts_max_chain_len: u32::MAX,
       endtime_cuts: true,
+      soln_log: true,
     }
   }
 }
@@ -73,6 +76,7 @@ impl ExpParameters for Params {
 #[derive(Debug, Clone, Serialize)]
 pub struct Outputs {
   pub trace_log: String,
+  pub solution_log: String,
   pub info: String,
 }
 
@@ -82,6 +86,7 @@ impl ExpOutputs for Outputs {
 
   fn new(inputs: &Inputs, _params: &Params) -> Self {
     Outputs{
+      solution_log: format!("{}-sollog.ndjson", inputs.index).into(),
       trace_log: format!("{}-log.ndjson", inputs.index).into(),
       info: format!("{}-info.json", inputs.index).into(),
     }

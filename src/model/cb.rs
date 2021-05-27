@@ -4,10 +4,7 @@ use crate::solution::*;
 use grb::prelude::*;
 use grb::callback::{Callback, Where, CbResult, MIPSolCtx};
 use fnv::FnvHashSet;
-use super::sp::{
-  // BendersCut,
-  TimingSubproblem
-};
+use super::{sp::TimingSubproblem, sp_graph};
 use tracing::{info, info_span, debug, trace, error_span, warn, error, trace_span};
 use std::fmt;
 use grb::constr::IneqExpr;
@@ -16,8 +13,9 @@ use anyhow::Context;
 use std::hash::Hash;
 use std::env::var;
 use std::collections::{HashSet, HashMap};
+use std::io::Write;
 use experiment::Params;
-use slurm_harray::ExperimentAuto;
+use slurm_harray::{ExperimentAuto, Experiment};
 use crate::model::cb::CutType::EndTime;
 
 #[derive(Debug, Clone)]
@@ -155,7 +153,8 @@ pub struct Cb<'a> {
   #[cfg(debug_assertions)]
   pub var_vals: Map<Var, f64>,
   #[cfg(debug_assertions)]
-  pub error: Option<CbError>
+  pub error: Option<CbError>,
+  pub sol_log: Option<std::io::BufWriter<std::fs::File>>
 }
 
 impl<'a> Cb<'a> {
@@ -180,6 +179,13 @@ impl<'a> Cb<'a> {
       e.start()?
     };
 
+    let sol_log = if exp.parameters.soln_log {
+      let log = exp.get_output_path(&exp.outputs.solution_log);
+      let log = std::fs::OpenOptions::new().write(true).truncate(true).create(true).open(log)?;
+      let log = std::io::BufWriter::new(log);
+      Some(log)
+    } else { None };
+
     Ok(Cb {
       data,
       sets,
@@ -195,6 +201,7 @@ impl<'a> Cb<'a> {
       var_vals: Map::default(),
       #[cfg(debug_assertions)]
       error: None,
+      sol_log
     })
   }
 
@@ -616,6 +623,16 @@ impl<'a> Callback for Cb<'a> {
             let _span = error_span!("lp_sp").entered();
             info!("no heuristic cuts found, solving LP subproblem");
             let sol = Solution{ objective: None, av_routes, pv_routes };
+            if let Some(sol_log) = self.sol_log.as_mut() {
+              let sol = SerialisableSolution::from(sol.clone());
+              serde_json::to_writer(&mut *sol_log, &sol)?; // need to re-borrow here
+              write!(sol_log, "\n")?;
+            }
+            {
+              let mut graph = sp_graph::build_graph(self.data, self.tasks, &sol);
+              sp_graph::forward_label(&mut graph);
+            }
+
             let sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &sol)?;
 
             let theta: Map<_, _> = get_var_values(&ctx, &self.mp_vars.theta)?.collect();

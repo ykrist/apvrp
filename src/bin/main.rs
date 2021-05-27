@@ -7,7 +7,7 @@ use slurm_harray::{Experiment, handle_slurm_args};
 
 use apvrp::model::mp::{ObjWeights, TaskModelMaster};
 use apvrp::*;
-use itertools::Itertools;
+
 
 fn infeasibility_analysis(mp: &mut TaskModelMaster) -> Result<()> {
   mp.model.update()?;

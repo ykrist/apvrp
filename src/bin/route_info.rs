@@ -2,7 +2,6 @@ use apvrp::*;
 use apvrp::ShorthandTask;
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, Context};
-use regex::Regex;
 use itertools::Itertools;
 use instances::dataset::Dataset;
 
@@ -36,45 +35,9 @@ struct RouteInput {
 
 
 fn parse_route_spec(spec: &str) -> Result<Vec<ShorthandTask>> {
-  let trn_task_re = Regex::new(r"Trn\((\d+),(\d+),(\d+)\)").unwrap();
-  let odp_task_re = Regex::new(r"ODp").unwrap();
-  let ddp_task_re = Regex::new(r"DDp").unwrap();
-  let req_task_re = Regex::new(r"Req\((\d+),(\d+)\)").unwrap();
-  let srt_task_re = Regex::new(r"Srt\((\d+),(\d+)\)").unwrap();
-  let end_task_re = Regex::new(r"End\((\d+),(\d+)\)").unwrap();
-  let dir_task_re = Regex::new(r"Dir\((\d+)\)").unwrap();
-
-
   let mut tasks = Vec::new();
   for s in spec.split(", ").map(|s| s.trim()) {
-    let t = if let Some(m) = trn_task_re.captures(s) {
-      let p = m.get(1).unwrap().as_str().parse().unwrap();
-      let r1 = m.get(2).unwrap().as_str().parse().unwrap();
-      let r2 = m.get(3).unwrap().as_str().parse().unwrap();
-      ShorthandTask::Transfer(p, r1, r2)
-    } else if odp_task_re.is_match(s) {
-      ShorthandTask::ODepot
-    } else if ddp_task_re.is_match(s) {
-      ShorthandTask::DDepot
-    } else if let Some(m) = req_task_re.captures(s) {
-      let p = m.get(1).unwrap().as_str().parse().unwrap();
-      let r = m.get(2).unwrap().as_str().parse().unwrap();
-      ShorthandTask::Request(p, r)
-    } else if let Some(m) = srt_task_re.captures(s) {
-      let p = m.get(1).unwrap().as_str().parse().unwrap();
-      let r = m.get(2).unwrap().as_str().parse().unwrap();
-      ShorthandTask::Start(p, r)
-    } else if let Some(m) = end_task_re.captures(s) {
-      let p = m.get(1).unwrap().as_str().parse().unwrap();
-      let r = m.get(2).unwrap().as_str().parse().unwrap();
-      ShorthandTask::End(p, r)
-    } else if let Some(m) = dir_task_re.captures(s) {
-      let p = m.get(1).unwrap().as_str().parse().unwrap();
-      ShorthandTask::Direct(p)
-    } else {
-      anyhow::bail!("unable to parse: {}", s)
-    };
-    tasks.push(t)
+    tasks.push(s.parse()?)
   }
   return Ok(tasks)
 }

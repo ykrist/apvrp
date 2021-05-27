@@ -1,7 +1,7 @@
 use crate::*;
 use crate::tasks::{Task};
 use crate::model::sp::TimingSubproblem;
-use serde::Deserialize;
+use serde::{Serialize, Deserialize};
 use std::fs::read_to_string;
 use std::path::Path;
 use anyhow::Context;
@@ -214,7 +214,57 @@ pub struct Solution {
 }
 
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerialisableSolution {
+  pub objective: Option<Cost>,
+  pub av_routes: Vec<(Avg, Vec<ShorthandTask>)>,
+  pub pv_routes: Vec<(Pv, Vec<ShorthandTask>)>,
+}
+
+impl From<Solution> for SerialisableSolution {
+  fn from(sol: Solution) -> Self {
+    let av_routes = sol.av_routes.into_iter()
+      .map(|(avg, tasks)| (avg, tasks.into_iter().map(ShorthandTask::from).collect()))
+      .collect();
+    let pv_routes = sol.pv_routes.into_iter()
+      .map(|(pv, tasks)| (pv, tasks.into_iter().map(ShorthandTask::from).collect()))
+      .collect();
+
+    SerialisableSolution {
+      objective: sol.objective,
+      av_routes,
+      pv_routes,
+    }
+  }
+}
+
+
 impl Solution {
+  pub fn from_serialisable(tasks: &Tasks, sol: &SerialisableSolution) -> Self {
+    let av_routes = sol.av_routes.iter()
+      .map(|(avg, route)| {
+        let route = route.iter()
+          .map(move |t| tasks.by_shorthand[t])
+          .collect();
+        (*avg, route)
+      })
+      .collect();
+    let pv_routes = sol.pv_routes.iter()
+      .map(|(pv, route)| {
+        let route = route.iter()
+          .map(move |t| tasks.by_shorthand[t])
+          .collect();
+        (*pv, route)
+      })
+      .collect();
+
+    Solution {
+      objective: sol.objective,
+      av_routes,
+      pv_routes,
+    }
+  }
+
   pub fn from_mp(mp: &TaskModelMaster) -> Result<Self> {
     let mut av_routes = Vec::new();
 

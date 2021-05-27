@@ -1,13 +1,14 @@
 use crate::*;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use serde::{Serialize};
+use serde::{Serialize, Deserialize};
 use itertools::max;
 use fnv::{FnvHashSet, FnvBuildHasher};
 use std::fmt;
 use grb::constr::IneqExpr;
 use tracing::{error_span, trace, error, warn};
 use std::collections::HashMap;
+use std::str::FromStr;
 
 pub type TaskId = u32;
 pub type PVIRTaskId = u32;
@@ -51,7 +52,7 @@ pub enum TaskType {
 }
 
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum ShorthandTask {
   Transfer(Pv, Req, Req),
   Start(Pv, Req),
@@ -60,6 +61,51 @@ pub enum ShorthandTask {
   Direct(Pv),
   ODepot,
   DDepot,
+}
+
+
+impl FromStr for ShorthandTask {
+  type Err = anyhow::Error;
+  fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    use regex::Regex;
+    lazy_static::lazy_static! {
+        static ref TRN_TASK_RE : Regex = Regex::new(r"Trn\((\d+),(\d+),(\d+)\)").unwrap();
+        static ref ODP_TASK_RE : Regex = Regex::new(r"ODp").unwrap();
+        static ref DDP_TASK_RE : Regex = Regex::new(r"DDp").unwrap();
+        static ref REQ_TASK_RE : Regex = Regex::new(r"Req\((\d+),(\d+)\)").unwrap();
+        static ref SRT_TASK_RE : Regex = Regex::new(r"Srt\((\d+),(\d+)\)").unwrap();
+        static ref END_TASK_RE : Regex = Regex::new(r"End\((\d+),(\d+)\)").unwrap();
+        static ref DIR_TASK_RE : Regex = Regex::new(r"Dir\((\d+)\)").unwrap();
+    }
+    let t = if let Some(m) = TRN_TASK_RE.captures(s) {
+      let p = m.get(1).unwrap().as_str().parse().unwrap();
+      let r1 = m.get(2).unwrap().as_str().parse().unwrap();
+      let r2 = m.get(3).unwrap().as_str().parse().unwrap();
+      ShorthandTask::Transfer(p, r1, r2)
+    } else if ODP_TASK_RE.is_match(s) {
+      ShorthandTask::ODepot
+    } else if DDP_TASK_RE.is_match(s) {
+      ShorthandTask::DDepot
+    } else if let Some(m) = REQ_TASK_RE.captures(s) {
+      let p = m.get(1).unwrap().as_str().parse().unwrap();
+      let r = m.get(2).unwrap().as_str().parse().unwrap();
+      ShorthandTask::Request(p, r)
+    } else if let Some(m) = SRT_TASK_RE.captures(s) {
+      let p = m.get(1).unwrap().as_str().parse().unwrap();
+      let r = m.get(2).unwrap().as_str().parse().unwrap();
+      ShorthandTask::Start(p, r)
+    } else if let Some(m) = END_TASK_RE.captures(s) {
+      let p = m.get(1).unwrap().as_str().parse().unwrap();
+      let r = m.get(2).unwrap().as_str().parse().unwrap();
+      ShorthandTask::End(p, r)
+    } else if let Some(m) = DIR_TASK_RE.captures(s) {
+      let p = m.get(1).unwrap().as_str().parse().unwrap();
+      ShorthandTask::Direct(p)
+    } else {
+      anyhow::bail!("unable to parse: {}", s)
+    };
+    Ok(t)
+  }
 }
 
 impl fmt::Debug for TaskType {
@@ -75,6 +121,20 @@ impl fmt::Debug for TaskType {
       DDepot => "DDp"
     };
     f.write_str(s)
+  }
+}
+
+impl From<Task> for ShorthandTask {
+  fn from(t: Task) -> Self {
+    match t.ty {
+      TaskType::ODepot => ShorthandTask::ODepot,
+      TaskType::DDepot => ShorthandTask::DDepot,
+      TaskType::Request => ShorthandTask::Request(t.p.unwrap(), t.start.req()),
+      TaskType::Transfer => ShorthandTask::Transfer(t.p.unwrap(), t.start.req(), t.end.req()),
+      TaskType::Start => ShorthandTask::Start(t.p.unwrap(), t.end.req()),
+      TaskType::End => ShorthandTask::End(t.p.unwrap(), t.start.req()),
+      TaskType::Direct => ShorthandTask::Direct(t.p.unwrap()),
+    }
   }
 }
 
@@ -416,15 +476,7 @@ impl Tasks {
       succ.insert(t1, t1_succ);
 
       // shorthand for querying tasks
-      match t1.ty {
-        TaskType::ODepot => by_shorthand.insert(ShorthandTask::ODepot, t1),
-        TaskType::DDepot => by_shorthand.insert(ShorthandTask::DDepot, t1),
-        TaskType::Request => by_shorthand.insert(ShorthandTask::Request(t1.p.unwrap(), t1.start.req()), t1),
-        TaskType::Transfer => by_shorthand.insert(ShorthandTask::Transfer(t1.p.unwrap(), t1.start.req(), t1.end.req()), t1),
-        TaskType::Start => by_shorthand.insert(ShorthandTask::Start(t1.p.unwrap(), t1.end.req()), t1),
-        TaskType::End => by_shorthand.insert(ShorthandTask::End(t1.p.unwrap(), t1.start.req()), t1),
-        TaskType::Direct => by_shorthand.insert(ShorthandTask::Direct(t1.p.unwrap()), t1),
-      };
+      by_shorthand.insert(t1.into(), t1);
     }
 
     let mut compat_with_av: Map<_, _> = sets.avs()
