@@ -16,11 +16,11 @@ use crate::utils::HashMapExt;
 use smallvec::SmallVec;
 
 pub struct SpConstraints {
-  av_sync: Map<(Task, Task), Constr>,
-  start_req: Map<Task, Constr>,
-  end_req: Map<Task, Constr>,
-  lb: Map<Task, Constr>,
-  ub: Map<Task, Constr>,
+  pub av_sync: Map<(Task, Task), Constr>,
+  pub loading: Map<Task, Constr>,
+  pub unloading: Map<Task, Constr>,
+  pub lb: Map<Task, Constr>,
+  pub ub: Map<Task, Constr>,
 }
 
 impl SpConstraints {
@@ -40,8 +40,8 @@ impl SpConstraints {
     }
 
 
-    let mut start_req = Map::default();
-    let mut end_req = Map::default();
+    let mut loading = Map::default();
+    let mut unloading = Map::default();
     let mut lb = map_with_capacity(vars.len());
     let mut ub = map_with_capacity(vars.len());
 
@@ -63,17 +63,17 @@ impl SpConstraints {
         if t2.ty == TaskType::Request {
           // Constraints (3c)
           let c = c!(vars[&t1] + t1.tt + data.srv_time[&t2.start] <= vars[&t2]);
-          start_req.insert(t1, model.add_constr("", c)?);
+          loading.insert(t1, model.add_constr("", c)?);
         } else if t1.ty == TaskType::Request {
           // Constraints (3d)
           let c = c!(vars[&t1] + t1.tt + data.srv_time[&t1.end] <= vars[&t2]);
-          end_req.insert(t2, model.add_constr("", c)?);
+          unloading.insert(t2, model.add_constr("", c)?);
         }
         add_bounds(t2, model)?;
         t1 = t2;
       }
     }
-    Ok(SpConstraints { av_sync, start_req, end_req, ub, lb })
+    Ok(SpConstraints { av_sync, loading, unloading, ub, lb })
   }
 }
 
@@ -197,8 +197,8 @@ impl<'a> TimingSubproblem<'a> {
       }
     };
 
-    self.cons.end_req.retain_ok(&mut retain_non_iis_constr)?;
-    self.cons.start_req.retain_ok(&mut retain_non_iis_constr)?;
+    self.cons.unloading.retain_ok(&mut retain_non_iis_constr)?;
+    self.cons.loading.retain_ok(&mut retain_non_iis_constr)?;
     self.cons.lb.retain_ok(&mut retain_non_iis_constr)?;
     self.cons.ub.retain_ok(&mut retain_non_iis_constr)?;
 
@@ -257,8 +257,8 @@ impl<'a> TimingSubproblem<'a> {
         Ok(())
       }
 
-      log_nonzero_dual_tasks(&self.model, "start_req", &self.cons.start_req)?;
-      log_nonzero_dual_tasks(&self.model, "end_req", &self.cons.end_req)?;
+      log_nonzero_dual_tasks(&self.model, "start_req", &self.cons.loading)?;
+      log_nonzero_dual_tasks(&self.model, "end_req", &self.cons.unloading)?;
       log_nonzero_dual_tasks(&self.model, "ub", &self.cons.ub)?;
       log_nonzero_dual_tasks(&self.model, "lb", &self.cons.lb)?;
     }
@@ -273,8 +273,8 @@ impl<'a> TimingSubproblem<'a> {
     }
 
     let mut critial_tasks = Set::default();
-    add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.end_req)?;
-    add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.start_req)?;
+    add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.unloading)?;
+    add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.loading)?;
     add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.ub)?;
     add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.lb)?;
     n_x_y_terms += critial_tasks.len() as i32;

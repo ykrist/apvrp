@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, BuildHasher};
 use std::cell::{RefCell, Ref};
 use std::rc::Rc;
+use std::path::PathBuf;
 
 pub fn iter_cycle<'a, T>(vals: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> + 'a {
   let n = vals.len();
@@ -146,6 +147,12 @@ where
   }
 }
 
+#[cfg(test)]
+pub(crate) fn test_data_file(filename: &str) -> PathBuf {
+  let mut path = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data"));
+  path.push(filename);
+  path
+}
 
 #[cfg(test)]
 mod tests {

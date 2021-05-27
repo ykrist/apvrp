@@ -25,6 +25,7 @@ smallvec = "^1.6.1"
 regex = "^1.5.4"
 clap = "^2.33.3"
 lazy_static = "1.4.0"
+dot = "0.1.4"
 
 
 [[bin]]
