@@ -5,15 +5,16 @@ use fnv::FnvHashSet;
 use grb::constr::IneqExpr;
 use super::mp::MpVars;
 use super::cb::{CbError};
-use tracing::{error_span, debug, trace, error, debug_span};
+use tracing::{error_span, debug, trace, error, debug_span, trace_span};
 use itertools::Itertools;
 use crate::solution::*;
 use std::collections::{HashSet, HashMap, hash_map::Entry, BinaryHeap};
 use std::hash::{Hash, BuildHasher};
 use crate::utils::HashMapExt;
 use smallvec::SmallVec;
-use std::cmp::{PartialOrd, Eq, PartialEq, Ord, Ordering, max};
+use std::cmp::{PartialOrd, Eq, PartialEq, Ord, Ordering, max, Reverse};
 use std::path::Path;
+use std::fmt::Debug;
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -21,6 +22,21 @@ pub struct Node {
   avg: Avg,
   task: Task,
   time: Time,
+}
+
+impl Node {
+  pub fn new(idx: usize, avg: Avg, task: Task) -> Self {
+    Node {
+      idx,
+      avg,
+      task,
+      time: task.t_release,
+    }
+  }
+
+  pub fn reset(&mut self) {
+    self.time = self.time_lb();
+  }
 }
 
 impl Node {
@@ -113,8 +129,8 @@ impl<'a> dot::Labeller<'a, Node, Edge> for Graph {
   fn node_label(&'a self, n: &Node) -> dot::LabelText<'a> {
     // dot::LabelText::label(format!("{:?}", &n.task))
     dot::LabelText::escaped(format!(
-      "{:?}\nt={}\n[{}, {}]",
-      &n.task, n.time, n.time_lb(), n.time_ub())
+      "{:?} ({})\nt={}\n[{}, {}]",
+      &n.task, n.idx, n.time, n.time_lb(), n.time_ub())
     )
   }
 
@@ -140,12 +156,7 @@ pub fn build_graph(data: &Data, tasks: &Tasks, sol: &Solution) -> Graph {
     // trim the depots from the routes
     for &task in &route[1..route.len() - 1] {
       task_to_node_idx.insert(task, nodes.len());
-      nodes.push(Node {
-        idx: nodes.len(),
-        avg: *avg,
-        task,
-        time: task.t_release,
-      })
+      nodes.push(Node::new(nodes.len(), *avg, task));
     }
     sinks.push(nodes.len() - 1); // last node we pushed was a DDp node
   }
@@ -225,7 +236,7 @@ pub struct NodePriority {
 
 impl Ord for NodePriority {
   fn cmp(&self, other: &Self) -> Ordering {
-    other.time.cmp(&self.time) // flip the ordering
+    self.time.cmp(&other.time)
   }
 }
 
@@ -247,21 +258,21 @@ impl Eq for NodePriority {}
 pub fn forward_label(graph: &mut Graph) -> SubproblemStatus {
   let mut queue = BinaryHeap::with_capacity(graph.nodes.len());
   for &n in &graph.sources {
-    queue.push(NodePriority { node_idx: n, time: graph.nodes[n].time });
+    queue.push(Reverse(NodePriority { node_idx: n, time: graph.nodes[n].time }));
   }
   let nodes = &mut graph.nodes;
   let edges_from_node = &graph.edges_from_node;
 
-  while let Some(NodePriority { node_idx, time }) = queue.pop() {
+  while let Some(Reverse(NodePriority { node_idx, time })) = queue.pop() {
     trace!(?queue, node_idx, time, task=?nodes[node_idx].task, lb=nodes[node_idx].time_lb(), "process node");
     for edge in &edges_from_node[node_idx] {
       let node = &mut nodes[edge.to];
       node.time = max(node.time, time + edge.weight); // TODO maybe be clever here?
       if node.time > node.time_ub() {
-        debug!(node_idx=node.idx, time=node.time, ub=node.time_ub(), "infeasibility found");
+        debug!(node_idx = node.idx, time = node.time, ub = node.time_ub(), "infeasibility found");
         return SubproblemStatus::Infeasible(node.idx);
       }
-      queue.push(NodePriority { node_idx: node.idx, time: node.time });
+      queue.push(Reverse(NodePriority { node_idx: node.idx, time: node.time }));
       trace!(?queue, node_idx=node.idx, time=node.time, task=?node.task, "push node");
     }
   }
@@ -275,6 +286,176 @@ pub fn forward_label(graph: &mut Graph) -> SubproblemStatus {
   debug!(?theta_val, "subproblem optimal");
   SubproblemStatus::Optimal(theta_val)
 }
+
+#[derive(Debug, Copy, Clone)]
+struct Backlabel {
+  node_idx: usize,
+  pred_idx: usize,
+  // Number of edges to source
+  dist: Time,
+}
+
+
+impl Ord for Backlabel {
+  fn cmp(&self, other: &Self) -> Ordering {
+    self.dist.cmp(&other.dist)
+  }
+}
+
+impl PartialOrd for Backlabel {
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    Some(self.cmp(other))
+  }
+}
+
+impl PartialEq for Backlabel {
+  fn eq(&self, other: &Self) -> bool {
+    self.dist == other.dist
+  }
+}
+
+impl Eq for Backlabel {}
+
+
+trait BackLabelMetric {
+  fn compute(edge: &Edge) -> Time;
+}
+
+#[derive(Debug)]
+struct MinNumEdges;
+
+impl BackLabelMetric for MinNumEdges {
+  fn compute(edge: &Edge) -> Time { 1 }
+}
+
+#[derive(Debug)]
+struct MaxEdgeWeight;
+
+impl BackLabelMetric for MaxEdgeWeight {
+  fn compute(edge: &Edge) -> Time { -edge.weight }
+}
+
+type BlEdgeList<'a> = SmallVec<[&'a Edge;10]>;
+
+#[tracing::instrument(level = "debug", skip(graph, _metric, start_node), fields(start_node, metric = ? _metric))]
+fn backwards_label<M: Debug + BackLabelMetric>(graph: &Graph, start_node: usize, _metric: M) -> BlEdgeList {
+  let mut queue = BinaryHeap::with_capacity(10);
+  let mut labels: Vec<Option<Backlabel>> = vec![None; graph.nodes.len()];
+
+  {
+    let sink = Backlabel { node_idx: start_node, pred_idx: start_node, dist: 0 };
+    queue.push(Reverse(sink));
+    labels[start_node] = Some(sink);
+  }
+
+
+  let mut best_source = None;
+
+  while let Some(Reverse(current_label)) = queue.pop() {
+    let _s = trace_span!("process_label",
+      node=current_label.node_idx, dist=current_label.dist, pred=current_label.pred_idx).entered();
+    let node = &graph.nodes[current_label.node_idx];
+
+    // If the current node cannot possibly lead to a global improvement, don't bother extending it
+    if let Some(Backlabel{ dist: best_global_dist, ..}) = &best_source {
+      if &current_label.dist >= best_global_dist {
+        continue;
+      }
+    }
+
+    // if we are at a node with time = LB, we consider this node to have no predecessors (
+    // i.e a source node
+    if node.time > node.time_lb() {
+      for edge in &graph.edges_to_node[current_label.node_idx] {
+        let dist = current_label.dist + M::compute(edge);
+        let updated_label =
+          if let Some(next_label) = labels.get_mut(edge.from).unwrap() {
+            if dist > next_label.dist {
+              // can skip updating this label (dont add to queue)
+              continue;
+            } else {
+              // Update this label
+              let new_pred = current_label.node_idx;
+              trace!(old_dist = next_label.dist, new_dist=dist,
+                     old_pred = next_label.pred_idx, new_pred,
+                     node = next_label.node_idx, "update label");
+              next_label.dist = dist;
+              next_label.pred_idx = current_label.node_idx;
+              *next_label
+            }
+          } else {
+            // Create (implicitly update) this label
+            let next_label = Backlabel {
+              node_idx: edge.from,
+              pred_idx: current_label.node_idx,
+              dist,
+            };
+            trace!(dist, pred = next_label.pred_idx, node = next_label.node_idx, "new label");
+            labels[edge.from] = Some(next_label);
+            next_label
+          };
+        queue.push(Reverse(updated_label));
+        trace!(?queue);
+      }
+    } else {
+      // Update the best source node if necessary.
+      if let Some(best_source) = &best_source {
+        if &current_label >= best_source {
+          continue;
+        }
+      }
+      best_source = Some(current_label);
+      trace!(?best_source, "update best source");
+    }
+  }
+
+  // Reconstruct the path
+  let mut label = best_source.expect("at least one source node");
+  let mut edges =  BlEdgeList::new();
+  while label.node_idx != start_node {
+    let next_label = labels[label.pred_idx].expect("pred should have a label");
+
+    let edge = 'outer: loop {
+      for e in &graph.edges_from_node[label.node_idx] {
+        if e.to == next_label.node_idx {
+          break 'outer e;
+        }
+      }
+      unreachable!()
+    };
+    edges.push(edge);
+    label = next_label;
+  }
+
+  edges
+}
+
+#[derive(Debug, Copy, Clone)]
+enum IisMember {
+  AvTravelTime(Task, Task),
+  Loading(Task),
+  Unloading(Task),
+  Ub(Task),
+  Lb(Task),
+}
+
+fn extract_and_remove_iis(graph: &mut Graph, ub_violate_node: usize) -> Vec<IisMember> {
+  let edges = backwards_label(graph, ub_violate_node, MinNumEdges);
+  let mut iis = Vec::with_capacity(edges.len());
+  for edge in &edges {
+    let member = match edge.kind {
+      EdgeKind::AVTravel => IisMember::AvTravelTime(graph.nodes[edge.from].task, graph.nodes[edge.to].task),
+      EdgeKind::Loading => IisMember::Loading(graph.nodes[edge.from].task),
+      EdgeKind::Unloading => IisMember::Unloading(graph.nodes[edge.to].task),
+    };
+    iis.push(member)
+  }
+  iis.push(IisMember::Lb(graph.nodes[edges.first().unwrap().from].task));
+  iis.push(IisMember::Ub(graph.nodes[edges.last().unwrap().to].task));
+  iis
+}
+
+
 
 #[cfg(test)]
 mod tests {
@@ -331,18 +512,18 @@ mod tests {
       print_constr_info(&lp.model, "av_sync", &lp.cons.av_sync);
     }
 
-
     match (graph_result, lp.model.status()?) {
-      (SubproblemStatus::Infeasible(_), Status::Infeasible) => {
-        print_iis(&mut lp);
+      (SubproblemStatus::Infeasible(node), Status::Infeasible) => {
         graph.save_as_svg("debug.svg")?;
+        print_iis(&mut lp);
+        println!("{:?}", extract_and_remove_iis(&mut graph, node));
         println!("infeasible");
         panic!();
-      },
+      }
 
       (SubproblemStatus::Optimal(_), Status::Optimal) => {
         println!("optimal")
-      },
+      }
 
       (a, b) => {
         if b == Status::Infeasible {
@@ -360,6 +541,7 @@ mod tests {
   #[test]
   fn solve() -> Result<()> {
     let _g = crate::logging::init_test_logging(None::<&str>);
+    let _s = trace_span!("test").entered();
     let (data, sets, tasks, solutions) = load(0)?;
     let env = Env::new("gurobi.log")?;
     for (n, sol) in solutions.iter().skip(1).enumerate() {
