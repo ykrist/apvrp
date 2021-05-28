@@ -66,7 +66,7 @@ pub enum EdgeKind {
   AVTravel,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Edge {
   from: usize,
   to: usize,
@@ -84,6 +84,11 @@ pub struct Graph {
 }
 
 impl Graph {
+  fn remove_edge(&mut self, e: &Edge) {
+    self.edges_to_node[e.to].retain(|g| g.from != e.from);
+    self.edges_from_node[e.from].retain(|g| g.to != e.to);
+  }
+
   fn edge_active(&self, e: &Edge) -> bool {
     &(self.nodes[e.to].active_pred) == &Some(e.from)
   }
@@ -325,7 +330,7 @@ pub fn forward_label(graph: &mut Graph) -> SubproblemStatus {
   SubproblemStatus::Optimal(theta_val)
 }
 
-type BlEdgeList<'a> = SmallVec<[&'a Edge;10]>;
+type BlEdgeList<'a> = SmallVec<[Edge;10]>;
 
 #[tracing::instrument(level = "debug", skip(graph, start_node), fields(start_node))]
 fn extract_critical_paths(graph: &Graph, start_node: usize) -> BlEdgeList {
@@ -337,7 +342,7 @@ fn extract_critical_paths(graph: &Graph, start_node: usize) -> BlEdgeList {
     let edge = 'outer: loop {
       for e in &graph.edges_to_node[node.idx] {
         if e.from == pred_idx {
-          break 'outer e;
+          break 'outer *e;
         }
       }
       unreachable!()
@@ -347,6 +352,22 @@ fn extract_critical_paths(graph: &Graph, start_node: usize) -> BlEdgeList {
   }
   edges
 }
+
+fn remove_path(graph: &mut Graph, edges: &[Edge]) {
+  for e in edges {
+    graph.remove_edge(&e);
+  }
+
+  let affected_nodes = std::iter::once(edges[0].from)
+      .chain(edges.iter().map(|e| e.to));
+
+  for n in affected_nodes {
+    if graph.edges_to_node[n].len() == 0 && graph.edges_from_node[n].len() > 0 {
+      graph.sources.push(n);
+    }
+  }
+}
+
 
 
 #[derive(Debug, Copy, Clone)]
@@ -360,6 +381,11 @@ enum IisMember {
 
 fn extract_and_remove_iis(graph: &mut Graph, ub_violate_node: usize) -> Vec<IisMember> {
   let edges = extract_critical_paths(graph, ub_violate_node);
+  remove_path(graph, &edges);
+  for n in graph.nodes.iter_mut() {
+    n.reset();
+  }
+
   let mut iis = Vec::with_capacity(edges.len());
   for edge in &edges {
     let member = match edge.kind {
@@ -435,15 +461,19 @@ mod tests {
       (SubproblemStatus::Infeasible(node), Status::Infeasible) => {
         graph.save_as_svg("debug-infeasible.svg")?;
         print_iis(&mut lp);
-        println!("{:?}", extract_and_remove_iis(&mut graph, node));
+        let iis = extract_and_remove_iis(&mut graph, node);
+        println!("{:?}", iis);
+        let result = forward_label(&mut graph);
+        dbg!(result);
+        graph.save_as_svg("debug-2nd.svg")?;
         println!("infeasible");
-        // panic!();
+        panic!();
       }
 
       (SubproblemStatus::Optimal(_), Status::Optimal) => {
         graph.save_as_svg("debug-optimal.svg")?;
         println!("optimal");
-        panic!()
+        // panic!()
       }
 
       (a, b) => {
