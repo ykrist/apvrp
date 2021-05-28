@@ -112,7 +112,9 @@ fn main() -> Result<()> {
   let true_soln = solution::load_michael_soln(
     format!("/home/yannik/phd/src/apvrp/scrap/soln/{}.json", exp.inputs.index),
     &tasks,
-    &LocSetStarts::new(data.n_passive, data.n_req))?;
+    &LocSetStarts::new(data.n_passive, data.n_req))
+      .map_err(|e| error!(error=%e, "unable to load solution"))
+      .ok();
 
 
   mp.model.set_obj_attr_batch(attr::BranchPriority, mp.vars.u.values().map(|&u| (u, 100)))?;
@@ -175,12 +177,13 @@ fn main() -> Result<()> {
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
 
-
-  if true_soln.objective != Some(obj) {
-    error!(correct = true_soln.objective.unwrap(), obj, "objective mismatch");
-    mp.fix_solution(&true_soln)?;
-    infeasibility_analysis(&mut mp)?;
-    anyhow::bail!("bugalug");
+  if let Some(true_soln) = true_soln {
+    if true_soln.objective != Some(obj) {
+      error!(correct = true_soln.objective.unwrap(), obj, "objective mismatch");
+      mp.fix_solution(&true_soln)?;
+      infeasibility_analysis(&mut mp)?;
+      anyhow::bail!("bugalug");
+    }
   }
 
   let info = experiment::Info {
