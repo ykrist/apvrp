@@ -6,3 +6,4 @@ scrap
 dbg.filter
 routes.json
 *.svg
+*.dot
