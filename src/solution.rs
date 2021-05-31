@@ -1,6 +1,6 @@
 use crate::*;
 use crate::tasks::{Task};
-use crate::model::sp::TimingSubproblem;
+use crate::model::sp_lp::TimingSubproblem;
 use serde::{Serialize, Deserialize};
 use std::fs::read_to_string;
 use std::path::Path;

@@ -4,7 +4,7 @@ use crate::solution::*;
 use grb::prelude::*;
 use grb::callback::{Callback, Where, CbResult, MIPSolCtx};
 use fnv::FnvHashSet;
-use super::{sp::TimingSubproblem, sp_graph};
+use super::{sp_lp::TimingSubproblem, sp_graph};
 use tracing::{info, info_span, debug, trace, error_span, warn, error, trace_span};
 use std::fmt;
 use grb::constr::IneqExpr;

@@ -15,6 +15,14 @@ use smallvec::SmallVec;
 use std::cmp::{PartialOrd, Eq, PartialEq, Ord, Ordering, max, Reverse};
 use std::path::Path;
 use std::fmt::Debug;
+use std::fmt;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum LabelState {
+  Unvisited,
+  Queue,
+  Processed,
+}
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -23,6 +31,7 @@ pub struct Node {
   task: Task,
   time: Time,
   active_pred: Option<usize>,
+  label_state: LabelState,
   #[cfg(debug_assertions)]
   processed: bool,
 }
@@ -35,6 +44,7 @@ impl Node {
       task,
       time: task.t_release,
       active_pred: None,
+      label_state: LabelState::Unvisited,
       #[cfg(debug_assertions)]
       processed: false,
     }
@@ -43,9 +53,11 @@ impl Node {
   pub fn reset(&mut self) {
     self.time = self.time_lb();
     self.active_pred = None;
+    self.label_state = LabelState::Unvisited;
     #[cfg(debug_assertions)] {
       self.processed = false;
     }
+
   }
 }
 
@@ -121,7 +133,13 @@ impl Graph {
 }
 
 impl<'a> dot::GraphWalk<'a, Node, Edge> for Graph {
-  fn nodes(&'a self) -> dot::Nodes<'a, Node> { dot::Nodes::Borrowed(&self.nodes) }
+  fn nodes(&'a self) -> dot::Nodes<'a, Node> {
+    let nodes: Vec<_> = self.nodes.iter()
+      .filter(|n| !(self.edges_from_node[n.idx].is_empty() && self.edges_to_node[n.idx].is_empty()))
+      .cloned()
+      .collect();
+    nodes.into()
+  }
 
   fn edges(&'a self) -> dot::Edges<'a, Edge> {
     let edges: Vec<_> = self.edges_to_node.iter()
@@ -288,34 +306,104 @@ impl PartialEq for NodePriority {
 
 impl Eq for NodePriority {}
 
+/// A bad priority queue where every operation is O(n).  It is, however, cache-friendly and branch-prediction friendly.
+/// Because only a few nodes in the network are "active" nodes and in the queue, n is usually small (2-10)
+/// (node, priority) pairs are stored in a list with gaps.
+#[derive(Clone)]
+struct StupidQueue {
+  items: Vec<Option<NodePriority>>
+}
+
+impl Debug for StupidQueue {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    let mut list = f.debug_list();
+    for i in &self.items {
+      match i {
+        Some(np) => list.entry(&(np.node_idx, np.time)),
+        none => list.entry(none),
+      };
+    }
+    list.finish()
+  }
+}
+
+impl StupidQueue {
+  pub fn initialise(init_cap: usize, iter: impl Iterator<Item=NodePriority>) -> Self {
+    let mut items = Vec::with_capacity(init_cap);
+    items.extend(iter.map(Some));
+    StupidQueue { items }
+  }
+
+  pub fn update_priority(&mut self, np: NodePriority) -> bool {
+    let mut free_slot = None;
+    for (k, other) in self.items.iter_mut().enumerate() {
+      if let Some(other) = other {
+        if other.node_idx == np.node_idx {
+          *other = np;
+          return false;
+        }
+      } else if free_slot.is_none() {
+        free_slot = Some(k);
+      }
+    }
+    if let Some(k) = free_slot {
+      self.items[k] = Some(np);
+    } else {
+      self.items.push(Some(np));
+    }
+    true
+  }
+
+  fn pop_min(&mut self) -> Option<NodePriority> {
+    let min = self.items.iter()
+      .enumerate()
+      .filter_map(|(k, item)|
+        item.as_ref().map(move |np| (k, np.time))
+      )
+      .min_by_key(|pair| pair.1);
+
+    match min {
+      Some((k, _)) => self.items[k].take(),
+      None => None,
+    }
+  }
+}
+
 #[tracing::instrument(level = "debug", skip(graph))]
 pub fn forward_label(graph: &mut Graph) -> SubproblemStatus {
-  let mut queue = BinaryHeap::with_capacity(graph.nodes.len());
-  for &n in &graph.sources {
-    queue.push(Reverse(NodePriority { node_idx: n, time: graph.nodes[n].time }));
-  }
+  let mut queue = StupidQueue::initialise(
+    graph.sources.len() * 2,
+    graph.sources.iter().map(|&n| NodePriority { node_idx: n, time: graph.nodes[n].time }),
+  );
+
   let nodes = &mut graph.nodes;
   let edges_from_node = &graph.edges_from_node;
 
-  while let Some(Reverse(NodePriority { node_idx, time })) = queue.pop() {
-    trace!(?queue, node_idx, time, task=?nodes[node_idx].task, lb=nodes[node_idx].time_lb(), "process node");
+  while let Some(NodePriority { node_idx, time }) = queue.pop_min() {
+    let current_node = &mut nodes[node_idx];
+    trace!(?queue, node_idx, time, task=?current_node.task, lb=current_node.time_lb(), "process node");
     #[cfg(debug_assertions)] {
-      nodes[node_idx].processed = true;
+      current_node.processed = true;
     }
 
     for edge in &edges_from_node[node_idx] {
       let next_node = &mut nodes[edge.to];
       let new_time = time + edge.weight;
+
       if new_time > next_node.time {
+        // update neighbouring label's time
         next_node.time = new_time;
         next_node.active_pred = Some(node_idx);
+        // check feasibility
+        if next_node.time > next_node.time_ub() {
+          debug!(node_idx = next_node.idx, time = next_node.time, ub = next_node.time_ub(), "infeasibility found");
+          return SubproblemStatus::Infeasible(next_node.idx);
+        }
       }
 
-      if next_node.time > next_node.time_ub() {
-        debug!(node_idx = next_node.idx, time = next_node.time, ub = next_node.time_ub(), "infeasibility found");
-        return SubproblemStatus::Infeasible(next_node.idx);
-      }
-      queue.push(Reverse(NodePriority { node_idx: next_node.idx, time: next_node.time }));
+      // mark neighbour to be processed
+      next_node.label_state = LabelState::Queue;
+      queue.update_priority(NodePriority { node_idx: next_node.idx, time: next_node.time });
       trace!(?queue, node_idx=next_node.idx, time=next_node.time, task=?next_node.task, "push node");
     }
   }
@@ -330,13 +418,13 @@ pub fn forward_label(graph: &mut Graph) -> SubproblemStatus {
   SubproblemStatus::Optimal(theta_val)
 }
 
-type BlEdgeList<'a> = SmallVec<[Edge;10]>;
+type BlEdgeList<'a> = SmallVec<[Edge; 10]>;
 
 #[tracing::instrument(level = "debug", skip(graph, start_node), fields(start_node))]
 fn extract_critical_paths(graph: &Graph, start_node: usize) -> BlEdgeList {
   // Reconstruct the path
   let mut node = &graph.nodes[start_node];
-  let mut edges =  BlEdgeList::new();
+  let mut edges = BlEdgeList::new();
 
   while let Some(pred_idx) = node.active_pred {
     let edge = 'outer: loop {
@@ -359,7 +447,7 @@ fn remove_path(graph: &mut Graph, edges: &[Edge]) {
   }
 
   let affected_nodes = std::iter::once(edges[0].from)
-      .chain(edges.iter().map(|e| e.to));
+    .chain(edges.iter().map(|e| e.to));
 
   for n in affected_nodes {
     if graph.edges_to_node[n].len() == 0 && graph.edges_from_node[n].len() > 0 {
@@ -367,7 +455,6 @@ fn remove_path(graph: &mut Graph, edges: &[Edge]) {
     }
   }
 }
-
 
 
 #[derive(Debug, Copy, Clone)]
@@ -401,12 +488,11 @@ fn extract_and_remove_iis(graph: &mut Graph, ub_violate_node: usize) -> Vec<IisM
 }
 
 
-
 #[cfg(test)]
 mod tests {
   use tracing::*;
   use super::*;
-  use super::super::sp::TimingSubproblem;
+  use super::super::sp_lp::TimingSubproblem;
   use grb::Env;
   use std::fmt::Debug;
 
@@ -457,9 +543,13 @@ mod tests {
       print_constr_info(&lp.model, "av_sync", &lp.cons.av_sync);
     }
 
+    match &graph_result {
+      SubproblemStatus::Infeasible(_) => graph.save_as_svg("debug-infeasible.svg")?,
+      SubproblemStatus::Optimal(_) => graph.save_as_svg("debug-optimal.svg")?,
+    };
+
     match (graph_result, lp.model.status()?) {
       (SubproblemStatus::Infeasible(node), Status::Infeasible) => {
-        graph.save_as_svg("debug-infeasible.svg")?;
         print_iis(&mut lp);
         let iis = extract_and_remove_iis(&mut graph, node);
         println!("{:?}", iis);
@@ -471,7 +561,6 @@ mod tests {
       }
 
       (SubproblemStatus::Optimal(_), Status::Optimal) => {
-        graph.save_as_svg("debug-optimal.svg")?;
         println!("optimal");
         // panic!()
       }
@@ -495,7 +584,7 @@ mod tests {
     let _s = trace_span!("test").entered();
     let (data, sets, tasks, solutions) = load(0)?;
     let env = Env::new("gurobi.log")?;
-    for (n, sol) in solutions.iter().skip(1).enumerate() {
+    for (n, sol) in solutions.iter().skip(5).enumerate() {
       info!(n, "running on solution");
       compare_graph_algo_with_lp_model(&data, &tasks, sol, &env)?;
     }
