@@ -11,7 +11,7 @@ use itertools::Itertools;
 use grb::prelude::*;
 use grb::constr::IneqExpr;
 
-#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum SpConstr {
     AvTravelTime(Task, Task),
     Loading(Task),
@@ -23,9 +23,16 @@ pub enum SpConstr {
 pub type SpConstraints = SmallVec<[SpConstr; 10]>;
 pub type MrsInfo = SmallVec<[SpConstraints; NUM_AV_UB]>;
 
+#[derive(Debug)]
 pub enum SpStatus<O,I> {
     Optimal(Time, O),
     Infeasible(I),
+}
+
+impl<O, I> SpStatus<O, I> {
+    fn is_optimal(&self) -> bool {
+        matches!(self, SpStatus::Optimal(..))
+    }
 }
 
 pub trait SpSolve {
@@ -75,7 +82,6 @@ pub fn solve_subproblem_and_add_cuts<S: SpSolve>(solver: &mut S, cb: &mut cb::Cb
                 let cut = build_infeasiblity_cut(cb, &iis);
                 cb.enqueue_cut(cut, CutType::LpFeas);
             }
-
         }
     }
     Ok(())

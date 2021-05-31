@@ -220,17 +220,40 @@ impl Graph {
     Ok(())
   }
 
+  #[tracing::instrument(level = "debug", skip(self))]
+  fn backlabel_iis(&self, ub_violate: usize) -> BlEdgeList {
+    let mut edge_list = BlEdgeList::new();
+    // Reconstruct the path from this node
+    let mut node = &self.nodes[ub_violate];
+
+    while let Some(pred_idx) = node.active_pred {
+      // find the red edge arriving at this node
+      let edge = 'outer: loop {
+        for e in &self.edges_to_node[node.idx] {
+          if e.from == pred_idx {
+            break 'outer *e;
+          }
+        }
+        unreachable!()
+      };
+
+      // push and move back along red edge
+      edge_list.push(edge);
+      node = &self.nodes[pred_idx];
+    }
+    edge_list
+  }
 
   #[tracing::instrument(level = "debug", skip(self))]
-  fn find_critical_edges(&self, start_nodes: &[usize]) -> BlEdgeList {
+  fn backlabel_mrs(&self, last_task_nodes: &[usize]) -> BlEdgeList {
     let mut edge_list = BlEdgeList::new();
-    let mut backlabelled = if start_nodes.len() > 1 {
+    let mut backlabelled = if last_task_nodes.len() > 1 {
       Some(vec![false; self.nodes.len()])
     } else {
       None
     };
 
-    for &start_node in start_nodes {
+    for &start_node in last_task_nodes {
       // Reconstruct the path from this node
       let mut node = &self.nodes[start_node];
 
@@ -258,7 +281,6 @@ impl Graph {
         node = &self.nodes[pred_idx];
       }
     }
-
     edge_list
   }
 
@@ -491,7 +513,7 @@ impl SpSolve for Graph {
   }
 
   fn extract_and_remove_iis(&mut self, ub_violate_node: usize) -> Result<SpConstraints> {
-    let edges = self.find_critical_edges(&[ub_violate_node]);
+    let edges = self.backlabel_iis(ub_violate_node);
     self.remove_edges_and_clean(&edges);
 
     for n in self.nodes.iter_mut() {
@@ -502,13 +524,14 @@ impl SpSolve for Graph {
     for edge in &edges {
       iis.push(self.get_sp_constraint(edge))
     }
-    iis.push(SpConstr::Lb(self.nodes[edges.first().unwrap().from].task));
-    iis.push(SpConstr::Ub(self.nodes[edges.last().unwrap().to].task));
+
+    iis.push(SpConstr::Ub(self.nodes[edges.first().unwrap().to].task));
+    iis.push(SpConstr::Lb(self.nodes[edges.last().unwrap().from].task));
     Ok(iis)
   }
 
   fn extract_mrs(&self, _: ()) -> Result<MrsInfo> {
-    let edges = self.find_critical_edges(&self.last_task_nodes);
+    let edges = self.backlabel_mrs(&self.last_task_nodes);
     let mut mrs = SmallVec::with_capacity(edges.len() + self.last_task_nodes.len());
 
     for e in &edges {
@@ -557,11 +580,8 @@ mod tests {
   }
 
   fn compare_graph_algo_with_lp_model(data: &Data, tasks: &Tasks, sol: &Solution, env: &Env) -> Result<()> {
-    let mut graph = build_graph(data, tasks, sol);
-    let graph_result = forward_label(&mut graph);
-    println!("{:?}", &graph_result);
+    let mut graph = Graph::build(data, tasks, sol);
     let mut lp = TimingSubproblem::build(env, data, tasks, sol)?;
-    lp.model.optimize()?;
 
     fn print_constr_info<'a, K: 'a + Debug>(model: &grb::Model, cgroup: &str, constraints: impl IntoIterator<Item=(&'a K, &'a Constr)>) {
       for (key, c) in constraints {
@@ -581,50 +601,62 @@ mod tests {
       print_constr_info(&lp.model, "av_sync", &lp.cons.av_sync);
     }
 
-    match &graph_result {
-      SubproblemStatus::Infeasible(_) => graph.save_as_svg("debug-infeasible.svg")?,
-      SubproblemStatus::Optimal(_) => graph.save_as_svg("debug-optimal.svg")?,
-    };
+    let mut g_iises = HashSet::<SpConstraints>::default();
+    let mut lp_iises = HashSet::<SpConstraints>::default();
 
-    match (graph_result, lp.model.status()?) {
-      (SubproblemStatus::Infeasible(node), Status::Infeasible) => {
-        print_iis(&mut lp);
-        let iis = extract_and_remove_iis(&mut graph, node);
-        println!("{:?}", iis);
-        let result = forward_label(&mut graph);
-        dbg!(result);
-        graph.save_as_svg("debug-2nd.svg")?;
-        println!("infeasible");
-        panic!();
-      }
+    loop {
+      let graph_result = graph.solve()?;
+      let lp_result = lp.solve()?;
 
-      (SubproblemStatus::Optimal(_), Status::Optimal) => {
-        println!("optimal");
-        // panic!()
-      }
+      match &graph_result {
+        SpStatus::Infeasible(..) => graph.save_as_svg("debug-infeasible.svg")?,
+        SpStatus::Optimal(..) => graph.save_as_svg("debug-optimal.svg")?,
+      };
 
-      (a, b) => {
-        if b == Status::Infeasible {
-          print_iis(&mut lp);
+      match (graph_result, lp_result) {
+        (SpStatus::Optimal(g_obj, _), SpStatus::Optimal(lp_obj, _)) => {
+          assert_eq!(g_obj, lp_obj);
+
+          let g_mrs = &mut graph.extract_mrs(())?[0];
+          g_mrs.sort();
+          let lp_mrs = &mut graph.extract_mrs(())?[0];
+          lp_mrs.sort();
+          assert_eq!(g_mrs, lp_mrs);
+          break;
         }
 
-        graph.save_as_svg("debug.svg")?;
-        panic!("mismatch!\ngraph algo gave {:?}\nLP gave {:?}", a, b)
-      }
+        (SpStatus::Infeasible(nidx), SpStatus::Infeasible(_)) => {
+          let mut g_iis = graph.extract_and_remove_iis(nidx)?;
+          g_iis.sort();
+          let mut lp_iis = lp.extract_and_remove_iis(())?;
+          lp_iis.sort();
+          // assert_eq!(g_iis, lp_iis);
+          g_iises.insert(g_iis);
+          lp_iises.insert(lp_iis);
+        }
+
+        (a, b) => {
+          panic!("mismatch!\ngraph algo gave {:?}\nLP gave {:?}", a, b)
+        }
+    }
+
+
     }
     Ok(())
   }
 
 
+
   #[test]
   fn solve() -> Result<()> {
     let _g = crate::logging::init_test_logging(None::<&str>);
-    let _s = trace_span!("test").entered();
-    let (data, sets, tasks, solutions) = load(0)?;
-    let env = Env::new("gurobi.log")?;
-    for (n, sol) in solutions.iter().skip(5).enumerate() {
-      info!(n, "running on solution");
-      compare_graph_algo_with_lp_model(&data, &tasks, sol, &env)?;
+    for di in 0..60 {
+      let (data, sets, tasks, solutions) = load(di)?;
+      let env = Env::new("gurobi.log")?;
+      for (si, sol) in solutions.iter().enumerate() {
+        let _s = info_span!("solve_test", data_idx=di, sol_idx=si).entered();
+        compare_graph_algo_with_lp_model(&data, &tasks, sol, &env)?;
+      }
     }
     Ok(())
   }

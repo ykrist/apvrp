@@ -14,8 +14,9 @@ use std::collections::{HashSet, HashMap};
 use std::hash::{Hash, BuildHasher};
 use crate::utils::HashMapExt;
 use smallvec::SmallVec;
+use super::*;
 
-pub struct SpConstraints {
+pub struct TimingConstraints {
   pub av_sync: Map<(Task, Task), Constr>,
   pub loading: Map<Task, Constr>,
   pub unloading: Map<Task, Constr>,
@@ -23,7 +24,7 @@ pub struct SpConstraints {
   pub ub: Map<Task, Constr>,
 }
 
-impl SpConstraints {
+impl TimingConstraints {
   pub fn build(data: &Data, tasks: &Tasks, sol: &Solution, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
     let _span = error_span!("sp_cons").entered();
 
@@ -73,7 +74,7 @@ impl SpConstraints {
         t1 = t2;
       }
     }
-    Ok(SpConstraints { av_sync, loading, unloading, ub, lb })
+    Ok(TimingConstraints { av_sync, loading, unloading, ub, lb })
   }
 }
 
@@ -81,15 +82,16 @@ impl SpConstraints {
 pub struct TimingSubproblem<'a> {
   pub vars: Map<Task, Var>,
   pub second_last_tasks: SmallVec<[Task; NUM_AV_UB]>,
-  pub cons: SpConstraints,
+  pub cons: TimingConstraints,
   pub model: Model,
   pub mp_sol: &'a Solution,
   pub data: &'a Data,
+  pub tasks: &'a Tasks,
 }
 
 
 impl<'a> TimingSubproblem<'a> {
-  pub fn build(env: &Env, data: &'a Data, tasks: &Tasks, sol: &'a Solution) -> Result<TimingSubproblem<'a>> {
+  pub fn build(env: &Env, data: &'a Data, tasks: &'a Tasks, sol: &'a Solution) -> Result<TimingSubproblem<'a>> {
     let _span = error_span!("sp_build").entered();
 
     let mut model = Model::with_env("subproblem", env)?;
@@ -103,7 +105,7 @@ impl<'a> TimingSubproblem<'a> {
       v
     };
 
-    let cons = SpConstraints::build(data, tasks, sol, &mut model, &vars)?;
+    let cons = TimingConstraints::build(data, tasks, sol, &mut model, &vars)?;
 
     let mut obj_constant = 0.0;
     let mut second_last_tasks = SmallVec::new();
@@ -121,7 +123,7 @@ impl<'a> TimingSubproblem<'a> {
     trace!(?obj_constant, obj=?obj.with_names(&model));
     model.set_objective(obj, Minimize)?;
 
-    Ok(TimingSubproblem { vars, cons, model, mp_sol: sol, data, second_last_tasks })
+    Ok(TimingSubproblem { vars, cons, model, mp_sol: sol, data, second_last_tasks, tasks })
   }
 
   pub fn add_cuts(mut self, cb: &mut super::cb::Cb, estimate: Time) -> Result<()> {
@@ -144,25 +146,25 @@ impl<'a> TimingSubproblem<'a> {
             return Ok(());
           }
           let obj = self.model.get_attr(attr::ObjVal)?.round() as Time;
-          trace!(obj);
-          #[cfg(debug_assertions)] {
-            if estimate > obj {
-              error!(obj,T=?get_var_values(&self.model, &self.vars)?.collect_vec(), "invalid Benders cut(s)");
-              let sol = SpSolution::from_sp(&self)?;
-              sol.pretty_print(&self.data);
-              for (ty, i, cut) in &cb.cut_cache {
-                if ty.is_opt_cut() {
-                  let (lhs, rhs) = cut.evaluate(&cb.var_vals);
-                  warn!(?ty, idx=i, ?obj, ?lhs, ?rhs, cut=?cut.with_names(&cb.var_names),  "possible invalid opt cut");
-                }
-              }
-              let mut solution = self.mp_sol.clone();
-              solution.objective = Some(obj);
-              let err = CbError::InvalidBendersCut { estimate, obj, solution };
-              cb.error = Some(err.clone());
-              return Err(err.into());
-            }
-          }
+          // trace!(obj); // FIXME this assertion is not quite right - need to manually minimise theta
+          // #[cfg(debug_assertions)] {
+          //   if estimate > obj {
+          //     error!(obj,T=?get_var_values(&self.model, &self.vars)?.collect_vec(), "invalid Benders cut(s)");
+          //     let sol = SpSolution::from_sp(&self)?;
+          //     sol.pretty_print(&self.data);
+          //     for (ty, i, cut) in &cb.cut_cache {
+          //       if ty.is_opt_cut() {
+          //         let (lhs, rhs) = cut.evaluate(&cb.var_vals);
+          //         warn!(?ty, idx=i, ?obj, ?lhs, ?rhs, cut=?cut.with_names(&cb.var_names),  "possible invalid opt cut");
+          //       }
+          //     }
+          //     let mut solution = self.mp_sol.clone();
+          //     solution.objective = Some(obj);
+          //     let err = CbError::InvalidBendersCut { estimate, obj, solution };
+          //     cb.error = Some(err.clone());
+          //     return Err(err.into());
+          //   }
+          // }
 
           if estimate < obj {
             cb.enqueue_cut(self.build_mrs_cut(cb)?, CutType::LpOpt);
@@ -298,3 +300,100 @@ impl<'a> TimingSubproblem<'a> {
   }
 }
 
+impl<'a>  SpSolve for TimingSubproblem<'a> {
+  type OptInfo = ();
+  type InfInfo = ();
+
+  fn solve(&mut self) -> Result<SpStatus<(), ()>> {
+    self.model.optimize()?;
+    match self.model.status()? {
+      Status::Optimal => {
+        let obj_val = self.model.get_attr(attr::ObjVal)?.round() as Time;
+        Ok(SpStatus::Optimal(obj_val, ()))
+      },
+      Status::Infeasible => Ok(SpStatus::Infeasible(())),
+      other => {
+        let err = CbError::Status(other);
+        error!(status=?other, "{}", err);
+        Err(err.into())
+      }
+    }
+  }
+
+  fn extract_and_remove_iis(&mut self, _: ()) -> Result<SpConstraints> {
+    self.model.compute_iis()?;
+    let mut iis = SpConstraints::new();
+
+    fn process_x_constraints(model: &mut grb::Model, cons: &mut Map<Task, Constr>, iis: &mut SpConstraints, f: impl Fn(Task) -> SpConstr) -> Result<()> {
+      let retain = |t: &Task, c: &mut Constr| -> Result<bool> {
+        if model.get_obj_attr(attr::IISConstr, &c)? > 0 {
+          let spc = f(*t);
+          iis.push(spc);
+          trace!(?t, c=?spc, "remove SP constr");
+          model.remove(*c)?;
+          Ok(false)
+        } else {
+          Ok(true)
+        }
+      };
+      cons.retain_ok(retain)
+    }
+
+    process_x_constraints(&mut self.model, &mut self.cons.unloading, &mut iis, SpConstr::Unloading)?;
+    process_x_constraints(&mut self.model, &mut self.cons.loading, &mut iis, SpConstr::Loading)?;
+    process_x_constraints(&mut self.model, &mut self.cons.ub, &mut iis, SpConstr::Ub)?;
+    process_x_constraints(&mut self.model, &mut self.cons.lb, &mut iis, SpConstr::Lb)?;
+
+    let model = &mut self.model;
+
+    self.cons.av_sync.retain_ok(|&(t1, t2), &mut c| -> Result<bool> {
+      if model.get_obj_attr(attr::IISConstr, &c)? > 0 {
+        let spc = SpConstr::AvTravelTime(t1, t2);
+        iis.push(spc);
+        trace!(?t1, ?t2, c=?spc, "remove SP constr");
+        model.remove(c)?;
+        Ok(false) // remove this constraint
+      } else {
+        Ok(true) // keep this constraint
+      }
+    })?;
+
+    Ok(iis)
+  }
+
+  fn extract_mrs(&self, _: ()) -> Result<MrsInfo> {
+    fn process_x_constraints(model: &grb::Model, cons: &Map<Task, Constr>, mrs: &mut SpConstraints, f: impl Fn(Task) -> SpConstr) -> Result<()> {
+      for (t, c) in cons {
+        let dual = model.get_obj_attr(attr::Pi, c)?;
+        if dual.abs() > 0.1 {
+          let spc = f(*t);
+          mrs.push(spc);
+          trace!(?t, c=?spc, ?dual, "non-zero dual");
+        }
+      }
+      Ok(())
+    }
+
+    let mut mrs = SpConstraints::new();
+
+    process_x_constraints(&self.model, &self.cons.unloading, &mut mrs, SpConstr::Unloading)?;
+    process_x_constraints(&self.model, &self.cons.loading, &mut mrs, SpConstr::Loading)?;
+    process_x_constraints(&self.model, &self.cons.ub, &mut mrs, SpConstr::Ub)?;
+    process_x_constraints(&self.model, &self.cons.lb, &mut mrs, SpConstr::Lb)?;
+
+    for (&(t1, t2), c) in &self.cons.av_sync {
+      let dual = self.model.get_obj_attr(attr::Pi, c)?;
+      if dual.abs() > 0.1 {
+        let spc = SpConstr::AvTravelTime(t1, t2);
+        mrs.push(spc);
+        trace!(?t1, ?t2, c=?spc, ?dual, "non-zero dual");
+      }
+    }
+
+    for &t in &self.second_last_tasks {
+      mrs.push(SpConstr::AvTravelTime(t, self.tasks.ddepot));
+    }
+
+    Ok(smallvec::smallvec![mrs])
+  }
+}
