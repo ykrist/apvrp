@@ -9,6 +9,7 @@ use grb::constr::IneqExpr;
 use tracing::{error_span, trace, error, warn};
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::cmp::Ordering;
 
 pub type TaskId = u32;
 pub type PVIRTaskId = u32;
@@ -177,6 +178,14 @@ impl PartialEq for Task {
 }
 
 impl Eq for Task {}
+
+impl Ord for Task {
+  fn cmp(&self, other: &Task) -> Ordering { self.id().cmp(&other.id()) }
+}
+
+impl PartialOrd for Task {
+  fn partial_cmp(&self, other: &Task) -> Option<Ordering> { Some(self.cmp(&other)) }
+}
 
 impl Hash for Task {
   fn hash<H: Hasher>(&self, state: &mut H) {

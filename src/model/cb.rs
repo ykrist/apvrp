@@ -628,10 +628,10 @@ impl<'a> Callback for Cb<'a> {
               serde_json::to_writer(&mut *sol_log, &sol)?; // need to re-borrow here
               write!(sol_log, "\n")?;
             }
-            {
-              let mut graph = sp_graph::build_graph(self.data, self.tasks, &sol);
-              sp_graph::forward_label(&mut graph);
-            }
+            // {
+            //   let mut graph = sp_graph::build_graph(self.data, self.tasks, &sol);
+            //   sp_graph::forward_label(&mut graph);
+            // } // FIXME
 
             let sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &sol)?;
 

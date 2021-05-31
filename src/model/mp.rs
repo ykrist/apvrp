@@ -73,6 +73,43 @@ impl MpVars {
       .cartesian_product(sets.avs())
       .filter_map(move |((&t1, &t2), a)| self.y.get(&(a, t1, t2)).copied())
   }
+
+  /// Construct a expression of variables which is at most `k` (the other return value),
+  /// If the expression is equal to `k` then the supplied constraints are guaranteed to appear in the subproblem.
+  pub fn sum_responsible(&self, sets: &Sets, sp_constraints: &[super::SpConstr]) -> (usize, Expr) {
+    use super::SpConstr::*;
+
+    let mut x_tasks = set_with_capacity(sp_constraints.len());
+    let mut y_tasks = set_with_capacity(sp_constraints.len());
+
+    let mut expr = Expr::default();
+    let mut k = 0;
+
+    for &c in sp_constraints {
+      match c {
+        Unloading(t) | Lb(t) | Ub(t) | Loading(t) => {
+          x_tasks.insert(t);
+        }
+        AvTravelTime(t1, t2) => {
+          k += 1;
+          for a in sets.avs() {
+            if let Some(&y) = self.y.get(&(a, t1, t2)) {
+              expr += y;
+            }
+          }
+          y_tasks.insert(t1);
+          y_tasks.insert(t2);
+        }
+      }
+    }
+
+    for t in x_tasks.difference(&y_tasks) {
+      k += 1;
+      expr += self.x[t]
+    }
+
+    (k, expr)
+  }
 }
 
 pub struct MpConstraints {
