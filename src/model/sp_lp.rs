@@ -323,7 +323,7 @@ impl<'a>  SpSolve for TimingSubproblem<'a> {
   fn extract_and_remove_iis(&mut self, _: ()) -> Result<SpConstraints> {
     self.model.compute_iis()?;
     let mut iis = SpConstraints::new();
-
+    // FIXME dont remove bound constraints
     fn process_x_constraints(model: &mut grb::Model, cons: &mut Map<Task, Constr>, iis: &mut SpConstraints, f: impl Fn(Task) -> SpConstr) -> Result<()> {
       let retain = |t: &Task, c: &mut Constr| -> Result<bool> {
         if model.get_obj_attr(attr::IISConstr, &c)? > 0 {
