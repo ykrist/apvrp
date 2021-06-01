@@ -17,7 +17,7 @@ use std::path::Path;
 use std::fmt::Debug;
 use std::fmt;
 use super::*;
-use dot::LabelText;
+
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum LabelState {
@@ -84,13 +84,14 @@ pub struct Edge {
   weight: Time,
 }
 
-type BlEdgeList<'a> = SmallVec<[Edge; 10]>;
+type BlEdgeList = SmallVec<[Edge; 10]>;
 
 #[derive(Clone, Debug)]
 pub struct Graph {
   edges_from_node: Vec<SmallVec<[Edge; 2]>>,
   edges_to_node: Vec<SmallVec<[Edge; 2]>>,
   nodes: Vec<Node>,
+  connected_nodes: usize,
   sources: Vec<usize>,
   last_task_nodes: Vec<usize>,
   last_task_tt_to_depot: Vec<Time>,
@@ -102,24 +103,21 @@ impl Graph {
   pub fn build(data: &Data, tasks: &Tasks, sol: &Solution) -> Self {
     let mut nodes = Vec::with_capacity(sol.av_routes.iter().map(|(_, route)| route.len()).sum());
     let mut task_to_node_idx = map_with_capacity(nodes.len());
-    let mut sources = Vec::with_capacity(sol.av_routes.len());
-    let mut last_task_nodes = sources.clone();
+    let mut last_task_nodes = Vec::with_capacity(sol.av_routes.len());
     let mut last_task_tt_to_depot = Vec::with_capacity(sol.av_routes.len());
 
     for (avg, route) in &sol.av_routes {
-      sources.push(nodes.len());
       // trim the depots from the routes
       for &task in &route[1..route.len() - 1] {
         task_to_node_idx.insert(task, nodes.len());
         nodes.push(Node::new(nodes.len(), *avg, task));
       }
 
-      {
-        let last_task: &Task = &nodes.last().unwrap().task;
-        last_task_tt_to_depot.push(last_task.tt + data.travel_time[&(last_task.end, Loc::Ad)])
-      }
-      last_task_nodes.push(nodes.len() - 1); // last node we pushed was the one before the DDp node
+      let last_task: &Task = &nodes.last().unwrap().task;
+      last_task_tt_to_depot.push(last_task.tt + data.travel_time[&(last_task.end, Loc::Ad)]);
+      last_task_nodes.push(nodes.len() - 1); // last node we pushed was the task before the DDp node
     }
+
     trace!(?task_to_node_idx);
     let mut edges = Map::default();
     for (_, pv_route) in &sol.pv_routes {
@@ -172,11 +170,23 @@ impl Graph {
       edges_to_node[to].push(edge);
     }
 
+    let mut sources = Vec::with_capacity(sol.av_routes.len());
+
+    for n in &nodes {
+      if edges_to_node[n.idx].is_empty() {
+        sources.push(n.idx);
+      }
+    }
+    debug_assert_ne!(sources.len(), 0);
+
+    let connected_nodes = nodes.len();
+
     trace!(?edges_from_node, ?edges_to_node, ?nodes, ?sources, ?last_task_nodes, "built");
     Graph {
       edges_from_node,
       edges_to_node,
       nodes,
+      connected_nodes,
       sources,
       last_task_nodes,
       last_task_tt_to_depot,
@@ -248,6 +258,63 @@ impl Graph {
     for e in &self.edges_from_node[from] {
       if e.to == to {
         return e
+      }
+    }
+    unreachable!()
+  }
+
+  #[tracing::instrument(level = "debug", skip(self))]
+  fn find_cycle(&self) -> BlEdgeList {
+    #[derive(Copy, Clone, Eq, PartialEq, Debug)]
+    enum NodeState {
+      NotVisited,
+      Current,
+      Visited,
+    }
+    use NodeState::*;
+
+    #[tracing::instrument(level = "trace", skip(graph, node_state))]
+    fn dfs(graph: &Graph, node_state: &mut Vec<NodeState>, node: usize, order: usize) -> Option<BlEdgeList> {
+      match node_state[node] {
+        NotVisited => node_state[node] = Current,
+        Visited => return None,
+        Current => {
+          // Re-construct the cycle
+          let mut edges = BlEdgeList::new();
+          let mut n = node;
+          loop {
+            let edge = *graph.edges_from_node[n].iter()
+              .filter(|e| node_state[e.to] == Current)
+              .next()
+              .expect("should have at least one Current succ");
+
+            n = edge.to;
+            edges.push(edge);
+
+            if n == node { break }
+          }
+          trace!(?edges, "cycle found");
+          return Some(edges)
+        },
+      }
+
+      for e in &graph.edges_from_node[node] {
+        let cycle = dfs(graph, node_state, e.to, order + 1);
+        if cycle.is_some() {
+          return cycle
+        }
+      }
+
+      node_state[node] = Visited;
+      None
+    }
+
+    let mut node_state = vec![NotVisited; self.nodes.len()];
+
+    for &n in &self.sources {
+      let cycle = dfs(self, &mut node_state, n, 0);
+      if let Some(c) = cycle {
+        return c;
       }
     }
     unreachable!()
@@ -422,12 +489,12 @@ impl<'a> dot::Labeller<'a, Node, Edge> for Graph {
   }
 
   fn edge_color(&'a self, e: &Edge) -> Option<dot::LabelText<'a>> {
-    // if self.edge_active(e) {
-    //   Some(dot::LabelText::label("red"))
-    // } else {
-    //   Some(dot::LabelText::label("black"))
-    // }
-    None
+    if self.edge_active(e) {
+      Some(dot::LabelText::label("red"))
+    } else {
+      Some(dot::LabelText::label("black"))
+    }
+    // None
   }
 
   #[cfg(debug_assertions)]
@@ -439,7 +506,7 @@ impl<'a> dot::Labeller<'a, Node, Edge> for Graph {
     } else {
       "grey"
     };
-    Some(LabelText::LabelStr(color.into()))
+    Some(dot::LabelText::LabelStr(color.into()))
   }
 
   fn kind(&self) -> dot::Kind { dot::Kind::Digraph }
@@ -472,10 +539,16 @@ impl PartialEq for NodePriority {
 
 impl Eq for NodePriority {}
 
+#[derive(Debug, Clone)]
+pub enum InfKind {
+  Cycle,
+  Time(Vec<usize>)
+}
+
 impl SpSolve for Graph {
   type OptInfo = ();
   /// Node index at which the time window is violated.
-  type InfInfo = Vec<usize>;
+  type InfInfo = InfKind;
 
   fn solve(&mut self) -> Result<SpStatus<Self::OptInfo, Self::InfInfo>> {
     let mut queue = SmallVec::<[usize; NUM_AV_UB * 2]>::new();
@@ -486,22 +559,21 @@ impl SpSolve for Graph {
     let nodes = &mut self.nodes;
     let edges_from_node = &self.edges_from_node;
 
-    #[cfg(debug_assertions)]
-      let mut order = 0;
 
+    let mut nodes_processed = 0;
 
     while let Some(node_idx) = queue.pop() {
       let current_node = &mut nodes[node_idx];
-      trace!(?queue, node_idx, time=current_node.time, task=?current_node.task, lb=current_node.time_lb(), "pop node");
+      let _s = trace_span!("process_node", node=node_idx, time=current_node.time, task=?current_node.task).entered();
+
       #[cfg(debug_assertions)] {
-        current_node.forward_order = order;
-        order += 1;
+        current_node.forward_order = nodes_processed as i32;
       }
+      nodes_processed += 1;
       let time = current_node.time;
 
       for edge in &edges_from_node[node_idx] {
-        let visited_pred = &mut num_visited_pred[edge.to];
-        let next_node = &mut nodes[edge.to];
+        let next_node : &mut Node = &mut nodes[edge.to];
         let new_time = time + edge.weight;
 
         if next_node.time < new_time {
@@ -509,60 +581,83 @@ impl SpSolve for Graph {
           next_node.time = new_time;
           next_node.active_pred = Some(node_idx);
           // check feasibility
-          if next_node.time > next_node.time_ub() {
-            violated_ub_nodes.push(edge.to);
-            debug!(node_idx = next_node.idx, time = next_node.time, ub = next_node.time_ub(), "infeasibility found");
-            // return Ok(SpStatus::Infeasible(next_node.idx));
+          if new_time > next_node.time_ub() {
+            violated_ub_nodes.push(next_node.idx);
+            debug!(new_node=next_node.idx, time = next_node.time, ub = next_node.time_ub(), "infeasibility found");
+          } else {
+            trace!(new_node=next_node.idx, time = next_node.time, "update time");
           }
         }
 
         // If the next node has had all its predecessors processed, add it to the queue
+        let visited_pred = &mut num_visited_pred[edge.to];
         *visited_pred += 1;
         if *visited_pred == self.edges_to_node[edge.to].len() {
           queue.push(edge.to);
-          trace!(?queue, node_idx=next_node.idx, time=next_node.time, task=?next_node.task, "push node");
+          trace!(?queue, new_node=next_node.idx, time=next_node.time, task=?next_node.task, "push node");
         }
       }
     }
+    dbg!(nodes_processed);
+    if nodes_processed < self.connected_nodes {
+      Ok(SpStatus::Infeasible(InfKind::Cycle))
+    }
+    else if !violated_ub_nodes.is_empty() {
+      Ok(SpStatus::Infeasible(InfKind::Time(violated_ub_nodes)))
+    } else {
+      let obj = self.last_task_nodes.iter()
+        .zip(&self.last_task_tt_to_depot)
+        .map(|(&n, &tt)| self.nodes[n].time + tt)
+        .sum();
 
-    let obj = self.last_task_nodes.iter()
-      .zip(&self.last_task_tt_to_depot)
-      .map(|(&n, &tt)| self.nodes[n].time + tt)
-      .sum();
-
-    if violated_ub_nodes.is_empty() {
       debug!(obj, "subproblem optimal");
       Ok(SpStatus::Optimal(obj, ()))
-    } else {
-      Ok(SpStatus::Infeasible(violated_ub_nodes))
     }
 
   }
 
-  fn extract_and_remove_iis(&mut self, ub_violate_nodes: Vec<usize>) -> Result<SpConstraints> {
+  fn extract_and_remove_iis(&mut self, inf: Self::InfInfo) -> Result<SpConstraints> {
     // edges are returned in reverse order, so edge.last().unwrap().from is the first node along the IIS
     // path and `edges[0].to` is the node indexed by `ub_violate_node`.
-    let edges = self.backlabel_min_iis(&ub_violate_nodes);
+
+    let edges = match &inf {
+      InfKind::Cycle => self.find_cycle(),
+      InfKind::Time(ub_violated_nodes)=> self.backlabel_min_iis(ub_violated_nodes)
+    };
 
     for e in &edges {
       self.remove_edge(e);
     }
 
-    { // update source nodes
-      let iis_start_node = edges.last().expect("IIS should contain at least one non-bound constraint").from;
-      let iis_start_node_is_source = self.sources.contains(&iis_start_node);
-      let edges_to_node = &self.edges_to_node;
-      let edges_from_node = &self.edges_from_node;
+    // update nodes - check for new source nodes and newly isolated nodes
+    fn update_node(graph: &mut Graph, node: usize) {
+      if graph.edges_to_node[node].len() == 0 {
+        if graph.edges_from_node[node].len() == 0 {
+          graph.connected_nodes -= 1;
+        } else {
+          graph.sources.push(node);
+        }
+      }
+    }
 
-      let new_source_nodes = edges.iter().map(|e| e.to)
+    let edges_to_node = &self.edges_to_node;
+    let edges_from_node = &self.edges_from_node;
+
+    if matches!(&inf, InfKind::Cycle) {
+      edges.iter().for_each(|e| update_node(self, e.to));
+    } else {
+      let iis_start_node = edges.last().expect("IIS should contain at least one non-bound constraint").from;
+      let iis_start_node_is_source = self.sources.contains(&iis_start_node); // will always be false for a cycle
+
+      edges.iter().map(|e| e.to)
         // if the start node of the IIS path is the source node, don't add it again
         .chain(std::iter::once(iis_start_node).take((!iis_start_node_is_source) as usize))
         // new source nodes should not be isolated
-        .filter(|&n| edges_to_node[n].len() == 0 && edges_from_node[n].len() > 0);
+        .for_each(|n| update_node(self, n));
 
-      self.sources.extend(new_source_nodes);
     }
 
+    // Reset nodes for next forward-labelling
     for n in self.nodes.iter_mut() {
       n.reset();
     }
@@ -572,8 +667,11 @@ impl SpSolve for Graph {
       iis.push(self.get_sp_constraint(edge))
     }
 
-    iis.push(SpConstr::Ub(self.nodes[edges.first().unwrap().to].task));
-    iis.push(SpConstr::Lb(self.nodes[edges.last().unwrap().from].task));
+    if matches!(&inf, InfKind::Time(..)) {
+      iis.push(SpConstr::Ub(self.nodes[edges.first().unwrap().to].task));
+      iis.push(SpConstr::Lb(self.nodes[edges.last().unwrap().from].task));
+    }
+
     Ok(iis)
   }
 
@@ -670,7 +768,7 @@ mod tests {
         SpStatus::Optimal(..) => graph.save_as_svg(format!("debug-opt-{}.svg", iter))?,
       };
 
-      // lp.model.write(&format!("sp-dbg-{}.lp", iter))?;
+      lp.model.write(&format!("sp-dbg-{}.lp", iter))?;
 
       match (graph_result, lp_result) {
         (SpStatus::Optimal(g_obj, _), SpStatus::Optimal(lp_obj, _)) => {
@@ -682,6 +780,7 @@ mod tests {
           let lp_mrs = &mut graph.extract_mrs(())?[0];
           lp_mrs.sort();
           assert_eq!(g_mrs, lp_mrs);
+          debug!(obj=g_obj, mrs=?g_mrs, "Obj and MRS are the same!");
           break;
         }
 
@@ -696,9 +795,16 @@ mod tests {
             warn!(?g_iis, ?lp_iis, "IIS divergence");
             break;
           }
+          debug!(iis=?g_iis, "IIS are the same!")
         }
 
-        (a, b) => {
+        (a, b @ SpStatus::Infeasible(_)) => {
+          print_lp_iis(&mut lp);
+          panic!("mismatch!\ngraph algo gave {:?}\nLP gave {:?}", a, b)
+        }
+
+        (a, b @ SpStatus::Optimal(..)) => {
+          // print_lp_iis()
           panic!("mismatch!\ngraph algo gave {:?}\nLP gave {:?}", a, b)
         }
       }
@@ -736,8 +842,8 @@ mod tests {
     let _g = crate::logging::init_test_logging(None::<&str>);
     let env = get_sp_env()?;
 
-    let td = load(40)?;
-    compare_graph_algo_with_lp_model(&td, 12, &env)?; // FIXME cycles are possible!
+    let td = load(42)?;
+    compare_graph_algo_with_lp_model(&td, 73, &env)?; // FIXME cycles are possible!
     Ok(())
   }
 }
