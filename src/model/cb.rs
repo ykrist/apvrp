@@ -17,6 +17,7 @@ use std::io::Write;
 use experiment::Params;
 use slurm_harray::{ExperimentAuto, Experiment};
 use crate::model::cb::CutType::EndTime;
+use crate::model::solve_subproblem_and_add_cuts;
 
 #[derive(Debug, Clone)]
 pub enum CbError {
@@ -633,11 +634,13 @@ impl<'a> Callback for Cb<'a> {
             //   sp_graph::forward_label(&mut graph);
             // } // FIXME
 
-            let sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &sol)?;
+            let mut sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &sol)?;
 
-            let theta: Map<_, _> = get_var_values(&ctx, &self.mp_vars.theta)?.collect();
+            let theta: Map<_, _> = get_var_values_mapped(&ctx, &self.mp_vars.theta, |t| t.round() as Time)?.collect();
             trace!(?theta);
-            let estimate = theta.values().sum::<f64>().round() as Time;
+            let estimate : Time = theta.values().sum();
+
+            // solve_subproblem_and_add_cuts(&mut sp, self, &theta);
             sp.add_cuts(self, estimate)?;
           }
         }

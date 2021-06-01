@@ -17,6 +17,7 @@ use std::path::Path;
 use std::fmt::Debug;
 use std::fmt;
 use super::*;
+use dot::LabelText;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum LabelState {
@@ -33,7 +34,7 @@ pub struct Node {
   time: Time,
   active_pred: Option<usize>,
   #[cfg(debug_assertions)]
-  forward_labelled: bool,
+  forward_order: i32,
 }
 
 impl Node {
@@ -45,7 +46,7 @@ impl Node {
       time: task.t_release,
       active_pred: None,
       #[cfg(debug_assertions)]
-      forward_labelled: false,
+      forward_order: -1,
     }
   }
 
@@ -53,7 +54,7 @@ impl Node {
     self.time = self.time_lb();
     self.active_pred = None;
     #[cfg(debug_assertions)] {
-      self.forward_labelled = false;
+      self.forward_order = -1;
     }
   }
 }
@@ -115,10 +116,9 @@ impl Graph {
 
       {
         let last_task: &Task = &nodes.last().unwrap().task;
-        last_task_tt_to_depot.push( last_task.tt + data.travel_time[&(last_task.end, Loc::Ad)])
+        last_task_tt_to_depot.push(last_task.tt + data.travel_time[&(last_task.end, Loc::Ad)])
       }
       last_task_nodes.push(nodes.len() - 1); // last node we pushed was the one before the DDp node
-
     }
     trace!(?task_to_node_idx);
     let mut edges = Map::default();
@@ -244,6 +244,86 @@ impl Graph {
     edge_list
   }
 
+  fn get_edge(&self, from: usize, to: usize) -> &Edge {
+    for e in &self.edges_from_node[from] {
+      if e.to == to {
+        return e
+      }
+    }
+    unreachable!()
+  }
+
+  #[tracing::instrument(level = "debug", skip(self))]
+  fn backlabel_min_iis(&self, ub_violated_nodes: &[usize]) -> BlEdgeList {
+
+    type Action = usize;
+    use std::collections::hash_map::Entry;
+
+    #[tracing::instrument(level="trace", skip(graph, cache))]
+    fn backlabel_dp(graph: &Graph, cache: &mut Map<(usize, Time), Option<(u16, Action)>>, node: usize, time: Time) -> Option<(u16, Action)> {
+      // Base cases
+      let n = &graph.nodes[node];
+      if time > n.time_ub() {
+        trace!("no iis");
+        return None
+      } else if time < n.time_lb() {
+        trace!("found iis");
+        return Some((0, node))
+      }
+
+      // Cached Non-base cases
+      if let Some(val) = cache.get(&(node, time)) {
+        trace!(?val, "cache hit");
+        return *val
+      }
+
+      // Compute non-base case
+      let mut best_val = u16::MAX;
+      let mut best_action = None;
+
+      for edge in &graph.edges_to_node[node] {
+        if let Some((mut val, _)) = backlabel_dp(graph, cache, edge.from, time - edge.weight) {
+          val += 1;
+          if val < best_val {
+            best_val = val;
+            best_action = Some(edge.from);
+          }
+        }
+      }
+
+      let best_val_action = best_action.map(|a| (best_val, a));
+      cache.insert((node, time), best_val_action);
+      trace!(?best_val_action, "cache insert");
+      best_val_action
+    }
+
+
+    let mut cache = map_with_capacity(self.nodes.len()*2);
+    let mut edge_list = BlEdgeList::new();
+
+    let (_, mut pred_node, mut node, mut time) = ub_violated_nodes.iter()
+      .filter_map(|&node| {
+        let time = self.nodes[node].time_ub();
+        backlabel_dp(self, &mut cache, node, time)
+          .map(|(path_len, pred)| (path_len, pred, node, time))
+        }
+      )
+      .min_by_key(|(path_len, ..)| *path_len)
+      .expect("should find at least one IIS");
+
+    while node != pred_node {
+      trace!(pred_node, node);
+      let e = *self.get_edge(pred_node, node);
+      time -= e.weight;
+      edge_list.push(e);
+      node = pred_node;
+      pred_node = backlabel_dp(self, &mut cache, node, time).unwrap().1;
+    }
+
+    trace!(?edge_list);
+    edge_list
+  }
+
   #[tracing::instrument(level = "debug", skip(self))]
   fn backlabel_mrs(&self, last_task_nodes: &[usize]) -> BlEdgeList {
     let mut edge_list = BlEdgeList::new();
@@ -262,8 +342,7 @@ impl Graph {
           // finish early, another start_node has caused us to
           // label this path from here on.  Can only happen if we have multiple start nodes
           let bl = backlabelled.get_mut(node.idx).unwrap();
-          if *bl { break }
-          else { *bl = true }
+          if *bl { break; } else { *bl = true }
         }
 
         // find the red edge arriving at this node
@@ -289,21 +368,6 @@ impl Graph {
       EdgeKind::AVTravel => SpConstr::AvTravelTime(self.nodes[edge.from].task, self.nodes[edge.to].task),
       EdgeKind::Loading => SpConstr::Loading(self.nodes[edge.from].task),
       EdgeKind::Unloading => SpConstr::Unloading(self.nodes[edge.to].task),
-    }
-  }
-
-  fn remove_edges_and_clean(&mut self, edges: &[Edge]) {
-    for e in edges {
-      self.remove_edge(&e);
-    }
-
-    let affected_nodes = std::iter::once(edges[0].from)
-      .chain(edges.iter().map(|e| e.to));
-
-    for n in affected_nodes {
-      if self.edges_to_node[n].len() == 0 && self.edges_from_node[n].len() > 0 {
-        self.sources.push(n);
-      }
     }
   }
 }
@@ -340,10 +404,17 @@ impl<'a> dot::Labeller<'a, Node, Edge> for Graph {
   fn node_id(&'a self, n: &Node) -> dot::Id<'a> { dot::Id::new(format!("N{}", n.idx)).unwrap() }
 
   fn node_label(&'a self, n: &Node) -> dot::LabelText<'a> {
-    dot::LabelText::escaped(format!(
+    #[cfg(not(debug_assertions))]
+      let label = format!(
       "{:?} ({})\nt={}\n[{}, {}]",
-      &n.task, n.idx, n.time, n.time_lb(), n.time_ub())
-    )
+      &n.task, n.idx, n.time, n.time_lb(), n.time_ub());
+
+    #[cfg(debug_assertions)]
+      let label = format!(
+      "{:?} ({})\nt={}, ord={}\n[{}, {}]",
+      &n.task, n.idx, n.time, n.forward_order, n.time_lb(), n.time_ub());
+
+    dot::LabelText::escaped(label)
   }
 
   fn edge_label(&'a self, e: &Edge) -> dot::LabelText<'a> {
@@ -351,25 +422,28 @@ impl<'a> dot::Labeller<'a, Node, Edge> for Graph {
   }
 
   fn edge_color(&'a self, e: &Edge) -> Option<dot::LabelText<'a>> {
-    if self.edge_active(e) {
-      Some(dot::LabelText::label("red"))
-    } else {
-      Some(dot::LabelText::label("black"))
-    }
+    // if self.edge_active(e) {
+    //   Some(dot::LabelText::label("red"))
+    // } else {
+    //   Some(dot::LabelText::label("black"))
+    // }
+    None
   }
 
   #[cfg(debug_assertions)]
   fn node_color(&'a self, n: &Node) -> Option<dot::LabelText<'a>> {
-    if n.forward_labelled {
-      Some(dot::LabelText::label("royalblue"))
+    let color = if n.time > n.time_ub() {
+      "red"
+    } else if n.forward_order >= 0 {
+      "royalblue"
     } else {
-      Some(dot::LabelText::label("grey"))
-    }
+      "grey"
+    };
+    Some(LabelText::LabelStr(color.into()))
   }
 
   fn kind(&self) -> dot::Kind { dot::Kind::Digraph }
 }
-
 
 
 #[derive(Debug, Copy, Clone)]
@@ -398,108 +472,56 @@ impl PartialEq for NodePriority {
 
 impl Eq for NodePriority {}
 
-/// A bad priority queue where every operation is O(n).  It is, however, cache-friendly and branch-prediction friendly.
-/// Because only a few nodes in the network are "active" nodes and in the queue, n is usually small (2-10)
-/// (node, priority) pairs are stored in a list with gaps.
-#[derive(Clone)]
-struct StupidQueue {
-  items: Vec<Option<NodePriority>>
-}
-
-impl Debug for StupidQueue {
-  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-    let mut list = f.debug_list();
-    for i in &self.items {
-      match i {
-        Some(np) => list.entry(&(np.node_idx, np.time)),
-        none => list.entry(none),
-      };
-    }
-    list.finish()
-  }
-}
-
-impl StupidQueue {
-  pub fn initialise(init_cap: usize, iter: impl Iterator<Item=NodePriority>) -> Self {
-    let mut items = Vec::with_capacity(init_cap);
-    items.extend(iter.map(Some));
-    StupidQueue { items }
-  }
-
-  pub fn update_priority(&mut self, np: NodePriority) -> bool {
-    let mut free_slot = None;
-    for (k, other) in self.items.iter_mut().enumerate() {
-      if let Some(other) = other {
-        if other.node_idx == np.node_idx {
-          *other = np;
-          return false;
-        }
-      } else if free_slot.is_none() {
-        free_slot = Some(k);
-      }
-    }
-    if let Some(k) = free_slot {
-      self.items[k] = Some(np);
-    } else {
-      self.items.push(Some(np));
-    }
-    true
-  }
-
-  fn pop_min(&mut self) -> Option<NodePriority> {
-    let min = self.items.iter()
-      .enumerate()
-      .filter_map(|(k, item)|
-        item.as_ref().map(move |np| (k, np.time))
-      )
-      .min_by_key(|pair| pair.1);
-
-    match min {
-      Some((k, _)) => self.items[k].take(),
-      None => None,
-    }
-  }
-}
-
 impl SpSolve for Graph {
   type OptInfo = ();
   /// Node index at which the time window is violated.
-  type InfInfo = usize;
+  type InfInfo = Vec<usize>;
 
-  fn solve(&mut self) -> Result<SpStatus<(), usize>> {
-    let mut queue = StupidQueue::initialise(
-      self.sources.len() * 2,
-      self.sources.iter().map(|&n| NodePriority { node_idx: n, time: self.nodes[n].time }),
-    );
-
+  fn solve(&mut self) -> Result<SpStatus<Self::OptInfo, Self::InfInfo>> {
+    let mut queue = SmallVec::<[usize; NUM_AV_UB * 2]>::new();
+    queue.extend_from_slice(&self.sources);
+    trace!(?queue, "init");
+    let mut num_visited_pred = vec![0usize; self.nodes.len()];
+    let mut violated_ub_nodes =  Vec::new();
     let nodes = &mut self.nodes;
     let edges_from_node = &self.edges_from_node;
 
-    while let Some(NodePriority { node_idx, time }) = queue.pop_min() {
+    #[cfg(debug_assertions)]
+      let mut order = 0;
+
+
+    while let Some(node_idx) = queue.pop() {
       let current_node = &mut nodes[node_idx];
-      trace!(?queue, node_idx, time, task=?current_node.task, lb=current_node.time_lb(), "process node");
+      trace!(?queue, node_idx, time=current_node.time, task=?current_node.task, lb=current_node.time_lb(), "pop node");
       #[cfg(debug_assertions)] {
-        current_node.forward_labelled = true;
+        current_node.forward_order = order;
+        order += 1;
       }
+      let time = current_node.time;
 
       for edge in &edges_from_node[node_idx] {
+        let visited_pred = &mut num_visited_pred[edge.to];
         let next_node = &mut nodes[edge.to];
         let new_time = time + edge.weight;
 
-        if new_time > next_node.time {
+        if next_node.time < new_time {
           // update neighbouring label's time
           next_node.time = new_time;
           next_node.active_pred = Some(node_idx);
           // check feasibility
           if next_node.time > next_node.time_ub() {
+            violated_ub_nodes.push(edge.to);
             debug!(node_idx = next_node.idx, time = next_node.time, ub = next_node.time_ub(), "infeasibility found");
-            return Ok(SpStatus::Infeasible(next_node.idx));
+            // return Ok(SpStatus::Infeasible(next_node.idx));
           }
         }
 
-        // mark neighbour to be processed
-        queue.update_priority(NodePriority { node_idx: next_node.idx, time: next_node.time });
-        trace!(?queue, node_idx=next_node.idx, time=next_node.time, task=?next_node.task, "push node");
+        // If the next node has had all its predecessors processed, add it to the queue
+        *visited_pred += 1;
+        if *visited_pred == self.edges_to_node[edge.to].len() {
+          queue.push(edge.to);
+          trace!(?queue, node_idx=next_node.idx, time=next_node.time, task=?next_node.task, "push node");
+        }
       }
     }
 
@@ -508,13 +530,38 @@ impl SpSolve for Graph {
       .map(|(&n, &tt)| self.nodes[n].time + tt)
       .sum();
 
-    debug!(obj, "subproblem optimal");
-    Ok(SpStatus::Optimal(obj, ()))
+    if violated_ub_nodes.is_empty() {
+      debug!(obj, "subproblem optimal");
+      Ok(SpStatus::Optimal(obj, ()))
+    } else {
+      Ok(SpStatus::Infeasible(violated_ub_nodes))
+    }
+
   }
 
-  fn extract_and_remove_iis(&mut self, ub_violate_node: usize) -> Result<SpConstraints> {
-    let edges = self.backlabel_iis(ub_violate_node);
-    self.remove_edges_and_clean(&edges);
+  fn extract_and_remove_iis(&mut self, ub_violate_nodes: Vec<usize>) -> Result<SpConstraints> {
+    // edges are returned in reverse order, so edge.last().unwrap().from is the first node along the IIS
+    // path and `edges[0].to` is the node indexed by `ub_violate_node`.
+    let edges = self.backlabel_min_iis(&ub_violate_nodes);
+
+    for e in &edges {
+      self.remove_edge(e);
+    }
+
+    { // update source nodes
+      let iis_start_node = edges.last().expect("IIS should contain at least one non-bound constraint").from;
+      let iis_start_node_is_source = self.sources.contains(&iis_start_node);
+      let edges_to_node = &self.edges_to_node;
+      let edges_from_node = &self.edges_from_node;
+
+      let new_source_nodes = edges.iter().map(|e| e.to)
+        // if the start node of the IIS path is the source node, don't add it again
+        .chain(std::iter::once(iis_start_node).take((!iis_start_node_is_source) as usize))
+        // new source nodes should not be isolated
+        .filter(|&n| edges_to_node[n].len() == 0 && edges_from_node[n].len() > 0);
+
+      self.sources.extend(new_source_nodes);
+    }
 
     for n in self.nodes.iter_mut() {
       n.reset();
@@ -547,8 +594,6 @@ impl SpSolve for Graph {
 }
 
 
-
-
 #[cfg(test)]
 mod tests {
   use tracing::*;
@@ -557,7 +602,14 @@ mod tests {
   use grb::Env;
   use std::fmt::Debug;
 
-  fn load(idx: usize) -> Result<(Data, Sets, Tasks, Vec<Solution>)> {
+  struct TestData {
+    data: Data,
+    sets: Sets,
+    tasks: Tasks,
+    solutions: Vec<Solution>,
+  }
+
+  fn load(idx: usize) -> Result<TestData> {
     let data = dataset(0.5)
       .load_instance(idx)
       .map(preprocess::full_pipeline)?;
@@ -576,23 +628,24 @@ mod tests {
       .map(|s| Ok(Solution::from_serialisable(&tasks, &s?)))
       .collect();
 
-    Ok((data, sets, tasks, solutions?))
+    Ok(TestData { data, sets, tasks, solutions: solutions? })
   }
 
-  fn compare_graph_algo_with_lp_model(data: &Data, tasks: &Tasks, sol: &Solution, env: &Env) -> Result<()> {
-    let mut graph = Graph::build(data, tasks, sol);
-    let mut lp = TimingSubproblem::build(env, data, tasks, sol)?;
+  fn compare_graph_algo_with_lp_model(td: &TestData, sidx: usize, env: &Env) -> Result<()> {
+    let sol = &td.solutions[sidx];
+    let mut graph = Graph::build(&td.data, &td.tasks, sol);
+    let mut lp = TimingSubproblem::build(env, &td.data, &td.tasks, sol)?;
 
     fn print_constr_info<'a, K: 'a + Debug>(model: &grb::Model, cgroup: &str, constraints: impl IntoIterator<Item=(&'a K, &'a Constr)>) {
       for (key, c) in constraints {
         if model.get_obj_attr(attr::IISConstr, c).unwrap() > 0 {
           let rhs = model.get_obj_attr(attr::RHS, c).unwrap();
-          error!(%cgroup, constr=?key, ?rhs, "IIS constr")
+          trace!(%cgroup, constr=?key, ?rhs, "IIS constr")
         }
       }
     }
 
-    fn print_iis(lp: &mut TimingSubproblem) {
+    fn print_lp_iis(lp: &mut TimingSubproblem) {
       lp.model.compute_iis().unwrap();
       print_constr_info(&lp.model, "loading", &lp.cons.loading);
       print_constr_info(&lp.model, "unloading", &lp.cons.unloading);
@@ -600,21 +653,28 @@ mod tests {
       print_constr_info(&lp.model, "lb", &lp.cons.lb);
       print_constr_info(&lp.model, "av_sync", &lp.cons.av_sync);
     }
+    fn print_lp_soln(lp: &TimingSubproblem) {
+      for (task, t) in get_var_values(&lp.model, &lp.vars).unwrap() {
+        trace!(?task, %t, "LP solution");
+      }
+    }
 
-    let mut g_iises = HashSet::<SpConstraints>::default();
-    let mut lp_iises = HashSet::<SpConstraints>::default();
-
-    loop {
+    for iter in 0.. {
+      let _s = trace_span!("solve_loop", iter).entered();
       let graph_result = graph.solve()?;
+      // graph.backlabel_min_iis(20);
       let lp_result = lp.solve()?;
 
       match &graph_result {
-        SpStatus::Infeasible(..) => graph.save_as_svg("debug-infeasible.svg")?,
-        SpStatus::Optimal(..) => graph.save_as_svg("debug-optimal.svg")?,
+        SpStatus::Infeasible(..) => graph.save_as_svg(format!("debug-inf-{}.svg", iter))?,
+        SpStatus::Optimal(..) => graph.save_as_svg(format!("debug-opt-{}.svg", iter))?,
       };
+
+      // lp.model.write(&format!("sp-dbg-{}.lp", iter))?;
 
       match (graph_result, lp_result) {
         (SpStatus::Optimal(g_obj, _), SpStatus::Optimal(lp_obj, _)) => {
+          // print_lp_soln(&lp);
           assert_eq!(g_obj, lp_obj);
 
           let g_mrs = &mut graph.extract_mrs(())?[0];
@@ -628,36 +688,56 @@ mod tests {
         (SpStatus::Infeasible(nidx), SpStatus::Infeasible(_)) => {
           let mut g_iis = graph.extract_and_remove_iis(nidx)?;
           g_iis.sort();
+          print_lp_iis(&mut lp);
           let mut lp_iis = lp.extract_and_remove_iis(())?;
           lp_iis.sort();
-          // assert_eq!(g_iis, lp_iis);
-          g_iises.insert(g_iis);
-          lp_iises.insert(lp_iis);
+
+          if g_iis != lp_iis {
+            warn!(?g_iis, ?lp_iis, "IIS divergence");
+            break;
+          }
         }
 
         (a, b) => {
           panic!("mismatch!\ngraph algo gave {:?}\nLP gave {:?}", a, b)
         }
+      }
     }
+    Ok(())
+  }
+
+  fn get_sp_env() -> Result<Env> {
+    let mut env = Env::empty()?;
+    env.set(param::OutputFlag, 0)?;
+    Ok(env.start()?)
+  }
+
+  #[test]
+  fn solve_all() -> Result<()> {
+    let _g = crate::logging::init_test_logging(None::<&str>);
+    let env = get_sp_env()?;
 
 
+    for di in 40..60 {
+      let _s = error_span!("solve_all", data_idx=di).entered();
+      let td = load(di)?;
+      for si in 0..td.solutions.len() {
+        let _s = error_span!("sol", sol_idx=si).entered();
+        info!("comparing...");
+        compare_graph_algo_with_lp_model(&td, si, &env)?;
+      }
     }
     Ok(())
   }
 
 
-
   #[test]
-  fn solve() -> Result<()> {
+  fn solve_one() -> Result<()> {
     let _g = crate::logging::init_test_logging(None::<&str>);
-    for di in 0..60 {
-      let (data, sets, tasks, solutions) = load(di)?;
-      let env = Env::new("gurobi.log")?;
-      for (si, sol) in solutions.iter().enumerate() {
-        let _s = info_span!("solve_test", data_idx=di, sol_idx=si).entered();
-        compare_graph_algo_with_lp_model(&data, &tasks, sol, &env)?;
-      }
-    }
+    let env = get_sp_env()?;
+
+    let td = load(40)?;
+    compare_graph_algo_with_lp_model(&td, 12, &env)?;
     Ok(())
   }
 }

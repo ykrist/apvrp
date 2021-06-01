@@ -3,7 +3,7 @@ pub mod sp_lp;
 pub mod mp;
 pub mod sp_graph;
 
-use crate::{Result, Task, Time, Sets};
+use crate::{Result, Task, Time, Sets, Avg, Map};
 use smallvec::SmallVec;
 use crate::model::cb::CutType;
 use crate::constants::NUM_AV_UB;
@@ -67,7 +67,7 @@ pub fn build_optimality_cut(cb: &cb::Cb, spc: &SpConstraints, sp_obj: Time) -> I
 }
 
 
-pub fn solve_subproblem_and_add_cuts<S: SpSolve>(solver: &mut S, cb: &mut cb::Cb) -> Result<()> {
+pub fn solve_subproblem_and_add_cuts<S: SpSolve>(solver: &mut S, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>) -> Result<()> {
     loop {
         match solver.solve()? {
             SpStatus::Optimal(sp_obj, o) => {

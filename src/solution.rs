@@ -175,7 +175,24 @@ impl<'a> QueryVarValues for Model {
 #[inline]
 pub fn get_var_values<'a, M: QueryVarValues, K: Hash + Eq + Copy>(ctx: &M, var_dict: &'a Map<K, Var>) -> Result<impl Iterator<Item=(K, f64)> + 'a> {
   let vals = ctx.get(var_dict.values().copied())?;
-  Ok(var_dict.keys().copied().zip(vals).filter(|(_, v)| v.abs() > 0.9))
+  Ok(var_dict.keys().copied().zip(vals).filter(|(_, v)| v.abs() > 0.01))
+}
+
+
+#[inline]
+pub fn get_var_values_mapped<'a, M, K, V, F>(ctx: &M, var_dict: &'a Map<K, Var>, map: F) -> Result<impl Iterator<Item=(K, V)> + 'a>
+  where
+    M: QueryVarValues,
+    K: Hash + Eq + Copy,
+    F: Fn(f64) -> V + 'a,
+{
+  let vals = ctx.get(var_dict.values().copied())?;
+  let var_vals = var_dict.keys()
+    .copied().zip(vals)
+    .filter(|(_, v)| v.abs() > 0.01)
+    .map(move |(k, v)| (k, map(v))
+  );
+  Ok(var_vals)
 }
 
 

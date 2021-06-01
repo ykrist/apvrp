@@ -28,17 +28,7 @@ impl TimingConstraints {
   pub fn build(data: &Data, tasks: &Tasks, sol: &Solution, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
     let _span = error_span!("sp_cons").entered();
 
-    // Constraints (3b)
-    let mut av_sync = map_with_capacity(vars.len()); // slightly too big but close enough
-    for (_, route) in &sol.av_routes {
-      for (&t1, &t2) in route.iter().tuple_windows() {
-        if t1 != tasks.odepot && t2 != tasks.ddepot {
-          trace!(?t1, ?t2, "av_sync");
-          let c = c!(vars[&t1] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
-          av_sync.insert((t1, t2), model.add_constr("", c)?);
-        }
-      }
-    }
+
 
 
     let mut loading = Map::default();
@@ -53,6 +43,8 @@ impl TimingConstraints {
       Ok(())
     };
 
+    let mut dominated_av_sync_constraints = Set::default();
+
     for (_, pv_route) in &sol.pv_routes {
       let mut pv_route = pv_route.iter();
       let mut t1 = *pv_route.next().unwrap();
@@ -62,16 +54,30 @@ impl TimingConstraints {
         debug_assert_ne!((t1.ty, t2.ty), (TaskType::Request, TaskType::Request));
 
         if t2.ty == TaskType::Request {
-          // Constraints (3c)
-          let c = c!(vars[&t1] + t1.tt + data.srv_time[&t2.start] <= vars[&t2]);
+          // Constraints (3c) (loading time)
+          let c = c!(vars[&t1] + t1.tt + data.srv_time[&t1.end] <= vars[&t2]);
           loading.insert(t1, model.add_constr("", c)?);
+          dominated_av_sync_constraints.insert((t1, t2));
         } else if t1.ty == TaskType::Request {
-          // Constraints (3d)
+          // Constraints (3d) (unloading time)
           let c = c!(vars[&t1] + t1.tt + data.srv_time[&t1.end] <= vars[&t2]);
           unloading.insert(t2, model.add_constr("", c)?);
+          dominated_av_sync_constraints.insert((t1, t2));
         }
         add_bounds(t2, model)?;
         t1 = t2;
+      }
+    }
+
+    // Constraints (3b)
+    let mut av_sync = map_with_capacity(vars.len()); // slightly too big but close enough
+    for (_, route) in &sol.av_routes {
+      for (&t1, &t2) in route.iter().tuple_windows() {
+        if t1 != tasks.odepot && t2 != tasks.ddepot && !dominated_av_sync_constraints.contains(&(t1, t2)) {
+          trace!(?t1, ?t2, "av_sync");
+          let c = c!(vars[&t1] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
+          av_sync.insert((t1, t2), model.add_constr("", c)?);
+        }
       }
     }
     Ok(TimingConstraints { av_sync, loading, unloading, ub, lb })
@@ -99,7 +105,10 @@ impl<'a> TimingSubproblem<'a> {
       let mut v = map_with_capacity(sol.pv_routes.iter().map(|(_, tasks)| tasks.len()).sum());
       for (_, tasks) in &sol.pv_routes {
         for &t in tasks {
-          v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
+          #[cfg(debug_assertions)]
+            v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
+          #[cfg(not(debug_assertions))]
+            v.insert(t, add_ctsvar!(model)?);
         }
       }
       v
@@ -321,10 +330,7 @@ impl<'a>  SpSolve for TimingSubproblem<'a> {
   }
 
   fn extract_and_remove_iis(&mut self, _: ()) -> Result<SpConstraints> {
-    self.model.compute_iis()?;
-    let mut iis = SpConstraints::new();
-    // FIXME dont remove bound constraints
-    fn process_x_constraints(model: &mut grb::Model, cons: &mut Map<Task, Constr>, iis: &mut SpConstraints, f: impl Fn(Task) -> SpConstr) -> Result<()> {
+    fn pop_x_constraints(model: &mut grb::Model, cons: &mut Map<Task, Constr>, iis: &mut SpConstraints, f: impl Fn(Task) -> SpConstr) -> Result<()> {
       let retain = |t: &Task, c: &mut Constr| -> Result<bool> {
         if model.get_obj_attr(attr::IISConstr, &c)? > 0 {
           let spc = f(*t);
@@ -339,10 +345,22 @@ impl<'a>  SpSolve for TimingSubproblem<'a> {
       cons.retain_ok(retain)
     }
 
-    process_x_constraints(&mut self.model, &mut self.cons.unloading, &mut iis, SpConstr::Unloading)?;
-    process_x_constraints(&mut self.model, &mut self.cons.loading, &mut iis, SpConstr::Loading)?;
-    process_x_constraints(&mut self.model, &mut self.cons.ub, &mut iis, SpConstr::Ub)?;
-    process_x_constraints(&mut self.model, &mut self.cons.lb, &mut iis, SpConstr::Lb)?;
+    fn add_x_constraints(model: &mut grb::Model, cons: &mut Map<Task, Constr>, iis: &mut SpConstraints, f: impl Fn(Task) -> SpConstr) -> Result<()> {
+      for (&t, c )in cons {
+        if model.get_obj_attr(attr::IISConstr, c)? > 0 {
+          iis.push( f(t));
+        }
+      }
+      Ok(())
+    }
+
+    self.model.compute_iis()?;
+    let mut iis = SpConstraints::new();
+
+    pop_x_constraints(&mut self.model, &mut self.cons.unloading, &mut iis, SpConstr::Unloading)?;
+    pop_x_constraints(&mut self.model, &mut self.cons.loading, &mut iis, SpConstr::Loading)?;
+    add_x_constraints(&mut self.model, &mut self.cons.ub, &mut iis, SpConstr::Ub)?;
+    add_x_constraints(&mut self.model, &mut self.cons.lb, &mut iis, SpConstr::Lb)?;
 
     let model = &mut self.model;
 
@@ -362,7 +380,7 @@ impl<'a>  SpSolve for TimingSubproblem<'a> {
   }
 
   fn extract_mrs(&self, _: ()) -> Result<MrsInfo> {
-    fn process_x_constraints(model: &grb::Model, cons: &Map<Task, Constr>, mrs: &mut SpConstraints, f: impl Fn(Task) -> SpConstr) -> Result<()> {
+    fn add_x_constraints(model: &grb::Model, cons: &Map<Task, Constr>, mrs: &mut SpConstraints, f: impl Fn(Task) -> SpConstr) -> Result<()> {
       for (t, c) in cons {
         let dual = model.get_obj_attr(attr::Pi, c)?;
         if dual.abs() > 0.1 {
@@ -376,10 +394,10 @@ impl<'a>  SpSolve for TimingSubproblem<'a> {
 
     let mut mrs = SpConstraints::new();
 
-    process_x_constraints(&self.model, &self.cons.unloading, &mut mrs, SpConstr::Unloading)?;
-    process_x_constraints(&self.model, &self.cons.loading, &mut mrs, SpConstr::Loading)?;
-    process_x_constraints(&self.model, &self.cons.ub, &mut mrs, SpConstr::Ub)?;
-    process_x_constraints(&self.model, &self.cons.lb, &mut mrs, SpConstr::Lb)?;
+    add_x_constraints(&self.model, &self.cons.unloading, &mut mrs, SpConstr::Unloading)?;
+    add_x_constraints(&self.model, &self.cons.loading, &mut mrs, SpConstr::Loading)?;
+    add_x_constraints(&self.model, &self.cons.ub, &mut mrs, SpConstr::Ub)?;
+    add_x_constraints(&self.model, &self.cons.lb, &mut mrs, SpConstr::Lb)?;
 
     for (&(t1, t2), c) in &self.cons.av_sync {
       let dual = self.model.get_obj_attr(attr::Pi, c)?;
