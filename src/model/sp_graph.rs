@@ -737,7 +737,7 @@ mod tests {
     let env = get_sp_env()?;
 
     let td = load(40)?;
-    compare_graph_algo_with_lp_model(&td, 12, &env)?;
+    compare_graph_algo_with_lp_model(&td, 12, &env)?; // FIXME cycles are possible!
     Ok(())
   }
 }
