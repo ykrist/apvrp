@@ -84,7 +84,7 @@ pub struct Edge {
   weight: Time,
 }
 
-type BlEdgeList = SmallVec<[Edge; 10]>;
+type EdgeList = SmallVec<[Edge; 10]>;
 
 #[derive(Clone, Debug)]
 pub struct Graph {
@@ -230,30 +230,6 @@ impl Graph {
     Ok(())
   }
 
-  #[tracing::instrument(level = "debug", skip(self))]
-  fn backlabel_iis(&self, ub_violate: usize) -> BlEdgeList {
-    let mut edge_list = BlEdgeList::new();
-    // Reconstruct the path from this node
-    let mut node = &self.nodes[ub_violate];
-
-    while let Some(pred_idx) = node.active_pred {
-      // find the red edge arriving at this node
-      let edge = 'outer: loop {
-        for e in &self.edges_to_node[node.idx] {
-          if e.from == pred_idx {
-            break 'outer *e;
-          }
-        }
-        unreachable!()
-      };
-
-      // push and move back along red edge
-      edge_list.push(edge);
-      node = &self.nodes[pred_idx];
-    }
-    edge_list
-  }
-
   fn get_edge(&self, from: usize, to: usize) -> &Edge {
     for e in &self.edges_from_node[from] {
       if e.to == to {
@@ -264,7 +240,7 @@ impl Graph {
   }
 
   #[tracing::instrument(level = "debug", skip(self))]
-  fn find_cycle(&self) -> BlEdgeList {
+  fn find_cycle(&self) -> EdgeList {
     #[derive(Copy, Clone, Eq, PartialEq, Debug)]
     enum NodeState {
       NotVisited,
@@ -274,13 +250,13 @@ impl Graph {
     use NodeState::*;
 
     #[tracing::instrument(level = "trace", skip(graph, node_state))]
-    fn dfs(graph: &Graph, node_state: &mut Vec<NodeState>, node: usize, order: usize) -> Option<BlEdgeList> {
+    fn dfs(graph: &Graph, node_state: &mut Vec<NodeState>, node: usize, order: usize) -> Option<EdgeList> {
       match node_state[node] {
         NotVisited => node_state[node] = Current,
         Visited => return None,
         Current => {
           // Re-construct the cycle
-          let mut edges = BlEdgeList::new();
+          let mut edges = EdgeList::new();
           let mut n = node;
           loop {
             let edge = *graph.edges_from_node[n].iter()
@@ -321,7 +297,7 @@ impl Graph {
   }
 
   #[tracing::instrument(level = "debug", skip(self))]
-  fn backlabel_min_iis(&self, ub_violated_nodes: &[usize]) -> BlEdgeList {
+  fn backlabel_min_iis(&self, ub_violated_nodes: &[usize]) -> EdgeList {
 
     type Action = usize;
     use std::collections::hash_map::Entry;
@@ -366,7 +342,7 @@ impl Graph {
 
 
     let mut cache = map_with_capacity(self.nodes.len()*2);
-    let mut edge_list = BlEdgeList::new();
+    let mut edge_list = EdgeList::new();
 
     let (_, mut pred_node, mut node, mut time) = ub_violated_nodes.iter()
       .filter_map(|&node| {
@@ -392,8 +368,8 @@ impl Graph {
   }
 
   #[tracing::instrument(level = "debug", skip(self))]
-  fn backlabel_mrs(&self, last_task_nodes: &[usize]) -> BlEdgeList {
-    let mut edge_list = BlEdgeList::new();
+  fn backlabel_mrs(&self, last_task_nodes: &[usize]) -> EdgeList {
+    let mut edge_list = EdgeList::new();
     let mut backlabelled = if last_task_nodes.len() > 1 {
       Some(vec![false; self.nodes.len()])
     } else {
@@ -598,7 +574,7 @@ impl SpSolve for Graph {
         }
       }
     }
-    dbg!(nodes_processed);
+
     if nodes_processed < self.connected_nodes {
       Ok(SpStatus::Infeasible(InfKind::Cycle))
     }
@@ -729,7 +705,7 @@ mod tests {
     Ok(TestData { data, sets, tasks, solutions: solutions? })
   }
 
-  fn compare_graph_algo_with_lp_model(td: &TestData, sidx: usize, env: &Env) -> Result<()> {
+  fn compare_graph_algo_with_lp_model(td: &TestData, sidx: usize, env: &Env, output_debug_files: bool) -> Result<()> {
     let sol = &td.solutions[sidx];
     let mut graph = Graph::build(&td.data, &td.tasks, sol);
     let mut lp = TimingSubproblem::build(env, &td.data, &td.tasks, sol)?;
@@ -760,19 +736,19 @@ mod tests {
     for iter in 0.. {
       let _s = trace_span!("solve_loop", iter).entered();
       let graph_result = graph.solve()?;
-      // graph.backlabel_min_iis(20);
       let lp_result = lp.solve()?;
 
-      match &graph_result {
-        SpStatus::Infeasible(..) => graph.save_as_svg(format!("debug-inf-{}.svg", iter))?,
-        SpStatus::Optimal(..) => graph.save_as_svg(format!("debug-opt-{}.svg", iter))?,
-      };
+      if output_debug_files {
+        match &graph_result {
+          SpStatus::Infeasible(..) => graph.save_as_svg(format!("debug-inf-{}.svg", iter))?,
+          SpStatus::Optimal(..) => graph.save_as_svg(format!("debug-opt-{}.svg", iter))?,
+        };
 
-      lp.model.write(&format!("sp-dbg-{}.lp", iter))?;
+        lp.model.write(&format!("sp-dbg-{}.lp", iter))?;
+      }
 
       match (graph_result, lp_result) {
         (SpStatus::Optimal(g_obj, _), SpStatus::Optimal(lp_obj, _)) => {
-          // print_lp_soln(&lp);
           assert_eq!(g_obj, lp_obj);
 
           let g_mrs = &mut graph.extract_mrs(())?[0];
@@ -804,7 +780,6 @@ mod tests {
         }
 
         (a, b @ SpStatus::Optimal(..)) => {
-          // print_lp_iis()
           panic!("mismatch!\ngraph algo gave {:?}\nLP gave {:?}", a, b)
         }
       }
@@ -830,20 +805,20 @@ mod tests {
       for si in 0..td.solutions.len() {
         let _s = error_span!("sol", sol_idx=si).entered();
         info!("comparing...");
-        compare_graph_algo_with_lp_model(&td, si, &env)?;
+        compare_graph_algo_with_lp_model(&td, si, &env, false)?;
       }
     }
     Ok(())
   }
 
-
-  #[test]
-  fn solve_one() -> Result<()> {
-    let _g = crate::logging::init_test_logging(None::<&str>);
-    let env = get_sp_env()?;
-
-    let td = load(42)?;
-    compare_graph_algo_with_lp_model(&td, 73, &env)?; // FIXME cycles are possible!
-    Ok(())
-  }
+  //
+  // #[test]
+  // fn solve_one() -> Result<()> {
+  //   let _g = crate::logging::init_test_logging(None::<&str>);
+  //   let env = get_sp_env()?;
+  //
+  //   let td = load(42)?;
+  //   compare_graph_algo_with_lp_model(&td, 73, &env, true)?; // FIXME cycles are possible!
+  //   Ok(())
+  // }
 }
