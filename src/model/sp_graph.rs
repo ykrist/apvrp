@@ -19,13 +19,6 @@ use std::fmt;
 use super::*;
 
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum LabelState {
-  Unvisited,
-  Queue,
-  Processed,
-}
-
 #[derive(Debug, Clone)]
 pub struct Node {
   idx: usize,
@@ -66,7 +59,7 @@ impl Node {
   pub fn time_lb(&self) -> Time { self.task.t_release }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Hash, Debug, Copy, Clone, Eq, PartialEq)]
 pub enum EdgeKind {
   // Passive vehicle unloading time
   Unloading,
@@ -76,7 +69,7 @@ pub enum EdgeKind {
   AVTravel,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Hash, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct Edge {
   from: usize,
   to: usize,
@@ -91,7 +84,7 @@ pub struct Graph {
   edges_from_node: Vec<SmallVec<[Edge; 2]>>,
   edges_to_node: Vec<SmallVec<[Edge; 2]>>,
   nodes: Vec<Node>,
-  connected_nodes: usize,
+  source_connected_nodes: usize,
   sources: Vec<usize>,
   last_task_nodes: Vec<usize>,
   last_task_tt_to_depot: Vec<Time>,
@@ -186,7 +179,7 @@ impl Graph {
       edges_from_node,
       edges_to_node,
       nodes,
-      connected_nodes,
+      source_connected_nodes: connected_nodes,
       sources,
       last_task_nodes,
       last_task_tt_to_depot,
@@ -233,10 +226,97 @@ impl Graph {
   fn get_edge(&self, from: usize, to: usize) -> &Edge {
     for e in &self.edges_from_node[from] {
       if e.to == to {
-        return e
+        return e;
       }
     }
     unreachable!()
+  }
+
+  #[tracing::instrument(level = "debug", skip(self))]
+  fn find_cycles(&self) -> Vec<EdgeList> {
+    trace!("eeee");
+    #[derive(Copy, Clone, Debug)]
+    enum NodeState {
+      // We have explored all elementary paths from this node
+      Removed,
+      // The node is in the current elementary path
+      CurrentPath,
+      // The node is not in the current elementary path and is not Removed.
+      Present,
+    }
+
+    fn fmt_blocked_neighbours(bn: &[SmallVec<[usize;2]>]) -> String {
+      use std::fmt::Write;
+      let mut s = String::from("{");
+
+      for (i, neigh) in bn.iter().enumerate() {
+        if neigh.len() > 0 {
+          write!(s, "{} ->{:?}, ", i, neigh).unwrap();
+        }
+      }
+      s.push('}');
+      s
+    }
+
+    let mut cycles = Vec::new();
+    let mut node_state = vec![NodeState::Present; self.nodes.len()];
+    let mut blocked_neighbours = vec![SmallVec::<[usize; 2]>::new(); self.nodes.len()];
+    let mut current_path = Vec::with_capacity(self.nodes.len());
+
+    for root in 0..self.nodes.len() {
+      current_path.push(root);
+      node_state[root] = NodeState::CurrentPath;
+      let mut i = root;
+
+      'outer: loop {
+        let _s = trace_span!("loop", i, ?current_path).entered();
+        // trace!(?current_path, bn=%fmt_blocked_neighbours(&blocked_neighbours));
+
+        // try to extend the current path to a new unvisited path
+        for j in self.edges_from_node[i].iter().map(|e| e.to) {
+          if matches!(node_state[j], NodeState::Present) && !blocked_neighbours[i].contains(&j) {
+            current_path.push(j);
+            node_state[j] = NodeState::CurrentPath;
+            trace!(from=i, to=j, "extend");
+            i = j;
+            continue 'outer;
+          } else {
+            trace!(j, state=?node_state[j], bni=?blocked_neighbours[i], "forbidden");
+          }
+        }
+
+        // cannot extend path further subject to the above three conditions
+        if self.edges_from_node[i].iter().any(|e| e.to == root) {
+          trace!("cycle found!");
+          let c = current_path.iter()
+            .copied()
+            .tuple_windows()
+            .chain(std::iter::once((i, root)))
+            .map(|(from, to)| *self.get_edge(from, to))
+            .collect();
+          cycles.push(c);
+        }
+
+        if current_path.len() > 1 {
+          // shorten the current path (stack pop)
+          let j = current_path.pop().unwrap();
+          i = *current_path.last().unwrap();
+          node_state[j] = NodeState::Present;
+
+          blocked_neighbours[j].clear();
+          blocked_neighbours[i].push(j);
+          trace!(popped=j, bn=%fmt_blocked_neighbours(&blocked_neighbours), "pop");
+
+        } else {
+          // advance the root node
+          node_state[i] = NodeState::Removed;
+          current_path.clear();
+          break;
+        }
+      }
+    }
+    trace!(?cycles);
+    cycles
   }
 
   #[tracing::instrument(level = "debug", skip(self))]
@@ -267,17 +347,17 @@ impl Graph {
             n = edge.to;
             edges.push(edge);
 
-            if n == node { break }
+            if n == node { break; }
           }
           trace!(?edges, "cycle found");
-          return Some(edges)
-        },
+          return Some(edges);
+        }
       }
 
       for e in &graph.edges_from_node[node] {
         let cycle = dfs(graph, node_state, e.to, order + 1);
         if cycle.is_some() {
-          return cycle
+          return cycle;
         }
       }
 
@@ -297,27 +377,27 @@ impl Graph {
   }
 
   #[tracing::instrument(level = "debug", skip(self))]
-  fn backlabel_min_iis(&self, ub_violated_nodes: &[usize]) -> EdgeList {
-
+  // For each infeasible UB, returns the smallest IIS containing that UB, if one exists.
+  fn backlabel_min_iis(&self, ub_violated_nodes: &[usize]) -> Vec<EdgeList> {
+    // Which predecessor to move to build the IIS path
     type Action = usize;
-    use std::collections::hash_map::Entry;
 
-    #[tracing::instrument(level="trace", skip(graph, cache))]
+    #[tracing::instrument(level = "trace", skip(graph, cache))]
     fn backlabel_dp(graph: &Graph, cache: &mut Map<(usize, Time), Option<(u16, Action)>>, node: usize, time: Time) -> Option<(u16, Action)> {
       // Base cases
       let n = &graph.nodes[node];
       if time > n.time_ub() {
         trace!("no iis");
-        return None
+        return None;
       } else if time < n.time_lb() {
         trace!("found iis");
-        return Some((0, node))
+        return Some((0, node));
       }
 
       // Cached Non-base cases
       if let Some(val) = cache.get(&(node, time)) {
         trace!(?val, "cache hit");
-        return *val
+        return *val;
       }
 
       // Compute non-base case
@@ -326,7 +406,7 @@ impl Graph {
 
       for edge in &graph.edges_to_node[node] {
         if let Some((mut val, _)) = backlabel_dp(graph, cache, edge.from, time - edge.weight) {
-          val += 1;
+          val += 1; // add the cost from this edge
           if val < best_val {
             best_val = val;
             best_action = Some(edge.from);
@@ -340,35 +420,36 @@ impl Graph {
       best_val_action
     }
 
+    let mut cache = map_with_capacity(self.nodes.len() * 2);
 
-    let mut cache = map_with_capacity(self.nodes.len()*2);
-    let mut edge_list = EdgeList::new();
-
-    let (_, mut pred_node, mut node, mut time) = ub_violated_nodes.iter()
+    let iises : Vec<_> = ub_violated_nodes.iter()
       .filter_map(|&node| {
         let time = self.nodes[node].time_ub();
-        backlabel_dp(self, &mut cache, node, time)
-          .map(|(path_len, pred)| (path_len, pred, node, time))
-        }
-      )
-      .min_by_key(|(path_len, ..)| *path_len)
-      .expect("should find at least one IIS");
+        backlabel_dp(self, &mut cache, node, time).map(|(path_len, mut pred_node)| {
+          let mut iis = EdgeList::new();
+          let mut time = time;
+          let mut node = node;
 
-    while node != pred_node {
-      trace!(pred_node, node);
-      let e = *self.get_edge(pred_node, node);
-      time -= e.weight;
-      edge_list.push(e);
-      node = pred_node;
-      pred_node = backlabel_dp(self, &mut cache, node, time).unwrap().1;
-    }
+          while node != pred_node {
+            trace!(pred_node, node);
+            let e = *self.get_edge(pred_node, node);
+            time -= e.weight;
+            iis.push(e);
+            node = pred_node;
+            pred_node = backlabel_dp(self, &mut cache, node, time).unwrap().1;
+          }
+          iis
+        })
+      })
+      .collect();
 
-    trace!(?edge_list);
-    edge_list
+    trace!(?iises);
+    debug_assert_ne!(iises.len(), 0);
+    iises
   }
 
   #[tracing::instrument(level = "debug", skip(self))]
-  fn backlabel_mrs(&self, last_task_nodes: &[usize]) -> EdgeList {
+  fn backlabel_mrs(&self, last_task_nodes: &[usize]) -> Vec<EdgeList> {
     let mut edge_list = EdgeList::new();
     let mut backlabelled = if last_task_nodes.len() > 1 {
       Some(vec![false; self.nodes.len()])
@@ -403,7 +484,47 @@ impl Graph {
         node = &self.nodes[pred_idx];
       }
     }
-    edge_list
+
+    // TODO: disaggregate the MRS
+    vec![edge_list]
+  }
+
+  /// Check the if the supplied non-source node should become a new source nodes
+  /// or marked as isolated
+  fn reset(&mut self) {
+    self.sources.clear();
+    self.source_connected_nodes = self.nodes.len();
+
+    for node in &mut self.nodes {
+      if self.edges_to_node[node.idx].len() == 0 {
+        if self.edges_from_node[node.idx].len() == 0 {
+          self.source_connected_nodes -= 1; // node is unreachable from sources
+        } else {
+          self.sources.push(node.idx);
+        }
+      }
+      node.reset();
+    }
+  }
+
+  fn get_cyclic_iis_constraints(&self, edges: &[Edge]) -> SpConstraints {
+    edges.iter().map(|e| self.get_sp_constraint(e)).collect()
+  }
+
+  fn get_path_iis_constraints(&self, edges: &[Edge]) -> SpConstraints {
+    // edges are returned in reverse order, so edge.last().unwrap().from is the first node along the IIS
+    // path and `edges[0].to` is the node indexed by `ub_violate_node`.
+    let mut iis: SpConstraints = edges.iter().map(|e| self.get_sp_constraint(e)).collect();
+    iis.push(SpConstr::Ub(self.nodes[edges.first().unwrap().to].task));
+    iis.push(SpConstr::Lb(self.nodes[edges.last().unwrap().from].task));
+    iis
+  }
+
+  fn get_mrs_constraints(&self, edges: &[Edge]) -> SpConstraints {
+    let mut mrs : SpConstraints = edges.iter().map(|e| self.get_sp_constraint(e)).collect();
+    mrs.extend(self.last_task_nodes.iter()
+      .map(|&n| SpConstr::AvTravelTime(self.nodes[n].task, self.av_ddepot)));
+    mrs
   }
 
   fn get_sp_constraint(&self, edge: &Edge) -> SpConstr {
@@ -489,49 +610,24 @@ impl<'a> dot::Labeller<'a, Node, Edge> for Graph {
 }
 
 
-#[derive(Debug, Copy, Clone)]
-pub struct NodePriority {
-  node_idx: usize,
-  time: Time,
-}
-
-impl Ord for NodePriority {
-  fn cmp(&self, other: &Self) -> Ordering {
-    self.time.cmp(&other.time)
-  }
-}
-
-impl PartialOrd for NodePriority {
-  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-    Some(self.cmp(other))
-  }
-}
-
-impl PartialEq for NodePriority {
-  fn eq(&self, other: &Self) -> bool {
-    self.time == other.time
-  }
-}
-
-impl Eq for NodePriority {}
-
 #[derive(Debug, Clone)]
 pub enum InfKind {
   Cycle,
-  Time(Vec<usize>)
+  Time(Vec<usize>),
 }
 
 impl SpSolve for Graph {
   type OptInfo = ();
-  /// Node index at which the time window is violated.
   type InfInfo = InfKind;
+  type IisConstraintSets = Vec<SpConstraints>;
+  type MrsConstraintSets = Vec<SpConstraints>;
 
   fn solve(&mut self) -> Result<SpStatus<Self::OptInfo, Self::InfInfo>> {
     let mut queue = SmallVec::<[usize; NUM_AV_UB * 2]>::new();
     queue.extend_from_slice(&self.sources);
     trace!(?queue, "init");
     let mut num_visited_pred = vec![0usize; self.nodes.len()];
-    let mut violated_ub_nodes =  Vec::new();
+    let mut violated_ub_nodes = Vec::new();
     let nodes = &mut self.nodes;
     let edges_from_node = &self.edges_from_node;
 
@@ -549,7 +645,7 @@ impl SpSolve for Graph {
       let time = current_node.time;
 
       for edge in &edges_from_node[node_idx] {
-        let next_node : &mut Node = &mut nodes[edge.to];
+        let next_node: &mut Node = &mut nodes[edge.to];
         let new_time = time + edge.weight;
 
         if next_node.time < new_time {
@@ -559,9 +655,9 @@ impl SpSolve for Graph {
           // check feasibility
           if new_time > next_node.time_ub() {
             violated_ub_nodes.push(next_node.idx);
-            debug!(new_node=next_node.idx, time = next_node.time, ub = next_node.time_ub(), "infeasibility found");
+            debug!(new_node = next_node.idx, time = next_node.time, ub = next_node.time_ub(), "infeasibility found");
           } else {
-            trace!(new_node=next_node.idx, time = next_node.time, "update time");
+            trace!(new_node = next_node.idx, time = next_node.time, "update time");
           }
         }
 
@@ -575,10 +671,9 @@ impl SpSolve for Graph {
       }
     }
 
-    if nodes_processed < self.connected_nodes {
+    if nodes_processed < self.source_connected_nodes {
       Ok(SpStatus::Infeasible(InfKind::Cycle))
-    }
-    else if !violated_ub_nodes.is_empty() {
+    } else if !violated_ub_nodes.is_empty() {
       Ok(SpStatus::Infeasible(InfKind::Time(violated_ub_nodes)))
     } else {
       let obj = self.last_task_nodes.iter()
@@ -589,81 +684,42 @@ impl SpSolve for Graph {
       debug!(obj, "subproblem optimal");
       Ok(SpStatus::Optimal(obj, ()))
     }
-
   }
 
-  fn extract_and_remove_iis(&mut self, inf: Self::InfInfo) -> Result<SpConstraints> {
-    // edges are returned in reverse order, so edge.last().unwrap().from is the first node along the IIS
-    // path and `edges[0].to` is the node indexed by `ub_violate_node`.
-
-    let edges = match &inf {
-      InfKind::Cycle => self.find_cycle(),
-      InfKind::Time(ub_violated_nodes)=> self.backlabel_min_iis(ub_violated_nodes)
-    };
-
-    for e in &edges {
-      self.remove_edge(e);
-    }
-
-    // update nodes - check for new source nodes and newly isolated nodes
-    fn update_node(graph: &mut Graph, node: usize) {
-      if graph.edges_to_node[node].len() == 0 {
-        if graph.edges_from_node[node].len() == 0 {
-          graph.connected_nodes -= 1;
-        } else {
-          graph.sources.push(node);
-        }
+  fn extract_and_remove_iis(&mut self, inf: Self::InfInfo) -> Result<Self::IisConstraintSets> {
+    let mut edges_to_remove = Set::default();
+    let iis_sets = match inf {
+      InfKind::Cycle => {
+        self.find_cycles().into_iter()
+          .map(|cycle| {
+            let iis = self.get_cyclic_iis_constraints(&cycle);
+            edges_to_remove.extend(cycle);
+            iis
+          })
+          .collect()
       }
+      InfKind::Time(ub_violated_nodes) => {
+        self.backlabel_min_iis(&ub_violated_nodes).into_iter()
+          .map(|path| {
+            let iis = self.get_path_iis_constraints(&path);
+            edges_to_remove.extend(path);
+            iis
+          })
+          .collect()
+      }
+    };
+    for e in edges_to_remove {
+      self.remove_edge(&e);
     }
-
-    let edges_to_node = &self.edges_to_node;
-    let edges_from_node = &self.edges_from_node;
-
-    if matches!(&inf, InfKind::Cycle) {
-      edges.iter().for_each(|e| update_node(self, e.to));
-    } else {
-      let iis_start_node = edges.last().expect("IIS should contain at least one non-bound constraint").from;
-      let iis_start_node_is_source = self.sources.contains(&iis_start_node); // will always be false for a cycle
-
-      edges.iter().map(|e| e.to)
-        // if the start node of the IIS path is the source node, don't add it again
-        .chain(std::iter::once(iis_start_node).take((!iis_start_node_is_source) as usize))
-        // new source nodes should not be isolated
-        .for_each(|n| update_node(self, n));
-
-    }
-
-    // Reset nodes for next forward-labelling
-    for n in self.nodes.iter_mut() {
-      n.reset();
-    }
-
-    let mut iis = SpConstraints::with_capacity(edges.len() + 2);
-    for edge in &edges {
-      iis.push(self.get_sp_constraint(edge))
-    }
-
-    if matches!(&inf, InfKind::Time(..)) {
-      iis.push(SpConstr::Ub(self.nodes[edges.first().unwrap().to].task));
-      iis.push(SpConstr::Lb(self.nodes[edges.last().unwrap().from].task));
-    }
-
-    Ok(iis)
+    self.reset();
+    Ok(iis_sets)
   }
 
-  fn extract_mrs(&self, _: ()) -> Result<MrsInfo> {
-    let edges = self.backlabel_mrs(&self.last_task_nodes);
-    let mut mrs = SmallVec::with_capacity(edges.len() + self.last_task_nodes.len());
-
-    for e in &edges {
-      mrs.push(self.get_sp_constraint(e));
-    }
-
-    for &n in &self.last_task_nodes {
-      mrs.push(SpConstr::AvTravelTime(self.nodes[n].task, self.av_ddepot))
-    }
-
-    Ok(smallvec::smallvec![mrs])
+  fn extract_mrs(&self, _: ()) -> Result<Self::MrsConstraintSets> {
+    let mrs_sets = self.backlabel_mrs(&self.last_task_nodes).into_iter()
+      .map(|edges| self.get_mrs_constraints(&edges))
+      .collect();
+    Ok(mrs_sets)
   }
 }
 
@@ -761,17 +817,24 @@ mod tests {
         }
 
         (SpStatus::Infeasible(nidx), SpStatus::Infeasible(_)) => {
-          let mut g_iis = graph.extract_and_remove_iis(nidx)?;
-          g_iis.sort();
           print_lp_iis(&mut lp);
-          let mut lp_iis = lp.extract_and_remove_iis(())?;
-          lp_iis.sort();
+          let mut g_iis = graph.extract_and_remove_iis(nidx)?;
+          let mut lp_iis = lp.extract_and_remove_iis(())?.next().unwrap();
+          assert!(g_iis.iter().map(|iis| iis.len()).min().unwrap() <= lp_iis.len());
 
-          if g_iis != lp_iis {
-            warn!(?g_iis, ?lp_iis, "IIS divergence");
-            break;
+          if g_iis.len() == 1 {
+            let mut g_iis = g_iis.pop().unwrap();
+            g_iis.sort();
+            lp_iis.sort();
+
+            if g_iis == lp_iis {
+              debug!(iis=?g_iis, "IIS are the same!");
+              continue;
+            }
           }
-          debug!(iis=?g_iis, "IIS are the same!")
+
+          warn!(?g_iis, ?lp_iis, "IIS divergence");
+          break;
         }
 
         (a, b @ SpStatus::Infeasible(_)) => {
@@ -799,7 +862,7 @@ mod tests {
     let env = get_sp_env()?;
 
 
-    for di in 40..60 {
+    for di in 0..60 {
       let _s = error_span!("solve_all", data_idx=di).entered();
       let td = load(di)?;
       for si in 0..td.solutions.len() {
@@ -811,14 +874,14 @@ mod tests {
     Ok(())
   }
 
-  //
-  // #[test]
-  // fn solve_one() -> Result<()> {
-  //   let _g = crate::logging::init_test_logging(None::<&str>);
-  //   let env = get_sp_env()?;
-  //
-  //   let td = load(42)?;
-  //   compare_graph_algo_with_lp_model(&td, 73, &env, true)?; // FIXME cycles are possible!
-  //   Ok(())
-  // }
+
+  #[test]
+  fn solve_one() -> Result<()> {
+    let _g = crate::logging::init_test_logging(None::<&str>);
+    let env = get_sp_env()?;
+
+    let td = load(42)?;
+    compare_graph_algo_with_lp_model(&td, 18, &env, true)?;
+    Ok(())
+  }
 }

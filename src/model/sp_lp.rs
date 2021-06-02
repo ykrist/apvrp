@@ -312,6 +312,8 @@ impl<'a> TimingSubproblem<'a> {
 impl<'a>  SpSolve for TimingSubproblem<'a> {
   type OptInfo = ();
   type InfInfo = ();
+  type IisConstraintSets = std::iter::Once<SpConstraints>;
+  type MrsConstraintSets = std::iter::Once<SpConstraints>;
 
   fn solve(&mut self) -> Result<SpStatus<(), ()>> {
     self.model.optimize()?;
@@ -329,7 +331,7 @@ impl<'a>  SpSolve for TimingSubproblem<'a> {
     }
   }
 
-  fn extract_and_remove_iis(&mut self, _: ()) -> Result<SpConstraints> {
+  fn extract_and_remove_iis(&mut self, _: ()) -> Result<Self::IisConstraintSets> {
     fn pop_x_constraints(model: &mut grb::Model, cons: &mut Map<Task, Constr>, iis: &mut SpConstraints, f: impl Fn(Task) -> SpConstr) -> Result<()> {
       let retain = |t: &Task, c: &mut Constr| -> Result<bool> {
         if model.get_obj_attr(attr::IISConstr, &c)? > 0 {
@@ -376,10 +378,10 @@ impl<'a>  SpSolve for TimingSubproblem<'a> {
       }
     })?;
 
-    Ok(iis)
+    Ok(std::iter::once(iis))
   }
 
-  fn extract_mrs(&self, _: ()) -> Result<MrsInfo> {
+  fn extract_mrs(&self, _: ()) -> Result<Self::MrsConstraintSets> {
     fn add_x_constraints(model: &grb::Model, cons: &Map<Task, Constr>, mrs: &mut SpConstraints, f: impl Fn(Task) -> SpConstr) -> Result<()> {
       for (t, c) in cons {
         let dual = model.get_obj_attr(attr::Pi, c)?;
@@ -412,6 +414,6 @@ impl<'a>  SpSolve for TimingSubproblem<'a> {
       mrs.push(SpConstr::AvTravelTime(t, self.tasks.ddepot));
     }
 
-    Ok(smallvec::smallvec![mrs])
+    Ok(std::iter::once(mrs))
   }
 }

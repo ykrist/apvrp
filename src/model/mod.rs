@@ -20,8 +20,8 @@ pub enum SpConstr {
     Lb(Task),
 }
 
+
 pub type SpConstraints = SmallVec<[SpConstr; 10]>;
-pub type MrsInfo = SmallVec<[SpConstraints; NUM_AV_UB]>;
 
 #[derive(Debug)]
 pub enum SpStatus<O,I> {
@@ -36,12 +36,21 @@ impl<O, I> SpStatus<O, I> {
 }
 
 pub trait SpSolve {
+    // Additional information obtained when solving the subproblem to optimality
     type OptInfo;
+    // Additional information obtained when proving the subproblem to be infeasible
     type InfInfo;
+    // A group of constraint sets representing one or more IIS
+    type IisConstraintSets: IntoIterator<Item=SpConstraints>;
+    // A group of constraint sets representing one or more MRS
+    type MrsConstraintSets: IntoIterator<Item=SpConstraints>;
 
+    // Solve the subproblem and return status
     fn solve(&mut self) -> Result<SpStatus<Self::OptInfo, Self::InfInfo>>;
-    fn extract_and_remove_iis(&mut self, i: Self::InfInfo) -> Result<SpConstraints>;
-    fn extract_mrs(&self, o: Self::OptInfo) -> Result<MrsInfo>;
+    // Find and remove one or more IIS when infeasible
+    fn extract_and_remove_iis(&mut self, i: Self::InfInfo) -> Result<Self::IisConstraintSets>;
+    // Find and remove one or more MRS when optimal
+    fn extract_mrs(&self, o: Self::OptInfo) -> Result<Self::MrsConstraintSets>;
 }
 
 pub fn build_infeasiblity_cut(cb: &cb::Cb, spc: &SpConstraints) -> IneqExpr {
@@ -71,16 +80,17 @@ pub fn solve_subproblem_and_add_cuts<S: SpSolve>(solver: &mut S, cb: &mut cb::Cb
     loop {
         match solver.solve()? {
             SpStatus::Optimal(sp_obj, o) => {
-                for spc in solver.extract_mrs(o)? {
+                for spc in solver.extract_mrs(o)?.into_iter() {
                     let cut = build_optimality_cut(cb,  &spc, sp_obj);
                     cb.enqueue_cut(cut, CutType::LpOpt);
                 }
                 break;
             }
             SpStatus::Infeasible(i) => {
-                let iis = solver.extract_and_remove_iis(i)?;
-                let cut = build_infeasiblity_cut(cb, &iis);
-                cb.enqueue_cut(cut, CutType::LpFeas);
+                for iis in solver.extract_and_remove_iis(i)?.into_iter() {
+                    let cut = build_infeasiblity_cut(cb, &iis);
+                    cb.enqueue_cut(cut, CutType::LpFeas);
+                }
             }
         }
     }

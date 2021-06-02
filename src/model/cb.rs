@@ -634,7 +634,7 @@ impl<'a> Callback for Cb<'a> {
             //   sp_graph::forward_label(&mut graph);
             // } // FIXME
 
-            let mut sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &sol)?;
+            let sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &sol)?;
 
             let theta: Map<_, _> = get_var_values_mapped(&ctx, &self.mp_vars.theta, |t| t.round() as Time)?.collect();
             trace!(?theta);
