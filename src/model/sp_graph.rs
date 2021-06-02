@@ -234,7 +234,6 @@ impl Graph {
 
   #[tracing::instrument(level = "debug", skip(self))]
   fn find_cycles(&self) -> Vec<EdgeList> {
-    trace!("eeee");
     #[derive(Copy, Clone, Debug)]
     enum NodeState {
       // We have explored all elementary paths from this node
@@ -270,7 +269,6 @@ impl Graph {
 
       'outer: loop {
         let _s = trace_span!("loop", i, ?current_path).entered();
-        // trace!(?current_path, bn=%fmt_blocked_neighbours(&blocked_neighbours));
 
         // try to extend the current path to a new unvisited path
         for j in self.edges_from_node[i].iter().map(|e| e.to) {
@@ -305,8 +303,7 @@ impl Graph {
 
           blocked_neighbours[j].clear();
           blocked_neighbours[i].push(j);
-          trace!(popped=j, bn=%fmt_blocked_neighbours(&blocked_neighbours), "pop");
-
+          trace!(popped=j, "pop");
         } else {
           // advance the root node
           node_state[i] = NodeState::Removed;
@@ -315,66 +312,9 @@ impl Graph {
         }
       }
     }
-    trace!(?cycles);
     cycles
   }
 
-  #[tracing::instrument(level = "debug", skip(self))]
-  fn find_cycle(&self) -> EdgeList {
-    #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-    enum NodeState {
-      NotVisited,
-      Current,
-      Visited,
-    }
-    use NodeState::*;
-
-    #[tracing::instrument(level = "trace", skip(graph, node_state))]
-    fn dfs(graph: &Graph, node_state: &mut Vec<NodeState>, node: usize, order: usize) -> Option<EdgeList> {
-      match node_state[node] {
-        NotVisited => node_state[node] = Current,
-        Visited => return None,
-        Current => {
-          // Re-construct the cycle
-          let mut edges = EdgeList::new();
-          let mut n = node;
-          loop {
-            let edge = *graph.edges_from_node[n].iter()
-              .filter(|e| node_state[e.to] == Current)
-              .next()
-              .expect("should have at least one Current succ");
-
-            n = edge.to;
-            edges.push(edge);
-
-            if n == node { break; }
-          }
-          trace!(?edges, "cycle found");
-          return Some(edges);
-        }
-      }
-
-      for e in &graph.edges_from_node[node] {
-        let cycle = dfs(graph, node_state, e.to, order + 1);
-        if cycle.is_some() {
-          return cycle;
-        }
-      }
-
-      node_state[node] = Visited;
-      None
-    }
-
-    let mut node_state = vec![NotVisited; self.nodes.len()];
-
-    for &n in &self.sources {
-      let cycle = dfs(self, &mut node_state, n, 0);
-      if let Some(c) = cycle {
-        return c;
-      }
-    }
-    unreachable!()
-  }
 
   #[tracing::instrument(level = "debug", skip(self))]
   // For each infeasible UB, returns the smallest IIS containing that UB, if one exists.
@@ -875,13 +815,13 @@ mod tests {
   }
 
 
-  #[test]
-  fn solve_one() -> Result<()> {
-    let _g = crate::logging::init_test_logging(None::<&str>);
-    let env = get_sp_env()?;
-
-    let td = load(42)?;
-    compare_graph_algo_with_lp_model(&td, 18, &env, true)?;
-    Ok(())
-  }
+  // #[test]
+  // fn solve_one() -> Result<()> {
+  //   let _g = crate::logging::init_test_logging(None::<&str>);
+  //   let env = get_sp_env()?;
+  //
+  //   let td = load(42)?;
+  //   compare_graph_algo_with_lp_model(&td, 18, &env, true)?;
+  //   Ok(())
+  // }
 }
