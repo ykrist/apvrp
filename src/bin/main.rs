@@ -102,7 +102,7 @@ fn main() -> Result<()> {
 
   // `pv_req_t_start` is the earliest time we can *depart* from request r's pickup with passive vehicle p
   let pv_req_t_start = schedule::earliest_departures(&data);
-  let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
+  let tasks = PvTasks::generate(&data, &sets, &pv_req_t_start);
 
   info!(num_tasks = tasks.all.len(), "task generation finished");
 

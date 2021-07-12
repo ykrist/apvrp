@@ -1,3 +1,4 @@
+#![feature(generic_associated_types)]
 #![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(unused_imports)]
@@ -178,6 +179,7 @@ pub mod preprocess;
 pub mod graph;
 pub mod logging;
 pub mod solution;
+// pub mod solution {}
 use fnv::FnvHashSet;
 
 pub mod schedule;

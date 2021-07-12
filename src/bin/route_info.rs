@@ -42,7 +42,7 @@ fn parse_route_spec(spec: &str) -> Result<Vec<ShorthandTask>> {
   return Ok(tasks)
 }
 
-fn convert_route(tasks: &Tasks, route: &[ShorthandTask]) -> Result<Vec<Task>> {
+fn convert_route(tasks: &PvTasks, route: &[ShorthandTask]) -> Result<Vec<PvTask>> {
   route.iter()
     .map(|t|
       tasks.by_shorthand.get(t).copied()
@@ -50,7 +50,7 @@ fn convert_route(tasks: &Tasks, route: &[ShorthandTask]) -> Result<Vec<Task>> {
     .collect()
 }
 
-fn print_schedule(data: &Data, route: &[Task]) {
+fn print_schedule(data: &Data, route: &[PvTask]) {
   use prettytable::*;
   let times = schedule::av_route(data,route);
   let mut table = Table::new();
@@ -86,7 +86,7 @@ fn print_schedule(data: &Data, route: &[Task]) {
 
 }
 
-fn print_partial_finish_times(data: &Data, route: &[Task]) {
+fn print_partial_finish_times(data: &Data, route: &[PvTask]) {
   use prettytable::*;
   let mut table = Table::new();
   let mut task_row = vec![cell!("Task")];
@@ -125,7 +125,7 @@ fn main() -> Result<()> {
     .map(preprocess::full_pipeline)?;
 
   let sets = Sets::new(&data);
-  let tasks = Tasks::generate(&data, &sets, &schedule::earliest_departures(&data));
+  let tasks = PvTasks::generate(&data, &sets, &schedule::earliest_departures(&data));
 
   for (av, route) in av_routes {
     let route = convert_route(&tasks, &route)?;

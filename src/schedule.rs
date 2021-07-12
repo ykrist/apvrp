@@ -5,7 +5,6 @@ use tracing::trace;
 #[inline]
 fn pv_forward_step(t: &mut Time, data: &Data, t1: &Task, t2: &Task) {
   let arrival = *t + t1.tt + *data.srv_time.get(&t1.end).unwrap_or(&0);
-  debug_assert_eq!(t1.p, t2.p);
   debug_assert_eq!(t1.end, t2.start);
   *t = max(arrival, t2.t_release);
 }
@@ -24,7 +23,7 @@ fn av_forward_step(t: &mut Time, data: &Data, t1: &Task, t2: &Task) {
 }
 
 #[tracing::instrument(level="trace", skip(data))]
-pub fn check_pv_route(data: &Data, tasks: &[Task]) -> bool {
+pub fn check_pv_route(data: &Data, tasks: &[PvTask]) -> bool {
   let mut t = tasks[0].t_release;
   trace!(t);
   for (t1, t2) in tasks.iter().tuple_windows() {

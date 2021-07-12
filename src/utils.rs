@@ -48,6 +48,17 @@ pub fn iter_cycle<'a, T>(vals: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> + 
 //   }
 // }
 
+pub trait PermuteSliceClone {
+  type Item;
+  fn permute(&self) -> Permutator<Self::Item>;
+}
+
+impl<T: Clone + Debug> PermuteSliceClone for &[T] {
+  type Item = T;
+  fn permute(&self) -> Permutator<Self::Item> {
+    Permutator::new(self.to_vec())
+  }
+}
 
 pub struct Permutator<T> {
   objects: Rc<Vec<T>>,

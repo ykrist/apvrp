@@ -1,9 +1,9 @@
-use super::{Task, TaskType, task_req};
+use super::{PvTask, TaskType};
 use crate::*;
 
 /// Returns `true` if completing `t1` and then `t2` does not violate the cover constraint
 #[allow(unused_parens)]
-pub fn cover(t1: &Task, t2: &Task) -> bool {
+pub fn cover(t1: &PvTask, t2: &PvTask) -> bool {
   use TaskType::*;
   match (t1.ty, t2.ty) {
     (ODepot, ty) => {

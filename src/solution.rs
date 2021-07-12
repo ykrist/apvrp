@@ -1,5 +1,4 @@
 use crate::*;
-use crate::tasks::{Task};
 use crate::model::sp_lp::TimingSubproblem;
 use serde::{Serialize, Deserialize};
 use std::fs::read_to_string;
@@ -15,7 +14,7 @@ use crate::graph::DecomposableDigraph;
 /// A (possibly cyclic) Active Vehicle path.  If the path is a cycle, the first and last Tasks are the same.
 pub(crate) type AvPath = Vec<Task>;
 /// A (possibly cyclic) Passive Vehicle path.  If the path is a cycle, the first and last Tasks are the same.
-pub(crate) type PvPath = Vec<Task>;
+pub(crate) type PvPath = Vec<PvTask>;
 
 
 #[inline]
@@ -104,7 +103,7 @@ pub fn construct_av_routes(task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvP
 
 /// Given a list of tasks, construct the route for a Passive vehicle, plus any cycles which occur.
 #[tracing::instrument(level="trace", skip(tasks_used))]
-pub fn construct_pv_route(tasks_used: &[Task]) -> (PvPath, Vec<PvPath>) {
+pub fn construct_pv_route(tasks_used: &[PvTask]) -> (PvPath, Vec<PvPath>) {
   trace!(?tasks_used);
   debug_assert!(!tasks_used.is_empty());
   let first_task = *tasks_used.first().unwrap();
@@ -139,13 +138,13 @@ pub fn construct_pv_route(tasks_used: &[Task]) -> (PvPath, Vec<PvPath>) {
     }
   }
 
-  let pv_origin = Loc::Po(first_task.p.unwrap());
+  let pv_origin = first_task.start;
+  debug_assert!(matches!(pv_origin, Loc::Po(_)));
   let graph = PvGraph {
     pv_origin,
     pv_dest: pv_origin.dest(),
     task_by_start: tasks_used.iter().map(|&t| (t.start, t)).collect(),
   };
-
 
   let (pv_paths, pv_cycles) = graph.decompose_paths_cycles();
 
@@ -209,14 +208,12 @@ pub fn get_task_pairs_by_av<M: QueryVarValues>(ctx: &M, yvars: &Map<(Avg, Task, 
 }
 
 #[tracing::instrument(level = "trace", skip(ctx, xvars))]
-pub fn get_tasks_by_pv<M: QueryVarValues>(ctx: &M, xvars: &Map<Task, Var>) -> Result<Map<Pv, Vec<Task>>> {
+pub fn get_tasks_by_pv<M: QueryVarValues>(ctx: &M, xvars: &Map<PvTask, Var>) -> Result<Map<Pv, Vec<PvTask>>> {
   let mut tasks = Map::default();
 
   for (t, val) in get_var_values(ctx, xvars)? {
     trace!(?t, ?val);
-    if t.ty != TaskType::DDepot && t.ty != TaskType::ODepot {
-      tasks.entry(t.p.unwrap()).or_insert_with(Vec::new).push(t);
-    }
+    tasks.entry(t.p).or_insert_with(Vec::new).push(t);
   }
 
   Ok(tasks)
@@ -227,7 +224,7 @@ pub fn get_tasks_by_pv<M: QueryVarValues>(ctx: &M, xvars: &Map<Task, Var>) -> Re
 pub struct Solution {
   pub objective: Option<Cost>,
   pub av_routes: Vec<(Avg, Vec<Task>)>,
-  pub pv_routes: Vec<(Pv, Vec<Task>)>,
+  pub pv_routes: Vec<(Pv, Vec<PvTask>)>,
 }
 
 
@@ -257,7 +254,7 @@ impl From<Solution> for SerialisableSolution {
 
 
 impl Solution {
-  pub fn from_serialisable(tasks: &Tasks, sol: &SerialisableSolution) -> Self {
+  pub fn from_serialisable(tasks: &PvTasks, sol: &SerialisableSolution) -> Self {
     let av_routes = sol.av_routes.iter()
       .map(|(avg, route)| {
         let route = route.iter()
@@ -307,7 +304,7 @@ impl Solution {
     Ok(Solution { objective: Some(objective), av_routes, pv_routes })
   }
 
-  pub fn solve_for_times(&self, env: &grb::Env, data: &Data, tasks: &Tasks) -> Result<SpSolution> {
+  pub fn solve_for_times(&self, env: &grb::Env, data: &Data, tasks: &PvTasks) -> Result<SpSolution> {
     let mut sp = TimingSubproblem::build(env, data, tasks, self)?;
     sp.model.optimize()?;
     use grb::Status::*;
@@ -453,8 +450,8 @@ fn json_task_to_sh_task(lss: &LocSetStarts, st: &JsonTask) -> ShorthandTask {
     if st.p < 0 { None } else if st.p == 0 { unreachable!() } else { Some(st.p as Pv - 1) };
 
   let sht = match start {
-    Loc::Ao => ODepot,
-    Loc::Ad => DDepot,
+    Loc::Ao => unimplemented!(),
+    Loc::Ad => unimplemented!(),
     Loc::ReqP(r) => Request(p.unwrap(), r),
     Loc::Po(p) => {
       match end {
@@ -476,7 +473,7 @@ fn json_task_to_sh_task(lss: &LocSetStarts, st: &JsonTask) -> ShorthandTask {
   sht
 }
 
-pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &Tasks, lss: &LocSetStarts) -> Result<Solution> {
+pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &PvTasks, lss: &LocSetStarts) -> Result<Solution> {
   let s = std::fs::read_to_string(path)?;
   let soln: JsonSolution = serde_json::from_str(&s)?;
 

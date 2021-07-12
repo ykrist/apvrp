@@ -8,7 +8,7 @@ use crate::solution::Solution;
 #[derive(Clone)]
 pub struct MpVars {
   pub obj: Var,
-  pub x: Map<Task, Var>,
+  pub x: Map<PvTask, Var>,
   pub y: Map<(Av, Task, Task), Var>,
   /// These will be (Av, PvirTaskId, PvirTaskId)
   pub u: Map<Req, Var>,
@@ -30,7 +30,7 @@ impl std::default::Default for ObjWeights {
 }
 
 impl MpVars {
-  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model) -> Result<Self> {
+  pub fn build(data: &Data, sets: &Sets, tasks: &PvTasks, model: &mut Model) -> Result<Self> {
     let mut x = map_with_capacity(tasks.all.len());
     for &t in &tasks.all {
       x.insert(t, add_binvar!(model, name: &format!("X[{:?}]", &t))?);
@@ -67,49 +67,60 @@ impl MpVars {
   }
 
 
-  pub fn ysum_similar_tasks<'a>(&'a self, sets: &'a Sets, tasks: &'a Tasks, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {
-    tasks.similar_tasks[&t1].iter()
-      .cartesian_product(&tasks.similar_tasks[&t2])
-      .cartesian_product(sets.avs())
-      .filter_map(move |((&t1, &t2), a)| self.y.get(&(a, t1, t2)).copied())
-  }
 
-  /// Construct a expression of variables which is at most `k` (the other return value),
-  /// If the expression is equal to `k` then the supplied constraints are guaranteed to appear in the subproblem.
-  pub fn sum_responsible(&self, sets: &Sets, sp_constraints: &[super::SpConstr]) -> (usize, Expr) {
-    use super::SpConstr::*;
+  pub fn ysum_from_edge<'a>(&'a self, sets: &'a Sets, tasks: &'a Tasks, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {
+    use itertools::Either::*;
 
-    let mut x_tasks = set_with_capacity(sp_constraints.len());
-    let mut y_tasks = set_with_capacity(sp_constraints.len());
-
-    let mut expr = Expr::default();
-    let mut k = 0;
-
-    for &c in sp_constraints {
-      match c {
-        Unloading(t) | Lb(t) | Ub(t) | Loading(t) => {
-          x_tasks.insert(t);
-        }
-        AvTravelTime(t1, t2) => {
-          k += 1;
-          for a in sets.avs() {
-            if let Some(&y) = self.y.get(&(a, t1, t2)) {
-              expr += y;
-            }
-          }
-          y_tasks.insert(t1);
-          y_tasks.insert(t2);
-        }
-      }
+    fn iter_x_all_pv<'a>(tasks: &'a Tasks, x: &'a Map<PvTask, Var>, t: Task) -> impl Iterator<Item=Var> + 'a {
+      tasks.task_to_pvtasks[&t].iter().map(move|t| x[t])
     }
 
-    for t in x_tasks.difference(&y_tasks) {
-      k += 1;
-      expr += self.x[t]
+    if &t2.ty == &TaskType::Request {
+      Left(iter_x_all_pv(tasks, &self.x, t1))
+    } else if &t1.ty == &TaskType::Request {
+      Left(iter_x_all_pv(tasks, &self.x, t2))
+    } else {
+      Right(sets.avs().filter_map(move |a| self.y.get(&(a, t1, t2)).copied()))
     }
-
-    (k, expr)
   }
+
+  // FIXME: this should go into sp_lp, it is just the no-good cut
+  // / Construct a expression of variables which is at most `k` (the other return value),
+  // /// If the expression is equal to `k` then the supplied constraints are guaranteed to appear in the subproblem.
+  // pub fn sum_responsible(&self, sets: &Sets, sp_constraints: &[super::SpConstr]) -> (usize, Expr) {
+  //   use super::SpConstr::*;
+  //
+  //   let mut x_tasks = set_with_capacity(sp_constraints.len());
+  //   let mut y_tasks = set_with_capacity(sp_constraints.len());
+  //
+  //   let mut expr = Expr::default();
+  //   let mut k = 0;
+  //
+  //   for &c in sp_constraints {
+  //     match c {
+  //       Unloading(t) | Lb(t) | Ub(t) | Loading(t) => {
+  //         x_tasks.insert(t);
+  //       }
+  //       AvTravelTime(t1, t2) => {
+  //         k += 1;
+  //         for a in sets.avs() {
+  //           if let Some(&y) = self.y.get(&(a, t1, t2)) {
+  //             expr += y;
+  //           }
+  //         }
+  //         y_tasks.insert(t1);
+  //         y_tasks.insert(t2);
+  //       }
+  //     }
+  //   }
+  //
+  //   for t in x_tasks.difference(&y_tasks) {
+  //     k += 1;
+  //     expr += self.x[t]
+  //   }
+  //
+  //   (k, expr)
+  // }
 }
 
 pub struct MpConstraints {
@@ -120,6 +131,7 @@ pub struct MpConstraints {
   pub num_av: Map<Av, Constr>,
   pub av_flow: Map<(Av, Task), Constr>,
   pub xy_link: Map<Task, Constr>,
+  pub av_pv_compat: Map<(Pv, Task), Constr>,
   // TODO add trivial lb on theta here
 }
 
@@ -210,15 +222,31 @@ impl MpConstraints {
     };
 
     let xy_link = {
-      let mut cmap = map_with_capacity(tasks.all.capacity());
+      let mut cmap = map_with_capacity(tasks.all.len());
       for &t2 in &tasks.all {
         if t2.is_depot() { continue; }
         let ysum = tasks.pred[&t2].iter()
           .flat_map(|&t1| sets.avs().into_iter().map(move |av| (av, t1, t2)))
           .filter_map(|k| vars.y.get(&k))
           .grb_sum();
-        let c = model.add_constr(&format!("xy_link[{:?}]", &t2), c!(ysum == vars.x[&t2]))?;
+        let xsum = sets.pvs()
+          .filter_map(|p| vars.x.get(&(p, t2)).copied())
+          .grb_sum();
+        let c = model.add_constr(&format!("xy_link[{:?}]", &t2), c!(ysum == xsum))?;
         cmap.insert(t2, c);
+      }
+      cmap
+    };
+
+    let av_pv_compat = {
+      let mut cmap = map_with_capacity(tasks.all.len() * sets.pvs().len());
+      for ((p, t), &x) in &vars.x {
+        let ysum = data.compat_passive_active[p].iter()
+          .cartesian_product(&tasks.pred[t])
+          .filter_map(|(&a, &td)| vars.y.get(&(a, td, *t)))
+          .grb_sum();
+        let c = model.add_constr(&format!("av_pv_compat[{:?},{:?}]", p, t), c!(x <= ysum))?;
+        cmap.insert((*p, *t), c);
       }
       cmap
     };
@@ -248,7 +276,7 @@ impl MpConstraints {
 
       model.add_constr("Obj", c!(vars.obj == rhs))?
     };
-    Ok(MpConstraints { obj, req_cover, pv_cover, pv_flow, num_av, av_flow, xy_link })
+    Ok(MpConstraints { obj, req_cover, pv_cover, pv_flow, num_av, av_flow, xy_link, av_pv_compat })
   }
 }
 
@@ -262,7 +290,7 @@ pub struct TaskModelMaster {
 
 
 impl TaskModelMaster {
-  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, obj_param: ObjWeights) -> Result<Self> {
+  pub fn build(data: &Data, sets: &Sets, tasks: &PvTasks, obj_param: ObjWeights) -> Result<Self> {
     let mut model = Model::new("Task Model MP")?;
     let vars = MpVars::build(data, sets, tasks, &mut model)?;
     let cons = MpConstraints::build(data, sets, tasks, &mut model, &vars, &obj_param)?;
