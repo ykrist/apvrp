@@ -1,5 +1,5 @@
 use crate::*;
-use crate::model::sp_lp::TimingSubproblem;
+use crate::model::sp::lp::TimingSubproblem;
 use serde::{Serialize, Deserialize};
 use std::fs::read_to_string;
 use std::path::Path;
@@ -117,22 +117,22 @@ pub fn construct_pv_route(tasks_used: &[PvTask]) -> (PvPath, Vec<PvPath>) {
   struct PvGraph {
     pub pv_origin: Loc,
     pub pv_dest: Loc,
-    pub task_by_start: Map<Loc, Task>,
+    pub task_by_start: Map<Loc, PvTask>,
   }
 
-  impl DecomposableDigraph<Loc, Task, u8> for PvGraph {
+  impl DecomposableDigraph<Loc, PvTask, u8> for PvGraph {
     fn is_sink(&self, node: &Loc) -> bool { node == &self.pv_dest }
 
     fn next_start(&self) -> Option<Loc> {
       if self.task_by_start.contains_key(&self.pv_origin) { Some(self.pv_origin) } else { self.task_by_start.keys().next().copied() }
     }
 
-    fn next_outgoing_arc(&self, node: &Loc) -> (Task, Loc, u8) {
+    fn next_outgoing_arc(&self, node: &Loc) -> (PvTask, Loc, u8) {
       let task = self.task_by_start[node];
       (task, task.end, 1)
     }
-
-    fn subtract_arc(&mut self, arc: &Task, _: u8) {
+    // s
+    fn subtract_arc(&mut self, arc: &PvTask, _: u8) {
       let removed = self.task_by_start.remove(&arc.start);
       debug_assert!(removed.is_some())
     }
@@ -232,7 +232,7 @@ pub struct Solution {
 pub struct SerialisableSolution {
   pub objective: Option<Cost>,
   pub av_routes: Vec<(Avg, Vec<ShorthandTask>)>,
-  pub pv_routes: Vec<(Pv, Vec<ShorthandTask>)>,
+  pub pv_routes: Vec<(Pv, Vec<ShorthandPvTask>)>,
 }
 
 impl From<Solution> for SerialisableSolution {
@@ -241,7 +241,7 @@ impl From<Solution> for SerialisableSolution {
       .map(|(avg, tasks)| (avg, tasks.into_iter().map(ShorthandTask::from).collect()))
       .collect();
     let pv_routes = sol.pv_routes.into_iter()
-      .map(|(pv, tasks)| (pv, tasks.into_iter().map(ShorthandTask::from).collect()))
+      .map(|(pv, tasks)| (pv, tasks.into_iter().map(ShorthandPvTask::from).collect()))
       .collect();
 
     SerialisableSolution {
@@ -254,7 +254,7 @@ impl From<Solution> for SerialisableSolution {
 
 
 impl Solution {
-  pub fn from_serialisable(tasks: &PvTasks, sol: &SerialisableSolution) -> Self {
+  pub fn from_serialisable(tasks: &Tasks, sol: &SerialisableSolution) -> Self {
     let av_routes = sol.av_routes.iter()
       .map(|(avg, route)| {
         let route = route.iter()
@@ -266,7 +266,7 @@ impl Solution {
     let pv_routes = sol.pv_routes.iter()
       .map(|(pv, route)| {
         let route = route.iter()
-          .map(move |t| tasks.by_shorthand[t])
+          .map(move |t| tasks.by_shorthandpv[t])
           .collect();
         (*pv, route)
       })
@@ -304,7 +304,7 @@ impl Solution {
     Ok(Solution { objective: Some(objective), av_routes, pv_routes })
   }
 
-  pub fn solve_for_times(&self, env: &grb::Env, data: &Data, tasks: &PvTasks) -> Result<SpSolution> {
+  pub fn solve_for_times(&self, env: &grb::Env, data: &Data, tasks: &Tasks) -> Result<SpSolution> {
     let mut sp = TimingSubproblem::build(env, data, tasks, self)?;
     sp.model.optimize()?;
     use grb::Status::*;
@@ -318,7 +318,7 @@ impl Solution {
 #[derive(Clone, Debug)]
 pub struct SpSolution {
   pub av_routes: Vec<(Avg, Vec<(Task, Time)>)>,
-  pub pv_routes: Vec<(Pv, Vec<(Task, Time)>)>,
+  pub pv_routes: Vec<(Pv, Vec<(PvTask, Time)>)>,
 }
 
 
@@ -346,7 +346,8 @@ impl SpSolution {
 
     let mut pvr: Vec<_> = sp.mp_sol.pv_routes.iter()
       .map(|(pv, route)| {
-        let sched = route.iter().map(|t| (*t, task_start_times[t])).collect();
+        let sched = route.iter()
+          .map(|t| (*t, task_start_times[&sp.tasks.pvtask_to_task[t]])).collect();
         (*pv, sched)
       })
       .collect();
@@ -441,8 +442,8 @@ struct JsonSolution {
 }
 
 #[tracing::instrument(level = "trace")]
-fn json_task_to_sh_task(lss: &LocSetStarts, st: &JsonTask) -> ShorthandTask {
-  use ShorthandTask::*;
+fn json_task_to_sh_task(lss: &LocSetStarts, st: &JsonTask) -> ShorthandPvTask {
+  use ShorthandPvTask::*;
 
   let start = Loc::decode(st.start, lss);
   let end = Loc::decode(st.end, lss);
@@ -473,7 +474,8 @@ fn json_task_to_sh_task(lss: &LocSetStarts, st: &JsonTask) -> ShorthandTask {
   sht
 }
 
-pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &PvTasks, lss: &LocSetStarts) -> Result<Solution> {
+
+pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &Tasks, lss: &LocSetStarts) -> Result<Solution> {
   let s = std::fs::read_to_string(path)?;
   let soln: JsonSolution = serde_json::from_str(&s)?;
 
@@ -482,7 +484,7 @@ pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &PvTasks, lss: &LocSetSt
     let av: Avg = av.parse().context("parsing AV")?;
     for r in routes {
       let r: Vec<_> = r.iter()
-        .map(|t| tasks.by_shorthand[&json_task_to_sh_task(lss, t)])
+        .map(|t| tasks.by_shorthand[&json_task_to_sh_task(lss, t).into()])
         .collect();
       av_routes.push((av, r));
     }
@@ -492,7 +494,7 @@ pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &PvTasks, lss: &LocSetSt
   for (pv, route) in &soln.pv_routes {
     let pv: Pv = pv.parse().context("parsing PV")?;
     let route = route.iter()
-      .map(|t| tasks.by_shorthand[&json_task_to_sh_task(lss, t)])
+      .map(|t| tasks.by_shorthandpv[&json_task_to_sh_task(lss, t)])
       .collect();
     pv_routes.push((pv, route));
   }

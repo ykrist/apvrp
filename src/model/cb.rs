@@ -4,7 +4,7 @@ use crate::solution::*;
 use grb::prelude::*;
 use grb::callback::{Callback, Where, CbResult, MIPSolCtx};
 use fnv::FnvHashSet;
-use super::{sp_lp::TimingSubproblem, sp_graph};
+use super::{sp::lp::TimingSubproblem};
 use tracing::{info, info_span, debug, trace, error_span, warn, error, trace_span};
 use std::fmt;
 use grb::constr::IneqExpr;
@@ -16,8 +16,6 @@ use std::collections::{HashSet, HashMap};
 use std::io::Write;
 use experiment::Params;
 use slurm_harray::{ExperimentAuto, Experiment};
-use crate::model::cb::CutType::EndTime;
-use crate::model::solve_subproblem_and_add_cuts;
 
 #[derive(Debug, Clone)]
 pub enum CbError {
@@ -247,7 +245,7 @@ impl<'a> Cb<'a> {
     let ysum = cycle_tasks.iter()
       .cartesian_product(cycle_tasks.iter())
       .flat_map(|(&t1, &t2)|
-        self.mp_vars.ysum_from_edge(self.sets, self.tasks, t1, t2)
+        self.mp_vars.max_weight_edge_sum(self.sets, self.tasks, t1, t2)
       )
       .grb_sum();
 

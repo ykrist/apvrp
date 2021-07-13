@@ -7,3 +7,5 @@ dbg.filter
 routes.json
 *.svg
 *.dot
+**~
+.idea/

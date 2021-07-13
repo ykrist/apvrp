@@ -3,7 +3,7 @@ use std::cmp::max;
 use tracing::trace;
 
 #[inline]
-fn pv_forward_step(t: &mut Time, data: &Data, t1: &Task, t2: &Task) {
+fn pv_forward_step(t: &mut Time, data: &Data, t1: &PvTask, t2: &PvTask) {
   let arrival = *t + t1.tt + *data.srv_time.get(&t1.end).unwrap_or(&0);
   debug_assert_eq!(t1.end, t2.start);
   *t = max(arrival, t2.t_release);
@@ -37,7 +37,7 @@ pub fn check_pv_route(data: &Data, tasks: &[PvTask]) -> bool {
   true
 }
 
-pub fn pv_route(data: &Data, tasks: &[Task]) -> Vec<Time> {
+pub fn pv_route(data: &Data, tasks: &[PvTask]) -> Vec<Time> {
   let mut t = tasks[0].t_release;
   let mut schedule = Vec::with_capacity(tasks.len());
   schedule.push(tasks[0].t_release);

@@ -10,7 +10,6 @@ pub struct MpVars {
   pub obj: Var,
   pub x: Map<PvTask, Var>,
   pub y: Map<(Av, Task, Task), Var>,
-  /// These will be (Av, PvirTaskId, PvirTaskId)
   pub u: Map<Req, Var>,
   pub theta: Map<(Av, Task), Var>,
 }
@@ -30,9 +29,9 @@ impl std::default::Default for ObjWeights {
 }
 
 impl MpVars {
-  pub fn build(data: &Data, sets: &Sets, tasks: &PvTasks, model: &mut Model) -> Result<Self> {
-    let mut x = map_with_capacity(tasks.all.len());
-    for &t in &tasks.all {
+  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, model: &mut Model) -> Result<Self> {
+    let mut x = map_with_capacity(tasks.pvtask_to_task.len());
+    for &t in tasks.pvtask_to_task.keys() {
       x.insert(t, add_binvar!(model, name: &format!("X[{:?}]", &t))?);
     }
 
@@ -67,12 +66,13 @@ impl MpVars {
   }
 
 
-
-  pub fn ysum_from_edge<'a>(&'a self, sets: &'a Sets, tasks: &'a Tasks, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {
+  /// For task pair `(t1, t2)`, return a sum of variables which is 1 if the `(t1, t2)` edge constraint appears in the
+  /// subproblem and 0 otherwise.
+  pub fn max_weight_edge_sum<'a>(&'a self, sets: &'a Sets, tasks: &'a Tasks, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {
     use itertools::Either::*;
 
     fn iter_x_all_pv<'a>(tasks: &'a Tasks, x: &'a Map<PvTask, Var>, t: Task) -> impl Iterator<Item=Var> + 'a {
-      tasks.task_to_pvtasks[&t].iter().map(move|t| x[t])
+      tasks.task_to_pvtasks[&t].iter().map(move |t| x[t])
     }
 
     if &t2.ty == &TaskType::Request {
@@ -131,7 +131,7 @@ pub struct MpConstraints {
   pub num_av: Map<Av, Constr>,
   pub av_flow: Map<(Av, Task), Constr>,
   pub xy_link: Map<Task, Constr>,
-  pub av_pv_compat: Map<(Pv, Task), Constr>,
+  pub av_pv_compat: Map<PvTask, Constr>,
   // TODO add trivial lb on theta here
 }
 
@@ -141,7 +141,10 @@ impl MpConstraints {
       let mut cmap = map_with_capacity(data.n_req as usize);
       for r in sets.reqs() {
         trace!(r);
-        let xsum = tasks.by_cover[&r].iter().map(|t| vars.x[t]).grb_sum();
+        let xsum = tasks.by_cover[&r].iter()
+          .flat_map(|t| tasks.task_to_pvtasks[t].iter())
+          .map(|t| vars.x[t])
+          .grb_sum();
         let c = model.add_constr(&format!("req_cover[{}]", r), c!(xsum + vars.u[&r] == 1))?;
         cmap.insert(r, c);
       }
@@ -151,7 +154,10 @@ impl MpConstraints {
     let pv_cover = {
       let mut cmap = map_with_capacity(data.n_passive as usize);
       for po in sets.pv_origins() {
-        let xsum = tasks.by_start[&po].iter().map(|t| vars.x[t]).grb_sum();
+        let xsum = tasks.by_start[&po].iter()
+          .flat_map(|t| tasks.task_to_pvtasks[t].iter()) // should be one-to-one for these tasks
+          .map(|t| vars.x[t])
+          .grb_sum();
         let c = model.add_constr(&format!("pv_cover[{}]", po.pv()), c!(xsum == 1))?;
         cmap.insert(po.pv(), c);
       }
@@ -160,20 +166,23 @@ impl MpConstraints {
 
     let pv_flow = {
       let mut cmap = map_with_capacity((data.n_loc as usize - 2) * data.n_passive as usize);
-      for (&pv, pv_tasks) in &tasks.by_pv {
-        for rp in data.compat_passive_req[&pv].iter().copied().map(Loc::ReqP) {
-          let rd = rp.dest();
+      for (&r, pvs) in &data.compat_req_passive {
+        let rp = Loc::ReqP(r);
+        let rd = Loc::ReqD(r);
+        for &p in pvs {
           for &i in &[rp, rd] {
             let lhs = tasks.by_start[&i].iter()
-              .filter_map(|t| if pv_tasks.contains(t) { Some(vars.x[t]) } else { None })
+              .filter_map(|&t| tasks.pvtask.get(&(p, t)))
+              .map(|t| vars.x[t])
               .grb_sum();
 
             let rhs = tasks.by_end[&i].iter()
-              .filter_map(|t| if pv_tasks.contains(t) { Some(vars.x[t]) } else { None })
+              .filter_map(|&t| tasks.pvtask.get(&(p, t)))
+              .map(|t| vars.x[t])
               .grb_sum();
 
-            let c = model.add_constr(&format!("pv_flow[{}|{}]", i, pv), c!(lhs == rhs))?;
-            cmap.insert((pv, i), c);
+            let c = model.add_constr(&format!("pv_flow[{},{}]", p, i), c!(lhs == rhs))?;
+            cmap.insert((p, i), c);
           }
         }
       }
@@ -229,8 +238,9 @@ impl MpConstraints {
           .flat_map(|&t1| sets.avs().into_iter().map(move |av| (av, t1, t2)))
           .filter_map(|k| vars.y.get(&k))
           .grb_sum();
-        let xsum = sets.pvs()
-          .filter_map(|p| vars.x.get(&(p, t2)).copied())
+        let xsum = tasks.task_to_pvtasks[&t2].iter()
+          .filter_map(|t| vars.x.get(t))
+          .copied()
           .grb_sum();
         let c = model.add_constr(&format!("xy_link[{:?}]", &t2), c!(ysum == xsum))?;
         cmap.insert(t2, c);
@@ -240,41 +250,46 @@ impl MpConstraints {
 
     let av_pv_compat = {
       let mut cmap = map_with_capacity(tasks.all.len() * sets.pvs().len());
-      for ((p, t), &x) in &vars.x {
-        let ysum = data.compat_passive_active[p].iter()
-          .cartesian_product(&tasks.pred[t])
-          .filter_map(|(&a, &td)| vars.y.get(&(a, td, *t)))
+      for (&pt, &x) in &vars.x {
+        let t = tasks.pvtask_to_task[&pt];
+
+        let ysum = data.compat_passive_active[&pt.p].iter()
+          .cartesian_product(&tasks.pred[&t])
+          .filter_map(|(&a, &td)| vars.y.get(&(a, td, t)))
           .grb_sum();
-        let c = model.add_constr(&format!("av_pv_compat[{:?},{:?}]", p, t), c!(x <= ysum))?;
-        cmap.insert((*p, *t), c);
+
+        let c = model.add_constr(&format!("av_pv_compat[{:?}]", pt), c!(x <= ysum))?;
+        cmap.insert(pt, c);
       }
       cmap
     };
 
     let obj = {
-      let mut rhs = Expr::default();
+      let mut obj_expr = Expr::default();
 
       for (t, &x) in &vars.x {
         let obj = if !t.is_depot() {
           obj_param.tt * (data.travel_cost[&(t.start, t.end)] as f64)
         } else { 0.0 };
-        rhs += obj * x;
+        obj_expr += obj * x;
       }
 
       for ((_, t1, t2), &y) in &vars.y {
         let obj = obj_param.tt * (data.travel_cost[&(t1.end, t2.start)] as f64);
-        rhs += obj * y;
+        obj_expr += obj * y;
       }
 
       for (_, &u) in &vars.u {
-        rhs += obj_param.cover * u;
+        obj_expr += obj_param.cover * u;
       }
 
-      for (_, &theta) in &vars.theta {
-        rhs += obj_param.av_finish_time * theta;
+      for (&(a, t), &theta) in &vars.theta {
+        obj_expr += obj_param.av_finish_time * theta;
+        let last_lil_bit = (t.tt + data.travel_cost[&(t.end, Loc::Ad)]) as f64;
+        obj_expr += obj_param.av_finish_time * last_lil_bit * vars.y[&(a, t, tasks.ddepot)];
       }
 
-      model.add_constr("Obj", c!(vars.obj == rhs))?
+      model.add_constr("Obj", c!(vars.obj == obj_expr))?
     };
     Ok(MpConstraints { obj, req_cover, pv_cover, pv_flow, num_av, av_flow, xy_link, av_pv_compat })
   }
@@ -290,7 +305,7 @@ pub struct TaskModelMaster {
 
 
 impl TaskModelMaster {
-  pub fn build(data: &Data, sets: &Sets, tasks: &PvTasks, obj_param: ObjWeights) -> Result<Self> {
+  pub fn build(data: &Data, sets: &Sets, tasks: &Tasks, obj_param: ObjWeights) -> Result<Self> {
     let mut model = Model::new("Task Model MP")?;
     let vars = MpVars::build(data, sets, tasks, &mut model)?;
     let cons = MpConstraints::build(data, sets, tasks, &mut model, &vars, &obj_param)?;

@@ -102,19 +102,19 @@ fn main() -> Result<()> {
 
   // `pv_req_t_start` is the earliest time we can *depart* from request r's pickup with passive vehicle p
   let pv_req_t_start = schedule::earliest_departures(&data);
-  let tasks = PvTasks::generate(&data, &sets, &pv_req_t_start);
+  let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
 
   info!(num_tasks = tasks.all.len(), "task generation finished");
 
   let mut mp = model::mp::TaskModelMaster::build(&data, &sets, &tasks, ObjWeights::default())?;
   mp.model.update()?;
 
-  let true_soln = solution::load_michael_soln(
-    format!("/home/yannik/phd/src/apvrp/scrap/soln/{}.json", exp.inputs.index),
-    &tasks,
-    &LocSetStarts::new(data.n_passive, data.n_req))
-      .map_err(|e| error!(error=%e, "unable to load solution"))
-      .ok();
+  // let true_soln = solution::load_michael_soln(
+  //   format!("/home/yannik/phd/src/apvrp/scrap/soln/{}.json", exp.inputs.index),
+  //   &tasks,
+  //   &LocSetStarts::new(data.n_passive, data.n_req))
+  //     .map_err(|e| error!(error=%e, "unable to load solution"))
+  //     .ok();
 
 
   mp.model.set_obj_attr_batch(attr::BranchPriority, mp.vars.u.values().map(|&u| (u, 100)))?;
@@ -138,8 +138,8 @@ fn main() -> Result<()> {
         // errors handled
         Some(model::cb::CbError::InvalidBendersCut { obj, mut solution, .. }) => {
           callback.flush_cut_cache(&mut mp.model)?;
-          solution.objective = None;
-          mp.fix_solution(&solution)?;
+          // solution.objective = None;  // FIXME
+          // mp.fix_solution(&solution)?; // FIXME add back in
           mp.model.add_constr("debug", c!(mp.vars.theta.values().grb_sum() <= obj))?;
           // let theta = mp.model.get_var_by_name("Theta[End(2,7)|0]")?.unwrap();
           // mp.model.add_constr("dbg1", c!(theta == 662))?;
@@ -177,14 +177,14 @@ fn main() -> Result<()> {
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
 
-  if let Some(true_soln) = true_soln {
-    if true_soln.objective != Some(obj) {
-      error!(correct = true_soln.objective.unwrap(), obj, "objective mismatch");
-      mp.fix_solution(&true_soln)?;
-      infeasibility_analysis(&mut mp)?;
-      anyhow::bail!("bugalug");
-    }
-  }
+  // if let Some(true_soln) = true_soln { // FIXME add check back in
+  //   if true_soln.objective != Some(obj) {
+  //     error!(correct = true_soln.objective.unwrap(), obj, "objective mismatch");
+  //     mp.fix_solution(&true_soln)?;
+  //     infeasibility_analysis(&mut mp)?;
+  //     anyhow::bail!("bugalug");
+  //   }
+  // }
 
   let info = experiment::Info {
     gurobi: experiment::GurobiInfo::new(&mp.model)?,

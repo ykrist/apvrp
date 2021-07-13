@@ -16,6 +16,8 @@ pub type TaskId = u32;
 mod checks;
 pub mod chain;
 
+mod shorthand;
+pub use shorthand::*;
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub struct RawPvTask {
@@ -53,60 +55,6 @@ pub enum TaskType {
 }
 
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub enum ShorthandTask {
-  Transfer(Pv, Req, Req),
-  Start(Pv, Req),
-  Request(Pv, Req),
-  End(Pv, Req),
-  Direct(Pv),
-}
-
-
-impl FromStr for ShorthandTask {
-  type Err = anyhow::Error;
-  fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-    use regex::Regex;
-    lazy_static::lazy_static! {
-        static ref TRN_TASK_RE : Regex = Regex::new(r"Trn\((\d+),(\d+),(\d+)\)").unwrap();
-        // static ref ODP_TASK_RE : Regex = Regex::new(r"ODp").unwrap();
-        // static ref DDP_TASK_RE : Regex = Regex::new(r"DDp").unwrap();
-        static ref REQ_TASK_RE : Regex = Regex::new(r"Req\((\d+),(\d+)\)").unwrap();
-        static ref SRT_TASK_RE : Regex = Regex::new(r"Srt\((\d+),(\d+)\)").unwrap();
-        static ref END_TASK_RE : Regex = Regex::new(r"End\((\d+),(\d+)\)").unwrap();
-        static ref DIR_TASK_RE : Regex = Regex::new(r"Dir\((\d+)\)").unwrap();
-    }
-    let t = if let Some(m) = TRN_TASK_RE.captures(s) {
-      let p = m.get(1).unwrap().as_str().parse().unwrap();
-      let r1 = m.get(2).unwrap().as_str().parse().unwrap();
-      let r2 = m.get(3).unwrap().as_str().parse().unwrap();
-      ShorthandTask::Transfer(p, r1, r2)
-    // } else if ODP_TASK_RE.is_match(s) {
-    //   ShorthandTask::ODepot
-    // } else if DDP_TASK_RE.is_match(s) {
-    //   ShorthandTask::DDepot
-    } else if let Some(m) = REQ_TASK_RE.captures(s) {
-      let p = m.get(1).unwrap().as_str().parse().unwrap();
-      let r = m.get(2).unwrap().as_str().parse().unwrap();
-      ShorthandTask::Request(p, r)
-    } else if let Some(m) = SRT_TASK_RE.captures(s) {
-      let p = m.get(1).unwrap().as_str().parse().unwrap();
-      let r = m.get(2).unwrap().as_str().parse().unwrap();
-      ShorthandTask::Start(p, r)
-    } else if let Some(m) = END_TASK_RE.captures(s) {
-      let p = m.get(1).unwrap().as_str().parse().unwrap();
-      let r = m.get(2).unwrap().as_str().parse().unwrap();
-      ShorthandTask::End(p, r)
-    } else if let Some(m) = DIR_TASK_RE.captures(s) {
-      let p = m.get(1).unwrap().as_str().parse().unwrap();
-      ShorthandTask::Direct(p)
-    } else {
-      anyhow::bail!("unable to parse: {}", s)
-    };
-    Ok(t)
-  }
-}
-
 impl fmt::Debug for TaskType {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     use TaskType::*;
@@ -123,20 +71,6 @@ impl fmt::Debug for TaskType {
   }
 }
 
-impl From<PvTask> for ShorthandTask {
-  fn from(t: PvTask) -> Self {
-    match t.ty {
-      // TaskType::ODepot => ShorthandTask::ODepot,
-      // TaskType::DDepot => ShorthandTask::DDepot,
-      TaskType::Request => ShorthandTask::Request(t.p, t.start.req()),
-      TaskType::Transfer => ShorthandTask::Transfer(t.p, t.start.req(), t.end.req()),
-      TaskType::Start => ShorthandTask::Start(t.p, t.end.req()),
-      TaskType::End => ShorthandTask::End(t.p, t.start.req()),
-      TaskType::Direct => ShorthandTask::Direct(t.p),
-      _ => unreachable!(),
-    }
-  }
-}
 
 #[derive(Copy, Clone)]
 pub struct PvTask {
@@ -351,27 +285,31 @@ pub struct Tasks {
   pub all: Vec<Task>,
   pub task_to_pvtasks: Map<Task, Vec<PvTask>>,
   pub pvtask_to_task: Map<PvTask, Task>,
+  pub pvtask_to_similar_pvtask: Map<PvTask, Vec<PvTask>>,
+  pub pvtask: Map<(Pv, Task), PvTask>,
   pub pvs_by_task: Map<Task, Vec<Pv>>,
   pub compat_with_av: Map<Avg, Set<Task>>,
   pub by_start: Map<Loc, Vec<Task>>,
   pub by_end: Map<Loc, Vec<Task>>,
   pub by_locs: Map<(Loc, Loc), Vec<Task>>,
-  pub by_cover: Map<Req, Vec<Task>>,
+  pub by_cover: Map<Req, Vec<Task>>, // TODO maybe map to PvTasks?
   pub succ: Map<Task, Vec<Task>>,
   pub pred: Map<Task, Vec<Task>>,
   pub pv_succ: Map<PvTask, Vec<PvTask>>,
   pub pv_pred: Map<PvTask, Vec<PvTask>>,
   pub odepot: Task,
   pub ddepot: Task,
+  pub by_shorthandpv: Map<ShorthandPvTask, PvTask>,
+  pub by_shorthand: Map<ShorthandTask, Task>,
 }
 
 // Optimisation(???): we could store Vec<TaskId> instead
 #[derive(Debug, Clone)]
-pub struct PvTasks {
+struct PvTasks {
   pub all: Vec<PvTask>,
   pub by_start: Map<Loc, Vec<PvTask>>,
   pub by_end: Map<Loc, Vec<PvTask>>,
-  pub by_shorthand: Map<ShorthandTask, PvTask>,
+  pub by_shorthand: Map<ShorthandPvTask, PvTask>,
   pub av_task_conn: Vec<(PvTask, PvTask)>,
   pub pv_task_conn: Vec<(PvTask, PvTask)>,
 }
@@ -537,9 +475,9 @@ impl PvTasks {
       by_end.entry(t.end).or_default().push(t);
     }
 
-    let mut by_shorthand: Map<_, _> = all.iter()
+    let by_shorthand: Map<_, _> = all.iter()
       .copied()
-      .map(|t| (ShorthandTask::from(t), t))
+      .map(|t| (ShorthandPvTask::from(t), t))
       .collect();
 
     let av_task_conn = build_av_task_connections(data, &all);
@@ -576,9 +514,9 @@ fn build_pv_task_connections(data: &Data,
                              all: &Vec<PvTask>,
                              by_start: &Map<Loc, Vec<PvTask>>,
                              by_end: &Map<Loc, Vec<PvTask>>,
-                             by_shorthand: &Map<ShorthandTask, PvTask>,
+                             by_shorthand: &Map<ShorthandPvTask, PvTask>,
 ) -> Vec<(PvTask, PvTask)> {
-  use ShorthandTask::*;
+  use ShorthandPvTask::*;
   let mut connections = Vec::with_capacity(all.len());
 
 
@@ -624,7 +562,12 @@ fn build_pv_task_connections(data: &Data,
 }
 
 impl Tasks {
-  pub fn build(pvtasks: &PvTasks) -> Self {
+  pub fn generate(data: &Data, sets: &Sets, pv_req_t_start: &Map<(Pv, Req), Time>) -> Self {
+    let pvtasks = PvTasks::generate(data, sets, pv_req_t_start);
+    Self::build(&pvtasks)
+  }
+
+  fn build(pvtasks: &PvTasks) -> Self {
     let mut pv_tasks_by_locs: Map<_, Vec<_>> = map_with_capacity(pvtasks.all.len());
     for t in &pvtasks.all {
       pv_tasks_by_locs.entry((t.start, t.end)).or_default().push(*t);
@@ -673,11 +616,11 @@ pub fn task_incompat(t1: &PvTask, t2: &PvTask, data: &Data) -> Option<Incompatib
 
   if t1.p == t2.p {
     if t1.end != t2.start {
-      // no point in having some other active vehicle do the implied task inbetween t1 and t2
+      // no point in having some other active vehicle do the implied task between t1 and t2
       return Some(Incompatibility::Optimisation);
     }
 
-    // t1.end == t2.start, so only add one service time.
+    // t1.end == t2.start, so only add one service time. ss
     if t + data.srv_time[&t1.end] > t2.t_deadline {
       return Some(Incompatibility::Time);
     }

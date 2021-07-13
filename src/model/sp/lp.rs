@@ -1,89 +1,90 @@
-use crate::*;
-use crate::tasks::TaskId;
 use grb::prelude::*;
 use fnv::FnvHashSet;
 use grb::constr::IneqExpr;
-use super::mp::MpVars;
-use super::cb::{CbError};
 use tracing::*;
-use crate::TaskType::ODepot;
 use itertools::Itertools;
-use crate::solution::*;
-use crate::model::cb::{CutType, Cb};
 use std::collections::{HashSet, HashMap};
 use std::hash::{Hash, BuildHasher};
-use crate::utils::HashMapExt;
 use smallvec::SmallVec;
+
+use crate::*;
+use crate::tasks::TaskId;
+use crate::model::mp::MpVars;
+use crate::solution::*;
+use crate::model::cb::{CutType, Cb, CbError};
+use crate::utils::HashMapExt;
+
 use super::*;
 
 pub struct TimingConstraints {
-  pub av_sync: Map<(Task, Task), Constr>,
-  pub loading: Map<Task, Constr>,
-  pub unloading: Map<Task, Constr>,
+  pub edge_constraints: Map<(Task, Task), Constr>,
   pub lb: Map<PvTask, Constr>,
   pub ub: Map<PvTask, Constr>,
 }
 
 impl TimingConstraints {
   pub fn build(data: &Data, tasks: &Tasks, sol: &Solution, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
+    // TODO: we don't actually need the routes here, can just use var values
     let _span = error_span!("sp_cons").entered();
 
-    let mut loading = Map::default();
-    let mut unloading = Map::default();
+    let mut edge_constraints = map_with_capacity(2*vars.len());
     let mut lb = map_with_capacity(vars.len());
     let mut ub = map_with_capacity(vars.len());
 
-    let mut add_bounds = |t: Task, model: &mut Model| -> Result<()> {
+    let mut add_bounds = |pvt: PvTask, t: Task, model: &mut Model| -> Result<()> {
       // Constraints (3e)
-      lb.insert(t, model.add_constr("", c!(vars[&t] >= t.t_release))?);
-      ub.insert(t, model.add_constr("", c!(vars[&t] <= t.t_deadline - t.tt))?);
+      lb.insert(pvt, model.add_constr("", c!(vars[&t] >= pvt.t_release))?);
+      ub.insert(pvt, model.add_constr("", c!(vars[&t] <= pvt.t_deadline - pvt.tt))?);
       Ok(())
     };
 
-    let mut dominated_av_sync_constraints = Set::default();
-
     for (_, pv_route) in &sol.pv_routes {
       let mut pv_route = pv_route.iter();
-      let mut t1 = *pv_route.next().unwrap();
-      add_bounds(t1, model)?;
+      let mut pt1 = *pv_route.next().unwrap();
+      let mut t1 = tasks.pvtask_to_task[&pt1];
+      add_bounds(pt1, t1, model)?;
 
-      for &t2 in pv_route {
-        debug_assert_ne!((t1.ty, t2.ty), (TaskType::Request, TaskType::Request));
+      for &pt2 in pv_route {
+        let t2 = tasks.pvtask_to_task[&pt1];
+        debug_assert_ne!((pt1.ty, pt2.ty), (TaskType::Request, TaskType::Request));
 
-        if t2.ty == TaskType::Request {
+        if pt2.ty == TaskType::Request {
           // Constraints (3c) (loading time)
           let c = c!(vars[&t1] + t1.tt + data.srv_time[&t1.end] <= vars[&t2]);
-          loading.insert(t1, model.add_constr("", c)?);
-          dominated_av_sync_constraints.insert((t1, t2));
-        } else if t1.ty == TaskType::Request {
+          edge_constraints.insert((t1, t2), model.add_constr("", c)?);
+        } else if pt1.ty == TaskType::Request {
           // Constraints (3d) (unloading time)
           let c = c!(vars[&t1] + t1.tt + data.srv_time[&t1.end] <= vars[&t2]);
-          unloading.insert(t2, model.add_constr("", c)?);
-          dominated_av_sync_constraints.insert((t1, t2));
+          edge_constraints.insert((t1, t2), model.add_constr("", c)?);
         }
-        add_bounds(t2, model)?;
+        add_bounds(pt2, t2, model)?;
+        pt1 = pt2;
         t1 = t2;
       }
     }
 
     // Constraints (3b)
-    let mut av_sync = map_with_capacity(vars.len()); // slightly too big but close enough
     for (_, route) in &sol.av_routes {
       for (&t1, &t2) in route.iter().tuple_windows() {
-        if t1 != tasks.odepot && t2 != tasks.ddepot && !dominated_av_sync_constraints.contains(&(t1, t2)) {
-          trace!(?t1, ?t2, "av_sync");
-          let c = c!(vars[&t1] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
-          av_sync.insert((t1, t2), model.add_constr("", c)?);
+        if t1 != tasks.odepot && t2 != tasks.ddepot {
+          if edge_constraints.contains_key(&(t1, t2)) {
+            trace!(?t1, ?t2, "AV TT constraint dominated by loading/unloading constraint")
+          } else {
+            trace!(?t1, ?t2, "av_sync");
+            let c = c!(vars[&t1] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
+            edge_constraints.insert((t1, t2), model.add_constr("", c)?);
+          }
         }
       }
     }
-    Ok(TimingConstraints { av_sync, loading, unloading, ub, lb })
+    Ok(TimingConstraints { edge_constraints, ub, lb })
   }
 }
 
 
 pub struct TimingSubproblem<'a> {
   pub vars: Map<Task, Var>,
+  // Tasks which appear in the objective
   pub second_last_tasks: SmallVec<[Task; NUM_AV_UB]>,
   pub cons: TimingConstraints,
   pub model: Model,
@@ -100,8 +101,9 @@ impl<'a> TimingSubproblem<'a> {
     let mut model = Model::with_env("subproblem", env)?;
     let vars: Map<_, _> = {
       let mut v = map_with_capacity(sol.pv_routes.iter().map(|(_, tasks)| tasks.len()).sum());
-      for (_, tasks) in &sol.pv_routes {
-        for &t in tasks {
+      for (_, pv_route) in &sol.pv_routes {
+        for t in pv_route {
+          let t = tasks.pvtask_to_task[t];
           #[cfg(debug_assertions)]
             v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
           #[cfg(not(debug_assertions))]
@@ -113,20 +115,18 @@ impl<'a> TimingSubproblem<'a> {
 
     let cons = TimingConstraints::build(data, tasks, sol, &mut model, &vars)?;
 
-    let mut obj_constant = 0.0;
     let mut second_last_tasks = SmallVec::new();
 
     let obj = sol.av_routes.iter()
       .map(|(_, route)| {
         let second_last_task = &route[route.len() - 2];
         second_last_tasks.push(*second_last_task);
-        obj_constant += (second_last_task.tt + data.travel_time[&(second_last_task.end, Loc::Ad)]) as f64;
         trace!(?second_last_task);
         vars[second_last_task]
       })
-      .grb_sum() + obj_constant;
+      .grb_sum();
     model.update()?;
-    trace!(?obj_constant, obj=?obj.with_names(&model));
+    trace!(obj=?obj.with_names(&model));
     model.set_objective(obj, Minimize)?;
 
     Ok(TimingSubproblem { vars, cons, model, mp_sol: sol, data, second_last_tasks, tasks })
@@ -305,7 +305,7 @@ impl<'a> TimingSubproblem<'a> {
   // }
 }
 
-impl<'a>  SpSolve for TimingSubproblem<'a> {
+impl<'a> Subproblem for TimingSubproblem<'a> {
   type OptInfo = ();
   type InfInfo = ();
   type IisConstraintSets = std::iter::Once<Iis>;
@@ -327,42 +327,125 @@ impl<'a>  SpSolve for TimingSubproblem<'a> {
   }
 
   fn extract_and_remove_iis(&mut self, _: ()) -> Result<Self::IisConstraintSets> {
-    todo!()
+    #[cfg(debug_assertions)]
+    fn find_iis_bound<'a>(model: &Model, cons: impl IntoIterator<Item=(&'a PvTask, &'a Constr)>) -> Result<Option<PvTask>> {
+      let mut task = None;
+      for (t, c) in cons {
+        if model.get_obj_attr(attr::IISConstr, c)? > 0 {
+          assert_eq!(task, None);
+          task = Some(*t);
+        }
+      }
+      Ok(task)
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn find_iis_bound<'a>(model: &Model, cons: impl IntoIterator<Item=(&'a PvTask, &'a Constr)>) -> Result<Option<PvTask>> {
+      for (t, c) in cons {
+        if model.get_obj_attr(attr::IISConstr, c)? > 0 {
+          return Ok(Some(*t))
+        }
+      }
+      Ok(None)
+    }
+
+    self.model.compute_iis()?;
+
+    let bounds = match find_iis_bound(&self.model, &self.cons.ub)? {
+      Some(ub) => {
+        let lb = find_iis_bound(&self.model, &self.cons.lb)?.expect("IIS has no lower bound");
+        Some((lb, ub))
+      },
+      None => {
+        debug_assert_eq!(find_iis_bound(&self.model, &self.cons.lb)?, None);
+        None
+      }
+    };
+
+    let mut iis_succ = Map::default();
+    for ((t1, t2), c) in &self.cons.edge_constraints {
+      if self.model.get_obj_attr(attr::IISConstr, c)? > 0 {
+        iis_succ.insert(*t1, *t2);
+        self.model.remove(*c)?;
+      }
+    }
+
+    let iis = if let Some((lb_task, ub_task)) = bounds {
+      // Path IIS
+      let mut path = SmallVec::with_capacity(iis_succ.len() + 1);
+
+      let mut t = self.tasks.pvtask_to_task[&lb_task];
+      path.push(t);
+
+      while iis_succ.len() > 0 {
+        t = iis_succ.remove(&t).expect("bad IIS path");
+        path.push(t);
+      }
+      debug_assert_eq!(path.last(), self.tasks.pvtask_to_task.get(&ub_task));
+
+      Iis::Path { ub: ub_task, lb: lb_task, path }
+    } else {
+      // Path IIS
+      let mut cycle = SmallVec::with_capacity(iis_succ.len());
+
+      let mut t = *iis_succ.keys().next().expect("IIS has no edge constraints");
+      cycle.push(t);
+      while iis_succ.len() > 1 { // keep last one
+        t = iis_succ.remove(&t).expect("bad IIS cycle");
+        cycle.push(t);
+      }
+      Iis::Cycle(cycle)
+    };
+
+    Ok(std::iter::once(iis))
   }
 
   fn add_optimality_cuts(&self, cb: &mut cb::Cb, _: ()) -> Result<()> {
-    // fn add_x_constraints(model: &grb::Model, cons: &Map<PvTask, Constr>, mrs: &mut SpConstraints, f: impl Fn(PvTask) -> SpConstr) -> Result<()> {
-    //   for (t, c) in cons {
-    //     let dual = model.get_obj_attr(attr::Pi, c)?;
-    //     if dual.abs() > 0.1 {
-    //       let spc = f(*t);
-    //       mrs.push(spc);
-    //       trace!(?t, c=?spc, ?dual, "non-zero dual");
-    //     }
-    //   }
-    //   Ok(())
-    // }
-    //
-    // let mut mrs = SpConstraints::new();
-    //
-    // add_x_constraints(&self.model, &self.cons.unloading, &mut mrs, SpConstr::Unloading)?;
-    // add_x_constraints(&self.model, &self.cons.loading, &mut mrs, SpConstr::Loading)?;
-    // add_x_constraints(&self.model, &self.cons.ub, &mut mrs, SpConstr::Ub)?;
-    // add_x_constraints(&self.model, &self.cons.lb, &mut mrs, SpConstr::Lb)?;
-    //
-    // for (&(t1, t2), c) in &self.cons.av_sync {
-    //   let dual = self.model.get_obj_attr(attr::Pi, c)?;
-    //   if dual.abs() > 0.1 {
-    //     let spc = SpConstr::AvTravelTime(t1, t2);
-    //     mrs.push(spc);
-    //     trace!(?t1, ?t2, c=?spc, ?dual, "non-zero dual");
-    //   }
-    // }
-    //
-    // for &t in &self.second_last_tasks {
-    //   mrs.push(SpConstr::AvTravelTime(t, self.tasks.ddepot));
-    // }
-    todo!();
+    let sp_obj = self.model.get_attr(attr::ObjVal)?;
+    let mut cut = Expr::default();
+
+    let mut num_edges_constraints = 0;
+    for ((t1, t2), c) in &self.cons.edge_constraints {
+      let dual = self.model.get_obj_attr(attr::Pi, c)?;
+      if dual.abs() > 0.1 {
+        num_edges_constraints += 1;
+        trace!(?t1, ?t2, ?dual, "non-zero edge dual");
+        for var in cb.mp_vars.max_weight_edge_sum(cb.sets, cb.tasks, *t1, *t2) {
+          cut += var;
+        }
+      }
+    }
+
+    let mut num_lbs = 0;
+    for (t, c) in &self.cons.lb {
+      let dual = self.model.get_obj_attr(attr::Pi, c)?;
+      if dual.abs() > 0.1 {
+        num_lbs += 1;
+        trace!(?t, ?dual, "non-zero LB dual");
+        for t in &cb.tasks.pvtask_to_similar_pvtask[t] {
+          cut += cb.mp_vars.x[t];
+        }
+      }
+    }
+
+    #[cfg(debug_assertions)] {
+      for (t, c) in &self.cons.ub {
+        let dual = self.model.get_obj_attr(attr::Pi, c)?;
+        assert!(dual.abs() < 0.1, "non-zero dual on UB");
+      }
+    }
+
+    cut = sp_obj * (cut - num_lbs - num_edges_constraints - 1);
+
+    for &t in &self.second_last_tasks {
+      for a in cb.sets.avs() {
+        if let Some(&theta) = cb.mp_vars.theta.get(&(a, t)) {
+          cut += -1 * theta;
+        }
+      }
+    }
+
+    cb.enqueue_cut(c!(cut <= 0), CutType::LpOpt);
     Ok(())
   }
 }
