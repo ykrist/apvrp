@@ -9,14 +9,15 @@ use crate::utils::iter_pairs;
 use tracing::*;
 use std::env::var;
 
-struct GraphModel {
+struct GraphModel<'a> {
+  lu: &'a Lookups,
   vars: Map<Task, Var>,
   var_to_task: Map<Var, PvTask>,
   edges: Map<(Var, Var), (Task, Task)>,
   model: Graph<AdjacencyList<ArrayVec<2>>>,
 }
 
-impl<'a> Subproblem<'a> for GraphModel {
+impl<'a> Subproblem<'a> for GraphModel<'a> {
   // Additional information obtained when solving the subproblem to optimality
   type Optimal = ();
   // Additional information obtained when proving the subproblem to be infeasible
@@ -86,6 +87,7 @@ impl<'a> Subproblem<'a> for GraphModel {
       }
     }
     Ok(GraphModel {
+      lu,
       vars,
       var_to_task,
       edges: constraints,
@@ -109,21 +111,26 @@ impl<'a> Subproblem<'a> for GraphModel {
         let (lb_var, ub_var) = iis.bounds().unwrap();
         let lb_pt = self.var_to_task[&lb_var];
         let ub_pt = self.var_to_task[&ub_var];
+        let path = iis.iter_edge_vars()
+          .map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]])
+          .collect();
 
         Iis::Path {
           ub: ub_pt,
           lb: lb_pt,
-          path: todo!(),
+          path,
         }
       },
 
       InfKind::Cycle => {
-        Iis::Cycle(todo!())
+        let cycle = iis.iter_edge_vars()
+          .map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]])
+          .collect();
+        Iis::Cycle(cycle)
       },
     };
 
     Ok(std::iter::once(iis))
-    // todo!()
   }
 
   // Find and remove one or more MRS when optimal

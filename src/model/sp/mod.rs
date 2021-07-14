@@ -17,7 +17,7 @@ pub enum Iis {
     ub: PvTask,
     path: SmallVec<[Task; 10]>,
   },
-  /// Tasks should be ordered according to the cycle
+  /// Tasks should be ordered according to the cycle.  First task should NOT be the same as the last task.
   Cycle(SmallVec<[Task; 10]>),
 }
 
