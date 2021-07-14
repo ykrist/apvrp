@@ -2,6 +2,7 @@ use daggylp::{Var, Graph, SolveStatus};
 
 use crate::*;
 use crate::model::sp::{Iis, Subproblem, SpStatus};
+use crate::solution::Solution;
 use crate::model::cb;
 
 struct GraphModel {
@@ -10,13 +11,19 @@ struct GraphModel {
   model: Graph,
 }
 
-impl Subproblem for GraphModel {
+impl<'a> Subproblem<'a> for GraphModel {
   // Additional information obtained when solving the subproblem to optimality
   type OptInfo = ();
   // Additional information obtained when proving the subproblem to be infeasible
   type InfInfo = ();
   // A group of constraint sets representing one or more IIS
   type IisConstraintSets = std::iter::Once<Iis>;
+
+  fn build(data: &'a Data, tasks: &'a Tasks, sol: &'a Solution) -> Result<Self> {
+
+
+    todo!()
+  }
 
   // Solve the subproblem and return status
   fn solve(&mut self) -> Result<SpStatus<Self::OptInfo, Self::InfInfo>> {

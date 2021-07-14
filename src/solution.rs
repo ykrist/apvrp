@@ -1,5 +1,5 @@
 use crate::*;
-use crate::model::sp::lp::TimingSubproblem;
+use crate::model::sp::{lp::TimingSubproblem, Subproblem};
 use serde::{Serialize, Deserialize};
 use std::fs::read_to_string;
 use std::path::Path;
@@ -305,7 +305,7 @@ impl Solution {
   }
 
   pub fn solve_for_times(&self, env: &grb::Env, data: &Data, tasks: &Tasks) -> Result<SpSolution> {
-    let mut sp = TimingSubproblem::build(env, data, tasks, self)?;
+    let mut sp = TimingSubproblem::build(data, tasks, self)?;
     sp.model.optimize()?;
     use grb::Status::*;
     match sp.model.status()? {

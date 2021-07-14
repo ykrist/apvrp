@@ -1,4 +1,5 @@
 use crate::*;
+use crate::solution::Solution;
 use super::{cb, cb::CutType};
 use smallvec::SmallVec;
 use grb::constr::IneqExpr;
@@ -30,7 +31,7 @@ impl<O, I> SpStatus<O, I> {
   }
 }
 
-pub trait Subproblem : Sized {
+pub trait Subproblem<'a> : Sized {
   // Additional information obtained when solving the subproblem to optimality
   type OptInfo;
   // Additional information obtained when proving the subproblem to be infeasible
@@ -38,7 +39,7 @@ pub trait Subproblem : Sized {
   // A group of constraint sets representing one or more IIS
   type IisConstraintSets: IntoIterator<Item=Iis>;
 
-  fn build() -> Self;
+  fn build(data: &'a Data, tasks: &'a Tasks, sol: &'a Solution) -> Result<Self>;
 
   // Solve the subproblem and return status
   fn solve(&mut self) -> Result<SpStatus<Self::OptInfo, Self::InfInfo>>;
@@ -46,6 +47,28 @@ pub trait Subproblem : Sized {
   fn extract_and_remove_iis(&mut self, i: Self::InfInfo) -> Result<Self::IisConstraintSets>;
   // Find and remove one or more MRS when optimal
   fn add_optimality_cuts(&self, cb: &mut cb::Cb, o: Self::OptInfo) -> Result<()>;
+
+  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>) -> Result<()> {
+    loop {
+      match self.solve()? {
+        SpStatus::Optimal(sp_obj, o) => {
+          self.add_optimality_cuts(cb, o)?;
+          break;
+        }
+        SpStatus::Infeasible(i) => {
+          for iis in self.extract_and_remove_iis(i)?.into_iter() {
+            let cut = match iis {
+              Iis::Path{ lb, ub, path} =>
+                build_path_infeasiblity_cut(cb, lb, ub, &path),
+              Iis::Cycle(cycle) => build_cyclic_infeasiblity_cut(cb, &cycle),
+            };
+            cb.enqueue_cut(cut, CutType::LpFeas); // FIXME cuttype should be changed
+          }
+        }
+      }
+    }
+    Ok(())
+  }
 }
 
 pub fn build_path_infeasiblity_cut(cb: &cb::Cb, lb_task: PvTask, ub_task: PvTask, path: &[Task]) -> IneqExpr {
@@ -74,26 +97,3 @@ pub fn build_cyclic_infeasiblity_cut(cb: &cb::Cb, cycle: &[Task]) -> IneqExpr {
 // c!( sp_obj*(mrs_sum - k + 1) <= theta_sum)
 // todo!()
 // }
-
-
-pub fn solve_subproblem_and_add_cuts<S: Subproblem>(solver: &mut S, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>) -> Result<()> {
-  loop {
-    match solver.solve()? {
-      SpStatus::Optimal(sp_obj, o) => {
-        solver.add_optimality_cuts(cb, o)?;
-        break;
-      }
-      SpStatus::Infeasible(i) => {
-        for iis in solver.extract_and_remove_iis(i)?.into_iter() {
-          let cut = match iis {
-            Iis::Path{ lb, ub, path} =>
-              build_path_infeasiblity_cut(cb, lb, ub, &path),
-            Iis::Cycle(cycle) => build_cyclic_infeasiblity_cut(cb, &cycle),
-          };
-          cb.enqueue_cut(cut, CutType::LpFeas); // FIXME cuttype should be changed
-        }
-      }
-    }
-  }
-  Ok(())
-}
