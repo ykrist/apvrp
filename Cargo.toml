@@ -26,7 +26,8 @@ regex = "^1.5.4"
 clap = "^2.33.3"
 lazy_static = "1.4.0"
 dot = "0.1.4"
-daggylp = { path = "./daggylp" }
+daggylp = { path = "./daggylp", features = ["arrayvec"] }
+arrayvec = "0.7.1"
 
 [[bin]]
 name = "apvrp"

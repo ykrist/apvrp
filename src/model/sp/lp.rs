@@ -282,8 +282,8 @@ impl<'a> TimingSubproblem<'a> {
 }
 
 impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
-  type OptInfo = ();
-  type InfInfo = ();
+  type Optimal = ();
+  type Infeasible = ();
   type IisConstraintSets = std::iter::Once<Iis>;
 
   fn build(lu: &'a Lookups, sol: &'a Solution) -> Result<TimingSubproblem<'a>> {

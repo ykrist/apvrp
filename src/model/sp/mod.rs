@@ -3,6 +3,8 @@ use crate::solution::Solution;
 use super::{cb, cb::CutType};
 use smallvec::SmallVec;
 use grb::constr::IneqExpr;
+use crate::model::sp::XEdgeConstraint::Loading;
+use crate::utils::iter_pairs;
 
 pub mod lp;
 pub mod dag;
@@ -13,14 +15,14 @@ pub enum Iis {
   Path {
     lb: PvTask,
     ub: PvTask,
-    path: SmallVec <[Task; 10]>
+    path: SmallVec<[Task; 10]>,
   },
   /// Tasks should be ordered according to the cycle
   Cycle(SmallVec<[Task; 10]>),
 }
 
 #[derive(Debug)]
-pub enum SpStatus<O,I> {
+pub enum SpStatus<O, I> {
   Optimal(Time, O),
   Infeasible(I),
 }
@@ -31,22 +33,22 @@ impl<O, I> SpStatus<O, I> {
   }
 }
 
-pub trait Subproblem<'a> : Sized {
+pub trait Subproblem<'a>: Sized {
   // Additional information obtained when solving the subproblem to optimality
-  type OptInfo;
+  type Optimal;
   // Additional information obtained when proving the subproblem to be infeasible
-  type InfInfo;
+  type Infeasible;
   // A group of constraint sets representing one or more IIS
   type IisConstraintSets: IntoIterator<Item=Iis>;
 
   fn build(lu: &'a Lookups, sol: &'a Solution) -> Result<Self>;
 
   // Solve the subproblem and return status
-  fn solve(&mut self) -> Result<SpStatus<Self::OptInfo, Self::InfInfo>>;
+  fn solve(&mut self) -> Result<SpStatus<Self::Optimal, Self::Infeasible>>;
   // Find and remove one or more IIS when infeasible
-  fn extract_and_remove_iis(&mut self, i: Self::InfInfo) -> Result<Self::IisConstraintSets>;
+  fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Self::IisConstraintSets>;
   // Find and remove one or more MRS when optimal
-  fn add_optimality_cuts(&self, cb: &mut cb::Cb, o: Self::OptInfo) -> Result<()>;
+  fn add_optimality_cuts(&self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()>;
 
   fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>) -> Result<()> {
     loop {
@@ -58,7 +60,7 @@ pub trait Subproblem<'a> : Sized {
         SpStatus::Infeasible(i) => {
           for iis in self.extract_and_remove_iis(i)?.into_iter() {
             let cut = match iis {
-              Iis::Path{ lb, ub, path} =>
+              Iis::Path { lb, ub, path } =>
                 build_path_infeasiblity_cut(cb, lb, ub, &path),
               Iis::Cycle(cycle) => build_cyclic_infeasiblity_cut(cb, &cycle),
             };
@@ -97,3 +99,23 @@ pub fn build_cyclic_infeasiblity_cut(cb: &cb::Cb, cycle: &[Task]) -> IneqExpr {
 // c!( sp_obj*(mrs_sum - k + 1) <= theta_sum)
 // todo!()
 // }
+
+#[derive(Copy, Clone, Debug)]
+enum XEdgeConstraint<'a> {
+  Loading(&'a PvTask, &'a PvTask),
+  Unloading(&'a PvTask, &'a PvTask),
+}
+
+fn iter_edge_constraints<'a>(pv_route: &'a [PvTask]) -> impl Iterator<Item=XEdgeConstraint<'a>> + 'a {
+  iter_pairs(pv_route).filter_map(|(t1, t2)| {
+    if matches!(&t2.ty, TaskType::Request) {
+      debug_assert_matches!(&t1.ty, TaskType::Start | TaskType::Transfer);
+      Some(XEdgeConstraint::Loading(t1, t2))
+    } else if matches!(&t1.ty, TaskType::Request) {
+      debug_assert_matches!(&t2.ty, TaskType::End | TaskType::Transfer);
+      Some(XEdgeConstraint::Unloading(t1, t2))
+    } else {
+      None
+    }
+  })
+}

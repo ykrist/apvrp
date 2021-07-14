@@ -53,6 +53,20 @@ pub trait PermuteSliceClone {
   fn permute(&self) -> Permutator<Self::Item>;
 }
 
+/// # Safety:
+/// Slice must have a length of 2
+unsafe fn map_window2<T>(window: &[T]) -> (&T, &T) {
+  (window.get_unchecked(0), window.get_unchecked(1))
+}
+
+pub fn iter_pairs<'a, T>(slice: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> {
+  slice.windows(2)
+    .map(|pair| (
+        unsafe { pair.get_unchecked(0) },
+        unsafe { pair.get_unchecked(1) },
+      ))
+}
+
 impl<T: Clone + Debug> PermuteSliceClone for &[T] {
   type Item = T;
   fn permute(&self) -> Permutator<Self::Item> {

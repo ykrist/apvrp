@@ -1,5 +1,6 @@
 #![feature(generic_associated_types)]
 #![feature(fn_traits)]
+#![feature(assert_matches)]
 #![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(unused_imports)]

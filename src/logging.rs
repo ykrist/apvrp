@@ -4,6 +4,7 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use tracing::{info, warn};
 use std::env;
+use std::fmt::Debug;
 
 fn build_and_set_global_subscriber(logfile: Option<impl AsRef<Path>>, logfilter_file: Option<impl AsRef<Path>>, is_test: bool) -> Option<WorkerGuard>
 {
@@ -90,4 +91,12 @@ pub(crate) fn init_test_logging(logfile: Option<impl AsRef<Path>>) -> Option<Wor
   return build_and_set_global_subscriber(logfile, None::<&str>, true);
 }
 
+#[derive(Copy, Clone)]
+pub struct ConciseDebug<'a, T: ?Sized>(&'a T);
+
+pub trait TracingDebugExt {
+  fn concise_debug<'a>(&'a self) -> ConciseDebug<'a, Self> {
+    ConciseDebug(self)
+  }
+}
 
