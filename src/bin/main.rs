@@ -1,7 +1,6 @@
 use anyhow::Result;
 use instances::dataset::Dataset;
 use tracing::{info, error};
-use instances::dataset::apvrp::LocSetStarts;
 use grb::prelude::*;
 use slurm_harray::{Experiment, handle_slurm_args};
 
@@ -105,8 +104,9 @@ fn main() -> Result<()> {
   let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
 
   info!(num_tasks = tasks.all.len(), "task generation finished");
+  let lookups = Lookups { data, sets, tasks };
 
-  let mut mp = model::mp::TaskModelMaster::build(&data, &sets, &tasks, ObjWeights::default())?;
+  let mut mp = model::mp::TaskModelMaster::build(&lookups, ObjWeights::default())?;
   mp.model.update()?;
 
   // let true_soln = solution::load_michael_soln(
@@ -130,7 +130,7 @@ fn main() -> Result<()> {
   mp.model.set_obj_attr_batch(attr::Sense, mp.cons.num_av.values().map(|&c| (c, ConstrSense::Equal)))?;
   mp.model.update()?;
 
-  let mut callback = model::cb::Cb::new(&data, &exp, &sets, &tasks, &mp)?;
+  let mut callback = model::cb::Cb::new(&lookups, &exp, &mp)?;
 
   match mp.model.optimize_with_callback(&mut callback) {
     Err(e) => {
@@ -163,8 +163,8 @@ fn main() -> Result<()> {
 
   let sol = solution::Solution::from_mp(&mp)?;
 
-  let sol = sol.solve_for_times(callback.sp_env(), &data, &tasks)?;
-  sol.pretty_print(&data);
+  let sol = sol.solve_for_times(&lookups)?;
+  sol.pretty_print(&lookups);
 
 
   for (cut_ty, num) in callback.stats.get_cut_counts() {

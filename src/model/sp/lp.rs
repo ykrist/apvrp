@@ -36,7 +36,7 @@ pub struct TimingConstraints {
 }
 
 impl TimingConstraints {
-  pub fn build(data: &Data, tasks: &Tasks, sol: &Solution, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
+  pub fn build(lu: &Lookups, sol: &Solution, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
     // TODO: we don't actually need the routes here, can just use var values
     let _span = error_span!("sp_cons").entered();
 
@@ -54,20 +54,20 @@ impl TimingConstraints {
     for (_, pv_route) in &sol.pv_routes {
       let mut pv_route = pv_route.iter();
       let mut pt1 = *pv_route.next().unwrap();
-      let mut t1 = tasks.pvtask_to_task[&pt1];
+      let mut t1 = lu.tasks.pvtask_to_task[&pt1];
       add_bounds(pt1, t1, model)?;
 
       for &pt2 in pv_route {
-        let t2 = tasks.pvtask_to_task[&pt1];
+        let t2 = lu.tasks.pvtask_to_task[&pt1];
         debug_assert_ne!((pt1.ty, pt2.ty), (TaskType::Request, TaskType::Request));
 
         if pt2.ty == TaskType::Request {
           // Constraints (3c) (loading time)
-          let c = c!(vars[&t1] + t1.tt + data.srv_time[&t1.end] <= vars[&t2]);
+          let c = c!(vars[&t1] + t1.tt + lu.data.srv_time[&t1.end] <= vars[&t2]);
           edge_constraints.insert((t1, t2), model.add_constr("", c)?);
         } else if pt1.ty == TaskType::Request {
           // Constraints (3d) (unloading time)
-          let c = c!(vars[&t1] + t1.tt + data.srv_time[&t1.end] <= vars[&t2]);
+          let c = c!(vars[&t1] + t1.tt + lu.data.srv_time[&t1.end] <= vars[&t2]);
           edge_constraints.insert((t1, t2), model.add_constr("", c)?);
         }
         add_bounds(pt2, t2, model)?;
@@ -79,12 +79,12 @@ impl TimingConstraints {
     // Constraints (3b)
     for (_, route) in &sol.av_routes {
       for (&t1, &t2) in route.iter().tuple_windows() {
-        if t1 != tasks.odepot && t2 != tasks.ddepot {
+        if t1 != lu.tasks.odepot && t2 != lu.tasks.ddepot {
           if edge_constraints.contains_key(&(t1, t2)) {
             trace!(?t1, ?t2, "AV TT constraint dominated by loading/unloading constraint")
           } else {
             trace!(?t1, ?t2, "av_sync");
-            let c = c!(vars[&t1] + t1.tt + data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
+            let c = c!(vars[&t1] + t1.tt + lu.data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
             edge_constraints.insert((t1, t2), model.add_constr("", c)?);
           }
         }
@@ -102,8 +102,7 @@ pub struct TimingSubproblem<'a> {
   pub cons: TimingConstraints,
   pub model: Model,
   pub mp_sol: &'a Solution,
-  pub data: &'a Data,
-  pub tasks: &'a Tasks,
+  pub lu: &'a Lookups,
 }
 
 impl<'a> TimingSubproblem<'a> {
@@ -287,7 +286,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
   type InfInfo = ();
   type IisConstraintSets = std::iter::Once<Iis>;
 
-  fn build(data: &'a Data, tasks: &'a Tasks, sol: &'a Solution) -> Result<TimingSubproblem<'a>> {
+  fn build(lu: &'a Lookups, sol: &'a Solution) -> Result<TimingSubproblem<'a>> {
     let _span = error_span!("sp_build").entered();
 
     let mut model = ENV.with(|env| Model::with_env("subproblem", env))?;
@@ -295,7 +294,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
       let mut v = map_with_capacity(sol.pv_routes.iter().map(|(_, tasks)| tasks.len()).sum());
       for (_, pv_route) in &sol.pv_routes {
         for t in pv_route {
-          let t = tasks.pvtask_to_task[t];
+          let t = lu.tasks.pvtask_to_task[t];
           #[cfg(debug_assertions)]
             v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
           #[cfg(not(debug_assertions))]
@@ -305,7 +304,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
       v
     };
 
-    let cons = TimingConstraints::build(data, tasks, sol, &mut model, &vars)?;
+    let cons = TimingConstraints::build(lu, sol, &mut model, &vars)?;
 
     let mut second_last_tasks = SmallVec::new();
 
@@ -321,7 +320,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     trace!(obj=?obj.with_names(&model));
     model.set_objective(obj, Minimize)?;
 
-    Ok(TimingSubproblem { vars, cons, model, mp_sol: sol, data, second_last_tasks, tasks })
+    Ok(TimingSubproblem { vars, cons, model, mp_sol: sol, second_last_tasks, lu })
   }
 
   fn solve(&mut self) -> Result<SpStatus<(), ()>> {
@@ -388,14 +387,14 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
       // Path IIS
       let mut path = SmallVec::with_capacity(iis_succ.len() + 1);
 
-      let mut t = self.tasks.pvtask_to_task[&lb_task];
+      let mut t = self.lu.tasks.pvtask_to_task[&lb_task];
       path.push(t);
 
       while iis_succ.len() > 0 {
         t = iis_succ.remove(&t).expect("bad IIS path");
         path.push(t);
       }
-      debug_assert_eq!(path.last(), self.tasks.pvtask_to_task.get(&ub_task));
+      debug_assert_eq!(path.last(), self.lu.tasks.pvtask_to_task.get(&ub_task));
 
       Iis::Path { ub: ub_task, lb: lb_task, path }
     } else {
@@ -424,7 +423,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
       if dual.abs() > 0.1 {
         num_edges_constraints += 1;
         trace!(?t1, ?t2, ?dual, "non-zero edge dual");
-        for var in cb.mp_vars.max_weight_edge_sum(cb.sets, cb.tasks, *t1, *t2) {
+        for var in cb.mp_vars.max_weight_edge_sum(self.lu, *t1, *t2) {
           cut += var;
         }
       }
@@ -436,7 +435,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
       if dual.abs() > 0.1 {
         num_lbs += 1;
         trace!(?t, ?dual, "non-zero LB dual");
-        for t in &cb.tasks.pvtask_to_similar_pvtask[t] {
+        for t in &self.lu.tasks.pvtask_to_similar_pvtask[t] {
           cut += cb.mp_vars.x[t];
         }
       }
@@ -452,7 +451,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     cut = sp_obj * (cut - num_lbs - num_edges_constraints - 1);
 
     for &t in &self.second_last_tasks {
-      for a in cb.sets.avs() {
+      for a in self.lu.sets.avs() {
         if let Some(&theta) = cb.mp_vars.theta.get(&(a, t)) {
           cut += -1 * theta;
         }

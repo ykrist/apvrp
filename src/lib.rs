@@ -33,6 +33,7 @@ pub fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
 /// Active Vehicle Group.
 pub type Avg = Av;
 
+#[derive(Debug, Clone)]
 pub struct Data {
   pub id: String,
   pub n_req: RawLoc,
@@ -165,6 +166,34 @@ impl Loc {
 
 }
 
+#[derive(Debug, Clone)]
+pub struct Lookups {
+  pub data: Data,
+  pub sets: Sets,
+  pub tasks: Tasks,
+}
+
+impl AsRef<Data> for Lookups {
+  fn as_ref(&self) -> &Data {
+    &self.data
+  }
+}
+
+impl AsRef<Sets> for Lookups {
+  fn as_ref(&self) -> &Sets {
+    &self.sets
+  }
+}
+
+impl AsRef<Tasks> for Lookups {
+  fn as_ref(&self) -> &Tasks {
+    &self.tasks
+  }
+}
+
+impl AsRef<Data> for Data {
+  fn as_ref(&self) -> &Data { self }
+}
 
 mod sets;
 pub use sets::Sets;

@@ -39,7 +39,7 @@ pub trait Subproblem<'a> : Sized {
   // A group of constraint sets representing one or more IIS
   type IisConstraintSets: IntoIterator<Item=Iis>;
 
-  fn build(data: &'a Data, tasks: &'a Tasks, sol: &'a Solution) -> Result<Self>;
+  fn build(lu: &'a Lookups, sol: &'a Solution) -> Result<Self>;
 
   // Solve the subproblem and return status
   fn solve(&mut self) -> Result<SpStatus<Self::OptInfo, Self::InfInfo>>;

@@ -304,8 +304,8 @@ impl Solution {
     Ok(Solution { objective: Some(objective), av_routes, pv_routes })
   }
 
-  pub fn solve_for_times(&self, env: &grb::Env, data: &Data, tasks: &Tasks) -> Result<SpSolution> {
-    let mut sp = TimingSubproblem::build(data, tasks, self)?;
+  pub fn solve_for_times(&self, lu: &Lookups) -> Result<SpSolution> {
+    let mut sp = TimingSubproblem::build(lu, self)?;
     sp.model.optimize()?;
     use grb::Status::*;
     match sp.model.status()? {
@@ -337,7 +337,7 @@ impl SpSolution {
         let (second_last_task, t) = sched.last().unwrap().clone();
         let ddepot_task = route.last().unwrap().clone();
         debug_assert_eq!(ddepot_task.ty, TaskType::DDepot);
-        sched.push((ddepot_task, t + second_last_task.tt + sp.data.travel_time[&(second_last_task.end, ddepot_task.start)]));
+        sched.push((ddepot_task, t + second_last_task.tt + sp.lu.data.travel_time[&(second_last_task.end, ddepot_task.start)]));
         (*av, sched)
       })
       .collect();
@@ -347,7 +347,7 @@ impl SpSolution {
     let mut pvr: Vec<_> = sp.mp_sol.pv_routes.iter()
       .map(|(pv, route)| {
         let sched = route.iter()
-          .map(|t| (*t, task_start_times[&sp.tasks.pvtask_to_task[t]])).collect();
+          .map(|t| (*t, task_start_times[&sp.lu.tasks.pvtask_to_task[t]])).collect();
         (*pv, sched)
       })
       .collect();
@@ -357,7 +357,8 @@ impl SpSolution {
     Ok(SpSolution { av_routes: avr, pv_routes: pvr })
   }
 
-  pub fn pretty_print(&self, data: &Data) {
+  pub fn pretty_print(&self, data: impl AsRef<Data>) {
+    let data = data.as_ref();
     use prettytable::*;
 
     for (av, route) in &self.av_routes {

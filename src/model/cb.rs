@@ -134,9 +134,7 @@ impl Phase {
 }
 
 pub struct Cb<'a> {
-  pub data: &'a Data,
-  pub sets: &'a Sets,
-  pub tasks: &'a Tasks,
+  pub lu: &'a Lookups,
   pub params: &'a Params,
   pub var_names: Map<Var, String>,
   pub mp_vars: super::mp::MpVars,
@@ -156,7 +154,7 @@ pub struct Cb<'a> {
 impl<'a> Cb<'a> {
   pub fn sp_env(&self) -> &Env { &self.sp_env }
 
-  pub fn new(data: &'a Data, exp: &'a experiment::ApvrpExp, sets: &'a Sets, tasks: &'a Tasks, mp: &super::mp::TaskModelMaster) -> Result<Self> {
+  pub fn new(lu: &'a Lookups, exp: &'a experiment::ApvrpExp, mp: &super::mp::TaskModelMaster) -> Result<Self> {
     let stats = CbStats::default();
     let var_names: Map<_, _> = {
       let vars = mp.model.get_vars()?;
@@ -183,9 +181,7 @@ impl<'a> Cb<'a> {
     } else { None };
 
     Ok(Cb {
-      data,
-      sets,
-      tasks,
+      lu,
       mp_vars: mp.vars.clone(),
       stats,
       cut_cache: Vec::new(),
@@ -245,7 +241,7 @@ impl<'a> Cb<'a> {
     let ysum = cycle_tasks.iter()
       .cartesian_product(cycle_tasks.iter())
       .flat_map(|(&t1, &t2)|
-        self.mp_vars.max_weight_edge_sum(self.sets, self.tasks, t1, t2)
+        self.mp_vars.max_weight_edge_sum(self.lu, t1, t2)
       )
       .grb_sum();
 
@@ -394,7 +390,7 @@ impl<'a> Cb<'a> {
     for l in 3..=chain.len() {
       for start_pos in 0..(chain.len() - l) {
         let c = &chain[start_pos..(start_pos + l)];
-        if !schedule::check_av_route(self.data, c) {
+        if !schedule::check_av_route(self.lu, c) {
           return c;
         }
       }
@@ -408,7 +404,7 @@ impl<'a> Cb<'a> {
     for l in 3..=chain.len() {
       for start_pos in 0..(chain.len() - l) {
         let c = &chain[start_pos..(start_pos + l)];
-        if !schedule::check_pv_route(self.data, c) {
+        if !schedule::check_pv_route(self.lu, c) {
           return c;
         }
       }
@@ -435,7 +431,7 @@ impl<'a> Cb<'a> {
     for l in 3..=(cycle.len() - 1) {
       for start_pos in 0..(cycle.len() - 1) {
         let c = &cycle_rep[start_pos..(start_pos + l)];
-        if !schedule::check_av_route(self.data, c) {
+        if !schedule::check_av_route(self.lu, c) {
           return Some(c.to_vec());
         }
       }
@@ -466,7 +462,7 @@ impl<'a> Cb<'a> {
   #[tracing::instrument(level = "trace", skip(self))]
   fn pv_chain_infork_cut(&mut self, chain: &[PvTask]) {
     let chain = &chain[1..];
-    let rhs_sum = chain.legal_before(self.data, self.tasks)
+    let rhs_sum = chain.legal_before(self.lu)
       .map(|t| self.mp_vars.x[&t]) // FIXME sum over all p?
       .grb_sum();
 
@@ -481,7 +477,7 @@ impl<'a> Cb<'a> {
   #[tracing::instrument(level = "trace", skip(self))]
   fn pv_chain_outfork_cut(&mut self, chain: &[PvTask]) {
     let chain = &chain[..chain.len() - 1];
-    let rhs_sum = chain.legal_after(self.data, self.tasks)
+    let rhs_sum = chain.legal_after(self.lu)
       .map(|t| self.mp_vars.x[&t])
       .grb_sum();
 
@@ -503,7 +499,7 @@ impl<'a> Cb<'a> {
         self.pv_cycle_cut(&cycle);
       }
 
-      if !schedule::check_pv_route(self.data, &pv_path) {
+      if !schedule::check_pv_route(self.lu, &pv_path) {
         let chain = self.shorten_illegal_pv_chain(&pv_path);
         let n = chain.len() as u32;
         if self.params.pv_fork_cuts_min_chain_len <= n && n <= self.params.pv_fork_cuts_max_chain_len {
@@ -563,11 +559,11 @@ impl<'a> Cb<'a> {
       }
 
       for av_path in av_paths {
-        if !schedule::check_av_route(self.data, &av_path) {
+        if !schedule::check_av_route(self.lu, &av_path) {
           let chain = self.shorten_illegal_av_chain(&av_path);
           self.av_chain_cuts(chain);
         } else if self.params.endtime_cuts {
-          let finish_time = schedule::av_route_finish_time(self.data, &av_path[1..]);
+          let finish_time = schedule::av_route_finish_time(self.lu, &av_path[1..]);
           let n = av_path.len() - 2;
           let theta_val = ctx.get_solution(std::iter::once(self.mp_vars.theta[&(av, av_path[n])]))?[0];
 

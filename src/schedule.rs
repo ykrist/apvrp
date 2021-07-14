@@ -23,7 +23,8 @@ fn av_forward_step(t: &mut Time, data: &Data, t1: &Task, t2: &Task) {
 }
 
 #[tracing::instrument(level="trace", skip(data))]
-pub fn check_pv_route(data: &Data, tasks: &[PvTask]) -> bool {
+pub fn check_pv_route(data: impl AsRef<Data>, tasks: &[PvTask]) -> bool {
+  let data = data.as_ref();
   let mut t = tasks[0].t_release;
   trace!(t);
   for (t1, t2) in tasks.iter().tuple_windows() {
@@ -37,7 +38,8 @@ pub fn check_pv_route(data: &Data, tasks: &[PvTask]) -> bool {
   true
 }
 
-pub fn pv_route(data: &Data, tasks: &[PvTask]) -> Vec<Time> {
+pub fn pv_route(data: impl AsRef<Data>, tasks: &[PvTask]) -> Vec<Time> {
+  let data = data.as_ref();
   let mut t = tasks[0].t_release;
   let mut schedule = Vec::with_capacity(tasks.len());
   schedule.push(tasks[0].t_release);
@@ -50,7 +52,8 @@ pub fn pv_route(data: &Data, tasks: &[PvTask]) -> Vec<Time> {
   schedule
 }
 
-pub fn av_route(data: &Data, tasks: &[Task]) -> Vec<Time> {
+pub fn av_route(data: impl AsRef<Data>, tasks: &[Task]) -> Vec<Time> {
+  let data = data.as_ref();
   let mut t = max(tasks[0].t_release, data.travel_time[&(Loc::Ao, tasks[0].start)]);
 
   let mut schedule = Vec::with_capacity(tasks.len());
@@ -67,7 +70,8 @@ pub fn av_route(data: &Data, tasks: &[Task]) -> Vec<Time> {
 
 /// Computes an underestimate of the earliest time this AV route can be back at the depot.  Expects `tasks[0] != ODp` and that
 /// the last task is `DDp`
-pub fn av_route_finish_time(data: &Data, tasks: &[Task]) -> Time {
+pub fn av_route_finish_time(data: impl AsRef<Data>, tasks: &[Task]) -> Time {
+  let data = data.as_ref();
   debug_assert_eq!(tasks.last().unwrap().ty, TaskType::DDepot);
   debug_assert_ne!(tasks.first().unwrap().ty, TaskType::ODepot);
   let mut t = max(tasks[0].t_release, data.travel_time[&(Loc::Ao, tasks[0].start)]);
@@ -78,7 +82,8 @@ pub fn av_route_finish_time(data: &Data, tasks: &[Task]) -> Time {
 }
 
 #[tracing::instrument(level="trace", skip(data))]
-pub fn check_av_route(data: &Data, tasks: &[Task]) -> bool {
+pub fn check_av_route(data: impl AsRef<Data>, tasks: &[Task]) -> bool {
+  let data = data.as_ref();
   let mut t = tasks[0].t_release;
   for (t1, t2) in tasks.iter().tuple_windows() {
     av_forward_step(&mut t, data, t1, t2);
@@ -93,7 +98,8 @@ pub fn check_av_route(data: &Data, tasks: &[Task]) -> bool {
 
 /// For each Passive Vehicle-Request pair, computes the earliest time we can *leave* the pickup of the request.
 #[tracing::instrument(level = "trace", skip(data))]
-pub fn earliest_departures(data: &Data) -> Map<(Pv, Req), Time> {
+pub fn earliest_departures(data: impl AsRef<Data>) -> Map<(Pv, Req), Time> {
+  let data = data.as_ref();
   data.compat_req_passive.iter()
     .flat_map(|(&r, pvs)| {
       pvs.iter()
@@ -105,7 +111,6 @@ pub fn earliest_departures(data: &Data) -> Map<(Pv, Req), Time> {
             data.start_time[&rp],
             data.travel_time[&(Loc::Ao, po)] + data.travel_time[&(po, rp)] + data.srv_time[&rp],
           );
-
           ((p, r), t)
         })
     })
