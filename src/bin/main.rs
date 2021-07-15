@@ -132,7 +132,8 @@ fn main() -> Result<()> {
 
   let mut callback = model::cb::Cb::new(&lookups, &exp, &mp)?;
 
-  match mp.model.optimize_with_callback(&mut callback) {
+  // match mp.model.optimize_with_callback(&mut callback) {
+  match mp.model.optimize() {
     Err(e) => {
       match callback.error.take() {
         // errors handled
@@ -161,8 +162,16 @@ fn main() -> Result<()> {
     Ok(_) => {}
   };
 
-  let sol = solution::Solution::from_mp(&mp)?;
+  match mp.model.status()? {
+    Status::Infeasible => {
+      infeasibility_analysis(&mut mp)?;
+      anyhow::bail!("bugalug")
+    }
+    Status::Optimal => {},
+    status => anyhow::bail!("unexpected master problem status: {:?}", status)
+  }
 
+  let sol = solution::Solution::from_mp(&mp)?;
   let sol = sol.solve_for_times(&lookups)?;
   sol.pretty_print(&lookups);
 

@@ -144,8 +144,7 @@ impl MpConstraints {
       let mut cmap = map_with_capacity(lu.data.n_req as usize);
       for r in lu.sets.reqs() {
         trace!(r);
-        let xsum = lu.tasks.by_cover[&r].iter()
-          .flat_map(|t| lu.tasks.task_to_pvtasks[t].iter())
+        let xsum = lu.tasks.by_req_cover[&r].iter()
           .map(|t| vars.x[t])
           .grb_sum();
         let c = model.add_constr(&format!("req_cover[{}]", r), c!(xsum + vars.u[&r] == 1))?;

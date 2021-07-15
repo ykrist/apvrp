@@ -311,7 +311,7 @@ pub struct Tasks {
   pub by_start: Map<Loc, Vec<Task>>,
   pub by_end: Map<Loc, Vec<Task>>,
   // pub by_locs: Map<(Loc, Loc), Vec<Task>>,
-  pub by_cover: Map<Req, Vec<Task>>,
+  pub by_req_cover: Map<Req, Vec<PvTask>>,
   // TODO maybe map to PvTasks?
   pub succ: Map<Task, Vec<Task>>,
   pub pred: Map<Task, Vec<Task>>,
@@ -677,22 +677,15 @@ impl Tasks {
 
     let mut by_start: Map<_, Vec<_>> = map_with_capacity(data.n_loc as usize);
     let mut by_end: Map<_, Vec<_>> = map_with_capacity(data.n_loc as usize);
-    let mut by_cover: Map<_, Vec<_>> = map_with_capacity(data.n_req as usize);
+    let mut by_req_cover: Map<_, Vec<_>> = map_with_capacity(data.n_req as usize);
 
     for &t in &all {
       by_end.entry(t.end).or_default().push(t);
       by_start.entry(t.start).or_default().push(t);
+    }
 
-      match t.req_visited() {
-        VistedReq::None => {},
-        VistedReq::One(r) => {
-          by_cover.entry(r).or_default().push(t);
-        }
-        VistedReq::Transfer(r1, r2) => {
-          by_cover.entry(r1).or_default().push(t);
-          by_cover.entry(r2).or_default().push(t);
-        }
-      }
+    for &t in pvtasks.all.iter().filter(|t| t.ty == TaskType::Request) {
+      by_req_cover.entry(t.start.req()).or_default().push(t);
     }
 
     let (mut succ, mut pred) = av_succ_and_pred(&pvtask_to_task, &pvtasks.av_task_conn);
@@ -731,7 +724,7 @@ impl Tasks {
       compat_with_av,
       by_start,
       by_end,
-      by_cover,
+      by_req_cover,
       succ,
       pred,
       pv_succ,
