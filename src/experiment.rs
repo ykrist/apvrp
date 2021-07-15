@@ -3,6 +3,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use anyhow::Result;
 use grb::prelude::*;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
 #[slurm(inputs)]
@@ -17,6 +18,18 @@ impl ExpInputs for Inputs {
 }
 
 
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum SpSolverKind {
+  Dag,
+  Lp
+}
+
+impl_arg_choices! { SpSolverKind;
+  Dag = "dag",
+  Lp = "lp",
+}
+
+
 #[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
 #[slurm(parameters)]
 pub struct Params {
@@ -24,6 +37,8 @@ pub struct Params {
   pub timelimit: u64,
   pub cpus: u32,
   pub param_name: String,
+  #[slurm(help="Subproblem algorithm", default="dag", choices)]
+  pub sp: SpSolverKind,
   pub av_fork_cuts_min_chain_len: u32,
   pub av_fork_cuts_max_chain_len: u32,
   pub av_tournament_cuts_min_chain_len: u32,
@@ -44,6 +59,7 @@ impl std::default::Default for Params {
       timelimit: 7200,
       cpus: 4,
       param_name: String::new(),
+      sp: SpSolverKind::Dag,
       av_fork_cuts_min_chain_len: 0,
       av_fork_cuts_max_chain_len: 4,
       av_tournament_cuts_min_chain_len: 3,
@@ -101,7 +117,6 @@ impl Experiment for ApvrpExp {
   }
 }
 
-
 impl ResourcePolicy for ApvrpExp {
   fn time(&self) -> Duration { Duration::from_secs(self.parameters.timelimit) }
   fn memory(&self) -> MemoryAmount { MemoryAmount::from_gb(4) }
@@ -116,7 +131,8 @@ pub struct GurobiInfo {
 
 impl GurobiInfo {
   pub fn new(model: &grb::Model) -> Result<Self> {
-    let fingerprint = unsafe{ std::mem::transmute(model.get_attr(attr::Fingerprint)?) }; // don't care about the value, only the bit-pattern
+    // don't care about the value, only the bit-pattern
+    let fingerprint = unsafe{ std::mem::transmute(model.get_attr(attr::Fingerprint)?) };
     Ok(GurobiInfo {
       fingerprint
     })

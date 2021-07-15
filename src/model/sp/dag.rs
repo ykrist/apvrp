@@ -6,8 +6,10 @@ use crate::solution::Solution;
 use crate::model::cb;
 use crate::utils::iter_pairs;
 
+
 use tracing::*;
-use std::env::var;
+use grb::prelude::*;
+use crate::model::cb::CutType;
 
 struct GraphModel<'a> {
   lu: &'a Lookups,
@@ -133,8 +135,37 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
     Ok(std::iter::once(iis))
   }
 
-  // Find and remove one or more MRS when optimal
-  fn add_optimality_cuts(&self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()> {
-    todo!()
+  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()> {
+    for mrs in self.model.compute_mrs() {
+      let (obj, edges) = self.model.edge_sensitivity_analysis(&mrs);
+      let mut cut = cb.mp_vars.x_sum_similar_tasks(self.lu, self.var_to_task[&mrs.root()]).grb_sum() * obj;
+
+      for ((v1, v2), old_obj, new_obj) in edges {
+        let (t1, t2) = self.edges[&(v1, v2)];
+        // summand for (t1, t2)
+        // = (x(t2) - y(t1,t2))*new_obj - (1 - y(t1, t2))*old_obj
+        // = x(t2)*new_obj  + y(t1, t2)*(old_obj - new_obj) - old_obj
+        for xvar in cb.mp_vars.x_sum_similar_tasks(self.lu, self.var_to_task[&v2]) {
+          cut += xvar * new_obj;
+        }
+
+        for var in cb.mp_vars.max_weight_edge_sum(self.lu, t1, t2) {
+          cut += (old_obj - new_obj) * var;
+        }
+
+        cut += -old_obj;
+      }
+
+      for t in mrs.obj_vars().map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]]) {
+        for a in self.lu.sets.avs() {
+          if let Some(&theta) = cb.mp_vars.theta.get(&(a, t)) {
+            cut += -1 * theta;
+          }
+        }
+      }
+
+      cb.enqueue_cut(c!(cut <= 0), CutType::LpOpt);
+    }
+    Ok(())
   }
 }

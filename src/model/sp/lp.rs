@@ -413,7 +413,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     Ok(std::iter::once(iis))
   }
 
-  fn add_optimality_cuts(&self, cb: &mut cb::Cb, _: ()) -> Result<()> {
+  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, _: ()) -> Result<()> {
     let sp_obj = self.model.get_attr(attr::ObjVal)?;
     let mut cut = Expr::default();
 

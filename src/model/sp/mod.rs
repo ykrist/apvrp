@@ -48,7 +48,7 @@ pub trait Subproblem<'a>: Sized {
   // Find and remove one or more IIS when infeasible
   fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Self::IisConstraintSets>;
   // Find and remove one or more MRS when optimal
-  fn add_optimality_cuts(&self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()>;
+  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()>;
 
   fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>) -> Result<()> {
     loop {

@@ -81,6 +81,11 @@ impl MpVars {
     }
   }
 
+  pub fn x_sum_similar_tasks<'a>(&'a self, lu: &'a Lookups, t: PvTask) -> impl Iterator<Item=Var> + 'a {
+    lu.tasks.pvtask_to_similar_pvtask[&t].iter()
+      .map(move |t| self.x[t])
+  }
+
   // FIXME: this should go into sp_lp, it is just the no-good cut
   // / Construct a expression of variables which is at most `k` (the other return value),
   // /// If the expression is equal to `k` then the supplied constraints are guaranteed to appear in the subproblem.
