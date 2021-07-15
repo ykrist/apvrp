@@ -17,6 +17,7 @@ mod checks;
 pub mod chain;
 
 mod shorthand;
+
 pub use shorthand::*;
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -153,6 +154,7 @@ macro_rules! impl_task_shared {
       }
 
       impl LocPair for $t {
+        fn ty(&self) -> TaskType { self.ty }
         fn start(&self) -> Loc { self.start }
         fn end(&self) -> Loc { self.end }
       }
@@ -274,9 +276,26 @@ impl Task {
   }
 }
 
+#[derive(Debug)]
+pub enum VistedReq {
+  None,
+  One(Req),
+  Transfer(Req, Req)
+}
+
 pub trait LocPair {
+  fn ty(&self) -> TaskType;
   fn start(&self) -> Loc;
   fn end(&self) -> Loc;
+
+  fn req_visited(&self) -> VistedReq {
+    match self.ty() {
+      TaskType::Direct | TaskType::DDepot | TaskType::ODepot => VistedReq::None,
+      TaskType::Start | TaskType::Request => VistedReq::One(self.start().req()),
+      TaskType::End => VistedReq::One(self.end().req()),
+      TaskType::Transfer => VistedReq::Transfer(self.start().req(), self.end().req())
+    }
+  }
 
 }
 
@@ -287,12 +306,13 @@ pub struct Tasks {
   pub pvtask_to_task: Map<PvTask, Task>,
   pub pvtask_to_similar_pvtask: Map<PvTask, Vec<PvTask>>,
   pub pvtask: Map<(Pv, Task), PvTask>,
-  pub pvs_by_task: Map<Task, Vec<Pv>>,
-  pub compat_with_av: Map<Avg, Set<Task>>,
+  // pub pvs_by_task: Map<Task, Vec<Pv>>,
+  pub compat_with_av: Map<Avg, Vec<Task>>,
   pub by_start: Map<Loc, Vec<Task>>,
   pub by_end: Map<Loc, Vec<Task>>,
-  pub by_locs: Map<(Loc, Loc), Vec<Task>>,
-  pub by_cover: Map<Req, Vec<Task>>, // TODO maybe map to PvTasks?
+  // pub by_locs: Map<(Loc, Loc), Vec<Task>>,
+  pub by_cover: Map<Req, Vec<Task>>,
+  // TODO maybe map to PvTasks?
   pub succ: Map<Task, Vec<Task>>,
   pub pred: Map<Task, Vec<Task>>,
   pub pv_succ: Map<PvTask, Vec<PvTask>>,
@@ -320,28 +340,6 @@ impl PvTasks {
     let _span = error_span!("task_gen").entered();
 
     let mut all = Vec::with_capacity(500); // TODO improve this estimate
-
-    // // trivial tasks: AV origin and destination depots
-    // let odepot = PvTask::new(
-    //   TaskType::ODepot,
-    //   Loc::Ao,
-    //   Loc::Ao,
-    //   None,
-    //   0,
-    //   data.tmax,
-    //   0,
-    // );
-    // let ddepot = PvTask::new(
-    //   TaskType::DDepot,
-    //   Loc::Ad,
-    //   Loc::Ad,
-    //   None,
-    //   0,
-    //   data.tmax,
-    //   0,
-    // );
-    // all.push(odepot);
-    // all.push(ddepot);
 
     // DIRECT tasks: PV origin to PV destination
     for po in sets.pv_origins() {
@@ -520,7 +518,6 @@ fn build_pv_task_connections(data: &Data,
   let mut connections = Vec::with_capacity(all.len());
 
 
-
   for &t1 in all {
     match t1.ty {
       TaskType::ODepot | TaskType::DDepot | TaskType::Direct | TaskType::End => {}
@@ -561,18 +558,177 @@ fn build_pv_task_connections(data: &Data,
   connections
 }
 
+fn aggregate_pvtasks(pvtasks: &[PvTask]) -> Map<Task, Vec<PvTask>> {
+  let mut pvtasks_grouped = map_with_capacity(pvtasks.len());
+  for &pt in pvtasks {
+    pvtasks_grouped.entry((pt.start, pt.end)).or_insert_with(Vec::new).push(pt);
+  }
+
+  pvtasks_grouped.into_values()
+    .map(|group| {
+      debug_assert!(group.len() == 1 || matches!(group[0].ty, TaskType::Transfer | TaskType::Request));
+      let t_release = group.iter().map(|t| t.t_release).min().unwrap();
+      let t_deadline = group.iter().map(|t| t.t_release).max().unwrap();
+
+      let pt = group.first().unwrap();
+
+      let t = Task::new(
+        pt.ty,
+        pt.start,
+        pt.end,
+        t_release,
+        t_deadline,
+        pt.tt,
+      );
+      (t, group)
+    })
+    .collect()
+}
+
+fn aggregate_similar_pvtasks(pvtasks: &[PvTask]) -> Map<PvTask, Vec<PvTask>> {
+  let mut pvtasks_grouped = map_with_capacity(pvtasks.len());
+  for &pt in pvtasks {
+    pvtasks_grouped.entry((pt.start, pt.end, pt.t_deadline, pt.t_release)).or_insert_with(Vec::new).push(pt);
+  }
+  pvtasks_grouped.into_values()
+    .flat_map(|group|
+      group.clone().into_iter().map(move |t| (t, group.clone()))
+    )
+    .collect()
+}
+
+
+fn av_succ_and_pred(pvtask_to_task: &Map<PvTask, Task>, av_conn: &[(PvTask, PvTask)])
+  -> (Map<Task, Vec<Task>>, Map<Task, Vec<Task>>)
+{
+
+  let av_conn: Set<_> = av_conn.iter()
+    .map(|(pt1, pt2)| (pvtask_to_task[pt1], pvtask_to_task[pt2]) )
+    .collect();
+
+  let mut succ : Map<_, Vec<_>> = map_with_capacity(pvtask_to_task.len());
+  let mut pred : Map<_, Vec<_>> = map_with_capacity(pvtask_to_task.len());
+
+  for (t1, t2) in av_conn {
+    succ.entry(t1).or_default().push(t2);
+    pred.entry(t2).or_default().push(t1);
+  }
+
+  (succ, pred)
+}
+
+
 impl Tasks {
   pub fn generate(data: &Data, sets: &Sets, pv_req_t_start: &Map<(Pv, Req), Time>) -> Self {
     let pvtasks = PvTasks::generate(data, sets, pv_req_t_start);
-    Self::build(&pvtasks)
+    Self::build(data, sets, pvtasks)
   }
 
-  fn build(pvtasks: &PvTasks) -> Self {
-    let mut pv_tasks_by_locs: Map<_, Vec<_>> = map_with_capacity(pvtasks.all.len());
-    for t in &pvtasks.all {
-      pv_tasks_by_locs.entry((t.start, t.end)).or_default().push(*t);
+  fn build(data: &Data, sets: &Sets, pvtasks: PvTasks) -> Self {
+    // trivial tasks: AV origin and destination depots
+    let odepot = Task::new(
+      TaskType::ODepot,
+      Loc::Ao,
+      Loc::Ao,
+      0,
+      data.tmax,
+      0,
+    );
+    let ddepot = Task::new(
+      TaskType::DDepot,
+      Loc::Ad,
+      Loc::Ad,
+      0,
+      data.tmax,
+      0,
+    );
+
+    let task_to_pvtasks = aggregate_pvtasks(&pvtasks.all);
+    let pvtask_to_task : Map<_, _> = task_to_pvtasks.iter()
+      .flat_map(|(&t, pts)| pts.iter().map(move |&pt| (pt, t)))
+      .collect();
+    let pvtask : Map<_, _> = pvtask_to_task.iter()
+      .map(|(&pt, &t)| ((pt.p, t), pt))
+      .collect();
+
+    let all: Vec<_> = task_to_pvtasks.keys().chain(&[odepot, ddepot]).copied().collect();
+    let pvtask_to_similar_pvtask = aggregate_similar_pvtasks(&pvtasks.all);
+
+
+    let compat_with_av: Map<_, _> = sets.avs()
+      .map(|av| {
+        let pvs = &data.compat_active_passive[&av];
+        let compat_passive_vehicles : Set<_> = pvs.iter().copied().collect();
+
+        let compat_tasks : Vec<_> = task_to_pvtasks.iter()
+          .filter_map(|(t, pvs)|
+            if pvs.iter().any(|pt| compat_passive_vehicles.contains(&pt.p)) {
+              Some(*t)
+            }  else {
+              None
+            })
+          .collect();
+
+        (av, compat_tasks)
+      })
+      .collect();
+
+    let mut by_start: Map<_, Vec<_>> = map_with_capacity(data.n_loc as usize);
+    let mut by_end: Map<_, Vec<_>> = map_with_capacity(data.n_loc as usize);
+    let mut by_cover: Map<_, Vec<_>> = map_with_capacity(data.n_req as usize);
+
+    for &t in &all {
+      by_end.entry(t.end).or_default().push(t);
+      by_start.entry(t.start).or_default().push(t);
+
+      match t.req_visited() {
+        VistedReq::None => {},
+        VistedReq::One(r) => {
+          by_cover.entry(r).or_default().push(t);
+        }
+        VistedReq::Transfer(r1, r2) => {
+          by_cover.entry(r1).or_default().push(t);
+          by_cover.entry(r2).or_default().push(t);
+        }
+      }
     }
-    todo!()
+
+    let (mut succ, mut pred) = av_succ_and_pred(&pvtask_to_task, &pvtasks.av_task_conn);
+    debug_assert_eq!(all[all.len()-2], odepot);
+    debug_assert_eq!(all[all.len()-1], ddepot);
+    succ.insert(odepot, all[..all.len()-2].to_vec());
+    pred.insert(ddepot, all[..all.len()-2].to_vec());
+
+    let mut pv_succ : Map<_, Vec<_>> = map_with_capacity(pvtasks.all.len());
+    let mut pv_pred : Map<_, Vec<_>> = map_with_capacity(pvtasks.all.len());
+    for &(t1, t2) in &pvtasks.pv_task_conn {
+      pv_succ.entry(t1).or_default().push(t2);
+      pv_pred.entry(t2).or_default().push(t1);
+    }
+
+    let by_shorthand: Map<_, _> = all.iter()
+      .map(|&t| (ShorthandTask::from(t), t))
+      .collect();
+
+    Tasks {
+      all,
+      task_to_pvtasks,
+      pvtask_to_task,
+      pvtask_to_similar_pvtask,
+      pvtask,
+      compat_with_av,
+      by_start,
+      by_end,
+      by_cover,
+      succ,
+      pred,
+      pv_succ,
+      pv_pred,
+      odepot,
+      ddepot,
+      by_shorthand,
+      by_shorthandpv: pvtasks.by_shorthand
+    }
   }
 }
 
