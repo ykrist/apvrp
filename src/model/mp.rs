@@ -51,14 +51,15 @@ impl MpVars {
     }
 
     let mut theta = map_with_capacity(l.data.n_active as usize * l.tasks.all.len());
-    for a in l.sets.avs() {
-      for &t in &l.tasks.compat_with_av[&a] {
-        theta.insert((a, t), add_ctsvar!(model, name: &format!("Theta[{:?}|{}]", &t, a))?);
+    for (&a, av_tasks) in &l.tasks.compat_with_av {
+      for &t in av_tasks {
+        if !t.is_depot() {
+          theta.insert((a, t), add_ctsvar!(model, name: &format!("Theta[{:?}|{}]", &t, a))?);
+        }
       }
     }
 
     let obj = add_ctsvar!(model, name: "Obj", obj: 1)?;
-
     Ok(MpVars { obj, x, y, theta, u })
   }
 

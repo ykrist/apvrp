@@ -9,3 +9,4 @@ routes.json
 *.dot
 **~
 .idea/
+.gdb_history

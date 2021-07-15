@@ -291,8 +291,8 @@ pub trait LocPair {
   fn req_visited(&self) -> VistedReq {
     match self.ty() {
       TaskType::Direct | TaskType::DDepot | TaskType::ODepot => VistedReq::None,
-      TaskType::Start | TaskType::Request => VistedReq::One(self.start().req()),
-      TaskType::End => VistedReq::One(self.end().req()),
+      TaskType::Start | TaskType::Request => VistedReq::One(self.end().req()),
+      TaskType::End => VistedReq::One(self.start().req()),
       TaskType::Transfer => VistedReq::Transfer(self.start().req(), self.end().req())
     }
   }
@@ -643,6 +643,8 @@ impl Tasks {
       0,
     );
 
+    let depots = &[odepot, ddepot];
+
     let task_to_pvtasks = aggregate_pvtasks(&pvtasks.all);
     let pvtask_to_task : Map<_, _> = task_to_pvtasks.iter()
       .flat_map(|(&t, pts)| pts.iter().map(move |&pt| (pt, t)))
@@ -650,10 +652,9 @@ impl Tasks {
     let pvtask : Map<_, _> = pvtask_to_task.iter()
       .map(|(&pt, &t)| ((pt.p, t), pt))
       .collect();
-
-    let all: Vec<_> = task_to_pvtasks.keys().chain(&[odepot, ddepot]).copied().collect();
+    let all: Vec<_> = task_to_pvtasks.keys().chain(depots).copied().collect();
+    let all_non_depot = &all[..all.len()-2];
     let pvtask_to_similar_pvtask = aggregate_similar_pvtasks(&pvtasks.all);
-
 
     let compat_with_av: Map<_, _> = sets.avs()
       .map(|av| {
@@ -667,11 +668,12 @@ impl Tasks {
             }  else {
               None
             })
+          .chain(depots.iter().copied())
           .collect();
-
         (av, compat_tasks)
       })
       .collect();
+
 
     let mut by_start: Map<_, Vec<_>> = map_with_capacity(data.n_loc as usize);
     let mut by_end: Map<_, Vec<_>> = map_with_capacity(data.n_loc as usize);
@@ -696,8 +698,18 @@ impl Tasks {
     let (mut succ, mut pred) = av_succ_and_pred(&pvtask_to_task, &pvtasks.av_task_conn);
     debug_assert_eq!(all[all.len()-2], odepot);
     debug_assert_eq!(all[all.len()-1], ddepot);
-    succ.insert(odepot, all[..all.len()-2].to_vec());
-    pred.insert(ddepot, all[..all.len()-2].to_vec());
+    {
+      for &t in all_non_depot {
+        succ.entry(t).or_default().push(ddepot);
+        pred.entry(t).or_default().push(odepot);
+      }
+
+      succ.insert(odepot, all_non_depot.to_vec());
+      succ.insert(ddepot, Vec::new());
+
+      pred.insert(odepot, Vec::new());
+      pred.insert(ddepot, all_non_depot.to_vec());
+    }
 
     let mut pv_succ : Map<_, Vec<_>> = map_with_capacity(pvtasks.all.len());
     let mut pv_pred : Map<_, Vec<_>> = map_with_capacity(pvtasks.all.len());
