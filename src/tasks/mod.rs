@@ -568,7 +568,7 @@ fn aggregate_pvtasks(pvtasks: &[PvTask]) -> Map<Task, Vec<PvTask>> {
     .map(|group| {
       debug_assert!(group.len() == 1 || matches!(group[0].ty, TaskType::Transfer | TaskType::Request));
       let t_release = group.iter().map(|t| t.t_release).min().unwrap();
-      let t_deadline = group.iter().map(|t| t.t_release).max().unwrap();
+      let t_deadline = group.iter().map(|t| t.t_deadline).max().unwrap();
 
       let pt = group.first().unwrap();
 
