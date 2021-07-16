@@ -4,6 +4,7 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(unused_imports)]
+#![deny(unused_must_use)]
 pub use fnv::{FnvHashMap as Map, FnvHashSet as Set};
 pub use anyhow::Result;
 use itertools::Itertools;

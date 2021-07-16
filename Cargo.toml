@@ -28,7 +28,12 @@ lazy_static = "1.4.0"
 dot = "0.1.4"
 daggylp = { path = "./daggylp", features = ["arrayvec"] }
 arrayvec = "0.7.1"
+structopt = "0.3.22"
 
 [[bin]]
 name = "apvrp"
 path = "src/bin/main.rs"
+
+[[bin]]
+name = "sp-viz"
+path = "src/bin/sp-viz.rs"

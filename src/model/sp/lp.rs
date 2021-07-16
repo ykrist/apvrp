@@ -38,7 +38,7 @@ pub struct TimingConstraints {
 impl TimingConstraints {
   pub fn build(lu: &Lookups, sol: &Solution, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
     // TODO: we don't actually need the routes here, can just use var values
-    let _span = error_span!("sp_cons").entered();
+    let _span = error_span!("constraints").entered();
 
     let mut edge_constraints = map_with_capacity(2 * vars.len());
     let mut lb = map_with_capacity(vars.len());
@@ -58,15 +58,17 @@ impl TimingConstraints {
       add_bounds(pt1, t1, model)?;
 
       for &pt2 in pv_route {
-        let t2 = lu.tasks.pvtask_to_task[&pt1];
+        let t2 = lu.tasks.pvtask_to_task[&pt2];
         debug_assert_ne!((pt1.ty, pt2.ty), (TaskType::Request, TaskType::Request));
 
         if pt2.ty == TaskType::Request {
           // Constraints (3c) (loading time)
+          trace!(?pt1, ?pt2, "loading");
           let c = c!(vars[&t1] + t1.tt + lu.data.srv_time[&t1.end] <= vars[&t2]);
           edge_constraints.insert((t1, t2), model.add_constr("", c)?);
         } else if pt1.ty == TaskType::Request {
           // Constraints (3d) (unloading time)
+          trace!(?pt1, ?pt2, "unloading");
           let c = c!(vars[&t1] + t1.tt + lu.data.srv_time[&t1.end] <= vars[&t2]);
           edge_constraints.insert((t1, t2), model.add_constr("", c)?);
         }
@@ -339,6 +341,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     }
   }
 
+  #[instrument(level="trace", skip(self))]
   fn extract_and_remove_iis(&mut self, _: ()) -> Result<Self::IisConstraintSets> {
     #[cfg(debug_assertions)]
     fn find_iis_bound<'a>(model: &Model, cons: impl IntoIterator<Item=(&'a PvTask, &'a Constr)>) -> Result<Option<PvTask>> {
@@ -376,12 +379,24 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     };
 
     let mut iis_succ = Map::default();
-    for ((t1, t2), c) in &self.cons.edge_constraints {
-      if self.model.get_obj_attr(attr::IISConstr, c)? > 0 {
-        iis_succ.insert(*t1, *t2);
-        self.model.remove(*c)?;
-      }
+
+    { // Split borrows
+      let cons = &mut self.cons.edge_constraints;
+      let model = &mut self.model;
+
+      self.cons.edge_constraints.retain_ok::<_, anyhow::Error>(|(t1, t2), c| {
+        if model.get_obj_attr(attr::IISConstr, c)? > 0 {
+          trace!(?t1, ?t2); // FIXME remove constraint from lookup as well ya dos cunt
+          iis_succ.insert(*t1, *t2);
+          model.remove(*c)?;
+          Ok(false)
+        } else {
+          Ok(true)
+        }
+      })?;
     }
+
+    trace!(?iis_succ);
 
     let iis = if let Some((lb_task, ub_task)) = bounds {
       // Path IIS
@@ -403,6 +418,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
 
       let mut t = *iis_succ.keys().next().expect("IIS has no edge constraints");
       cycle.push(t);
+
       while iis_succ.len() > 1 { // keep last one
         t = iis_succ.remove(&t).expect("bad IIS cycle");
         cycle.push(t);
@@ -415,7 +431,8 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
 
   fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, _: ()) -> Result<()> {
     let sp_obj = self.model.get_attr(attr::ObjVal)?;
-    let mut cut = Expr::default();
+    let _s = trace_span!("optimality_cut", obj=%sp_obj).entered();
+    let mut lhs = Expr::default();
 
     let mut num_edges_constraints = 0;
     for ((t1, t2), c) in &self.cons.edge_constraints {
@@ -424,7 +441,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
         num_edges_constraints += 1;
         trace!(?t1, ?t2, ?dual, "non-zero edge dual");
         for var in cb.mp_vars.max_weight_edge_sum(self.lu, *t1, *t2) {
-          cut += var;
+          lhs += var;
         }
       }
     }
@@ -436,7 +453,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
         num_lbs += 1;
         trace!(?t, ?dual, "non-zero LB dual");
         for t in &self.lu.tasks.pvtask_to_similar_pvtask[t] {
-          cut += cb.mp_vars.x[t];
+          lhs += cb.mp_vars.x[t];
         }
       }
     }
@@ -448,17 +465,15 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
       }
     }
 
-    cut = sp_obj * (cut - num_lbs - num_edges_constraints - 1);
+    trace!(%num_lbs, %num_edges_constraints);
+    lhs = sp_obj * (1 - num_lbs - num_edges_constraints + lhs);
 
-    for &t in &self.second_last_tasks {
-      for a in self.lu.sets.avs() {
-        if let Some(&theta) = cb.mp_vars.theta.get(&(a, t)) {
-          cut += -1 * theta;
-        }
-      }
-    }
+    let rhs = self.lu.sets.avs()
+      .cartesian_product(&self.second_last_tasks)
+      .filter_map(|(a, &t)| cb.mp_vars.theta.get(&(a,t)))
+      .grb_sum();
 
-    cb.enqueue_cut(c!(cut <= 0), CutType::LpOpt);
+    cb.enqueue_cut(c!(lhs <= rhs), CutType::LpOpt);
     Ok(())
   }
 }

@@ -57,6 +57,9 @@ impl std::default::Default for Params {
   fn default() -> Self {
     Params {
       timelimit: 7200,
+      #[cfg(debug_assertions)]
+      cpus: 1,
+      #[cfg(not(debug_assertions))]
       cpus: 4,
       param_name: String::new(),
       sp: SpSolverKind::Lp,

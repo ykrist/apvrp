@@ -37,5 +37,9 @@ dashboard -style discard_scrollback False
 
 #file target/debug/apvrp
 #set env DATA_ROOT = /home/yannik/phd/data
-#set args 0
-run_until_panic
+#set args 0 --cpus 1
+
+b rust_panic
+b callback.rs:221
+run
+uplib

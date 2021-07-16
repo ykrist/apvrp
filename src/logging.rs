@@ -2,7 +2,7 @@ use tracing_subscriber::{EnvFilter, fmt, registry, prelude::*};
 use tracing_appender::{non_blocking, non_blocking::WorkerGuard};
 use std::fs::OpenOptions;
 use std::path::Path;
-use tracing::{info, warn};
+// use tracing::{info, warn};
 use std::env;
 use std::fmt::Debug;
 
@@ -82,6 +82,7 @@ fn build_and_set_global_subscriber(logfile: Option<impl AsRef<Path>>, logfilter_
   return flush_guard;
 }
 
+
 pub fn init_logging(logfile: Option<impl AsRef<Path>>, logfilter_file: Option<impl AsRef<Path>>) -> Option<WorkerGuard> {
   return build_and_set_global_subscriber(logfile, logfilter_file, false);
 }
@@ -100,3 +101,17 @@ pub trait TracingDebugExt {
   }
 }
 
+pub use tracing::{
+  instrument,
+  trace,
+  info,
+  debug,
+  warn,
+  error,
+  trace_span,
+  info_span,
+  debug_span,
+  warn_span,
+  error_span,
+  span::Span,
+};

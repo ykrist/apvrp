@@ -30,9 +30,10 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
   #[tracing::instrument(level="trace", skip(lu, sol))]
   fn build(lu: &'a Lookups, sol: &'a Solution) -> Result<Self> {
     let mut model = Graph::new();
-    let mut vars = map_with_capacity(lu.data.n_req  as usize * 2);
+    let mut vars = map_with_capacity(lu.data.n_req as usize * 2);
     let mut var_to_task = map_with_capacity(lu.data.n_req  as usize * 2);
 
+    vars.insert(lu.tasks.odepot, model.add_var(0, lu.tasks.odepot.t_release as Weight, lu.tasks.odepot.t_deadline as Weight));
     for (_, pv_route) in &sol.pv_routes {
       for &pt in pv_route {
         let t = lu.tasks.pvtask_to_task[&pt];
@@ -75,7 +76,9 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
     }
 
     for (_, av_route) in &sol.av_routes {
-      for (t1, t2) in iter_pairs(av_route) {
+      // last task is ddepot
+      for (t1, t2) in iter_pairs(&av_route[..av_route.len()-1]) {
+        trace!(?t1, ?t2);
         let v1 = vars[&t1];
         let v2 = vars[&t2];
 
@@ -138,6 +141,9 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
   fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()> {
     for mrs in self.model.compute_mrs() {
       let (obj, edges) = self.model.edge_sensitivity_analysis(&mrs);
+
+      // Fixme: need to pass individual thetas in here, and only add the necessary disaggregated cuts
+
       let mut cut = cb.mp_vars.x_sum_similar_tasks(self.lu, self.var_to_task[&mrs.root()]).grb_sum() * obj;
 
       for ((v1, v2), old_obj, new_obj) in edges {

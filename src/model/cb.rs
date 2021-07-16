@@ -5,7 +5,8 @@ use grb::prelude::*;
 use grb::callback::{Callback, Where, CbResult, MIPSolCtx};
 use fnv::FnvHashSet;
 use super::sp::*;
-use tracing::{info, info_span, debug, trace, error_span, warn, error, trace_span};
+#[macro_use]
+use crate::logging::*;
 use std::fmt;
 use grb::constr::IneqExpr;
 use variant_count::VariantCount;
@@ -144,7 +145,6 @@ pub struct Cb<'a> {
   pub cut_cache: Vec<(CutType, usize, IneqExpr)>,
   #[cfg(debug_assertions)]
   av_cycles: HashMap<Vec<Task>, usize>,
-  sp_env: Env,
   #[cfg(debug_assertions)]
   pub var_vals: Map<Var, f64>,
   #[cfg(debug_assertions)]
@@ -153,7 +153,6 @@ pub struct Cb<'a> {
 }
 
 impl<'a> Cb<'a> {
-  pub fn sp_env(&self) -> &Env { &self.sp_env }
 
   pub fn new(lu: &'a Lookups, exp: &'a experiment::ApvrpExp, mp: &super::mp::TaskModelMaster) -> Result<Self> {
     let stats = CbStats::default();
@@ -163,15 +162,6 @@ impl<'a> Cb<'a> {
       vars.iter().copied()
         .zip(names)
         .collect()
-    };
-
-    let sp_env = {
-      let ctx_msg = "create SP environment";
-      let mut e = Env::empty().context(ctx_msg)?;
-      e.set(param::OutputFlag, 0)
-        .and_then(|e| e.set(param::Threads, 1))
-        .context(ctx_msg)?;
-      e.start()?
     };
 
     let sol_log = if exp.parameters.soln_log {
@@ -186,7 +176,6 @@ impl<'a> Cb<'a> {
       mp_vars: mp.vars.clone(),
       stats,
       cut_cache: Vec::new(),
-      sp_env,
       var_names,
       params: &exp.parameters,
       sol_log,
@@ -229,6 +218,7 @@ impl<'a> Cb<'a> {
 
   #[tracing::instrument(level = "trace", skip(self))]
   fn av_cycle_cut(&mut self, cycle: &AvPath) {
+    // TODO: might be able to use the IIS stronger cut?
     #[cfg(debug_assertions)] {
       let mut sorted_cycle = cycle.clone();
       sorted_cycle.sort_by_key(|t| t.id());
@@ -242,7 +232,7 @@ impl<'a> Cb<'a> {
     let ysum = cycle_tasks.iter()
       .cartesian_product(cycle_tasks.iter())
       .flat_map(|(&t1, &t2)|
-        self.mp_vars.max_weight_edge_sum(self.lu, t1, t2)
+        self.mp_vars.y_sum_av(self.lu, t1, t2)
       )
       .grb_sum();
 
@@ -611,7 +601,7 @@ impl<'a> Callback for Cb<'a> {
           if self.cut_cache.len() > initial_cut_cache_len {
             info!(ncuts = self.cut_cache.len() - initial_cut_cache_len, "heuristic cuts added");
           } else {
-            let _span = error_span!("sp").entered();
+            let _span = error_span!("sp", estimate=tracing::field::Empty).entered();
             info!("no heuristic cuts found, solving LP subproblem");
             let sol = Solution{ objective: None, av_routes, pv_routes };
             if let Some(sol_log) = self.sol_log.as_mut() {
@@ -622,12 +612,13 @@ impl<'a> Callback for Cb<'a> {
             let theta: Map<_, _> = get_var_values_mapped(&ctx, &self.mp_vars.theta, |t| t.round() as Time)?.collect();
             trace!(?theta);
             let estimate : Time = theta.values().sum();
+            tracing::span::Span::current().record("estimate", &estimate);
             match self.params.sp {
               SpSolverKind::Dag => {
-                solve_subproblem_and_add_cuts::<dag::GraphModel>(self, &sol, &theta)?;
+                solve_subproblem_and_add_cuts::<dag::GraphModel>(self, &sol, estimate)?;
               },
               SpSolverKind::Lp => {
-                solve_subproblem_and_add_cuts::<lp::TimingSubproblem>(self, &sol, &theta)?;
+                solve_subproblem_and_add_cuts::<lp::TimingSubproblem>(self, &sol, estimate)?;
               }
             }
             //

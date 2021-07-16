@@ -9,6 +9,9 @@ use std::hash::{Hash, BuildHasher};
 use std::cell::{RefCell, Ref};
 use std::rc::Rc;
 use std::path::PathBuf;
+use std::iter::Peekable;
+use std::ops::AddAssign;
+
 
 pub fn iter_cycle<'a, T>(vals: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> + 'a {
   let n = vals.len();
@@ -62,9 +65,9 @@ unsafe fn map_window2<T>(window: &[T]) -> (&T, &T) {
 pub fn iter_pairs<'a, T>(slice: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> {
   slice.windows(2)
     .map(|pair| (
-        unsafe { pair.get_unchecked(0) },
-        unsafe { pair.get_unchecked(1) },
-      ))
+      unsafe { pair.get_unchecked(0) },
+      unsafe { pair.get_unchecked(1) },
+    ))
 }
 
 impl<T: Clone + Debug> PermuteSliceClone for &[T] {
@@ -86,7 +89,7 @@ pub struct Permutator<T> {
 impl<T: Debug> Permutator<T> {
   pub fn new(objects: Vec<T>) -> Permutator<T> {
     let n = objects.len();
-    let c= if n > 1 { vec![0; n-1] } else { vec![] };
+    let c = if n > 1 { vec![0; n - 1] } else { vec![] };
     Permutator { objects: Rc::new(objects), k: n, c, i: 1, perm0: false }
   }
 
@@ -105,23 +108,23 @@ impl<T: Debug + Clone> Iterator for Permutator<T> {
       return Some(self.objects.clone());
     } else {
       if self.i < self.objects.len() {
-        if self.c[self.i-1] < self.i {
+        if self.c[self.i - 1] < self.i {
           let objects = Rc::get_mut(&mut self.objects)
             .expect("refs must be dropped before the next .next() call");
           if self.i % 2 == 0 {
             objects.swap(0, self.i);
           } else {
-            objects.swap(self.c[self.i-1], self.i);
+            objects.swap(self.c[self.i - 1], self.i);
           }
 
-          self.c[self.i-1] += 1;
+          self.c[self.i - 1] += 1;
           self.i = 1;
 
-          return Some(self.objects.clone())
+          return Some(self.objects.clone());
         } else {
-          self.c[self.i-1] = 0;
+          self.c[self.i - 1] = 0;
           self.i += 1;
-          return self.next()
+          return self.next();
         }
       } else {
         None
@@ -131,8 +134,7 @@ impl<T: Debug + Clone> Iterator for Permutator<T> {
 }
 
 pub fn factorial(n: usize) -> usize {
-  if n <= 1 { 1 }
-  else { n*factorial(n-1) }
+  if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
 
 pub trait HashMapExt<K, V> {
@@ -143,9 +145,9 @@ pub trait HashMapExt<K, V> {
 
 
 impl<K, V, S> HashMapExt<K, V> for HashMap<K, V, S>
-where
-  K: Hash + Eq,
-  S: BuildHasher,
+  where
+    K: Hash + Eq,
+    S: BuildHasher,
 {
   fn retain_ok<F, E>(&mut self, mut f: F) -> std::result::Result<(), E>
     where
@@ -171,6 +173,54 @@ where
     ret
   }
 }
+
+pub trait VarIterExt {
+  fn sum_into(self, expr: &mut Expr);
+
+  fn sum_into_count(self, expr: &mut Expr) -> usize;
+}
+
+impl<I, T> VarIterExt for I
+  where
+    I: Iterator<Item=T>,
+    Expr: AddAssign<T>,
+{
+  fn sum_into(self, expr: &mut Expr) {
+    for elem in self {
+      *expr += elem;
+    }
+  }
+
+  fn sum_into_count(self, expr: &mut Expr) -> usize {
+    let mut count = 0;
+    for elem in self {
+      *expr += elem;
+      count += 1;
+    }
+    count
+  }
+}
+
+pub trait PeekableExt: Iterator {
+  fn for_each_except_last<F>(self, f: F) -> Option<Self::Item> where F: FnMut(Self::Item);
+}
+
+impl<I: Iterator> PeekableExt for Peekable<I> {
+  fn for_each_except_last<F>(mut self, mut f: F) -> Option<Self::Item>
+    where
+      F: FnMut(Self::Item)
+  {
+    while let Some(item) = self.next() {
+      if self.peek().is_none() {
+        return Some(item);
+      } else {
+        f(item)
+      }
+    }
+    None
+  }
+}
+
 
 #[cfg(test)]
 pub(crate) fn test_data_file(filename: &str) -> PathBuf {

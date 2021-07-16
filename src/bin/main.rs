@@ -164,6 +164,7 @@ fn main() -> Result<()> {
 
   match mp.model.status()? {
     Status::Infeasible => {
+      callback.flush_cut_cache(&mut mp.model)?;
       infeasibility_analysis(&mut mp)?;
       anyhow::bail!("bugalug")
     }

@@ -1,9 +1,10 @@
 use crate::*;
 use crate::tasks::TaskId;
+use crate::logging::*;
 use grb::prelude::*;
 use fnv::FnvHashSet;
-use tracing::{info, trace, error, debug};
 use crate::solution::Solution;
+use crate::model::EdgeConstrKind;
 
 #[derive(Clone)]
 pub struct MpVars {
@@ -66,6 +67,7 @@ impl MpVars {
 
   /// For task pair `(t1, t2)`, return a sum of variables which is 1 if the `(t1, t2)` edge constraint appears in the
   /// subproblem and 0 otherwise.
+  #[instrument(level="trace", skip(self, lu))]
   pub fn max_weight_edge_sum<'a>(&'a self, lu: &'a Lookups, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {
     use itertools::Either::*;
 
@@ -74,11 +76,14 @@ impl MpVars {
     }
 
     if &t2.ty == &TaskType::Request {
+      trace!(t=?t1, edge_ty=?EdgeConstrKind::Loading, "all PVs for task");
       Left(iter_x_all_pv(lu, &self.x, t1))
     } else if &t1.ty == &TaskType::Request {
+      trace!(t=?t2, edge_ty=?EdgeConstrKind::Unloading, "all PVs for task");
       Left(iter_x_all_pv(lu, &self.x, t2))
     } else {
-      Right(lu.sets.avs().filter_map(move |a| self.y.get(&(a, t1, t2)).copied()))
+      trace!(?t1, ?t2, edge_ty=?EdgeConstrKind::AvTravelTime, "all AVs for edge");
+      Right(self.y_sum_av(lu, t1, t2))
     }
   }
 
@@ -317,11 +322,9 @@ impl TaskModelMaster {
     let cons = MpConstraints::build(lu, &mut model, &vars, &obj_param)?;
 
     // initial Benders Cuts
-    for (&(av, t, td), &y) in vars.y.iter() {
-      if td.ty == TaskType::DDepot {
-        let tt_d = lu.data.travel_time[&(t.end, td.start)];
-        model.add_constr(&format!("initial_bc[{:?}|{}]", &t, av), c!(vars.theta[&(av, t)] >= (t.t_release + t.tt + tt_d)*y ))?;
-      }
+    for (&(av, t), &theta) in vars.theta.iter() {
+      let y =  vars.y[&(av, t, lu.tasks.ddepot)];
+      model.add_constr(&format!("initial_bc[{:?}|{}]", &t, av), c!(theta >= t.t_release * y))?;
     }
 
     Ok(TaskModelMaster { vars, cons, model, obj_param })

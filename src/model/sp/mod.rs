@@ -3,9 +3,11 @@ use crate::solution::Solution;
 use super::{cb, cb::CutType};
 use smallvec::SmallVec;
 use grb::constr::IneqExpr;
-use crate::model::sp::XEdgeConstraint::Loading;
-use crate::utils::iter_pairs;
+use grb::prelude::*;
+use crate::logging::*;
+use crate::model::{EdgeConstrKind, edge_constr_kind};
 
+use crate::utils::{iter_pairs, VarIterExt, PeekableExt};
 pub mod lp;
 pub mod dag;
 
@@ -33,12 +35,14 @@ impl<O, I> SpStatus<O, I> {
   }
 }
 
-pub fn solve_subproblem_and_add_cuts<'a, S: Subproblem<'a>>(cb: &'a mut cb::Cb, sol: &'a Solution, theta: &Map<(Avg, Task), Time>) -> Result<()> {
+pub fn solve_subproblem_and_add_cuts<'a, S: Subproblem<'a>>(cb: &'a mut cb::Cb, sol: &'a Solution, estimate: Time) -> Result<()> {
   let mut subproblem = S::build(cb.lu, sol)?;
   loop {
     match subproblem.solve()? {
       SpStatus::Optimal(sp_obj, o) => {
-        subproblem.add_optimality_cuts(cb, o)?;
+        if estimate < sp_obj {
+          subproblem.add_optimality_cuts(cb, o)?;
+        }
         break;
       }
       SpStatus::Infeasible(i) => {
@@ -74,32 +78,86 @@ pub trait Subproblem<'a>: Sized {
   fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()>;
 }
 
+#[instrument(level="debug", skip(cb))]
 pub fn build_path_infeasiblity_cut(cb: &cb::Cb, lb_task: PvTask, ub_task: PvTask, path: &[Task]) -> IneqExpr {
-  // for (t1, t2) in
-  todo!()
+  let n = path.len() - 1;
+  debug_assert_eq!((lb_task.start, lb_task.end), (path[0].start, path[0].end));
+  debug_assert_eq!((ub_task.start, ub_task.end), (path[n].start, path[n].end));
+  debug_assert!(path.len() > 1);
+
+  let mut lhs = Expr::default();
+  let mut rhs = 0;
+
+  let first_edge = (path[0], path[1]);
+  let last_edge = (path[n-1], path[n]);
+  let mut x_edges = Set::default();
+
+  match edge_constr_kind(&first_edge.0, &first_edge.1) {
+    EdgeConstrKind::AvTravelTime => {
+      rhs += 1;
+      cb.mp_vars.y_sum_av(cb.lu, first_edge.0, first_edge.1).sum_into(&mut lhs);
+    }
+    EdgeConstrKind::Unloading => {
+      x_edges.insert(first_edge.1);
+    }
+    EdgeConstrKind::Loading => {
+      rhs += 1;
+      cb.mp_vars.x_sum_similar_tasks(cb.lu, lb_task).sum_into(&mut lhs);
+    }
+  }
+
+  match edge_constr_kind(&last_edge.0, &last_edge.1) {
+    EdgeConstrKind::AvTravelTime => {
+      rhs += 1;
+      cb.mp_vars.y_sum_av(cb.lu, last_edge.0, last_edge.1).sum_into(&mut lhs);
+    }
+    EdgeConstrKind::Loading => {
+      x_edges.insert(last_edge.0);
+    }
+    EdgeConstrKind::Unloading => {
+      rhs += 1;
+      cb.mp_vars.x_sum_similar_tasks(cb.lu, ub_task).sum_into(&mut lhs);
+    }
+  }
+
+  let edge_nodes = &path[1..n];
+
+  for (t1, t2) in iter_pairs(edge_nodes) {
+    match edge_constr_kind(t1, t2) {
+      EdgeConstrKind::AvTravelTime => {
+        rhs += 1;
+        cb.mp_vars.y_sum_av(cb.lu, *t1, *t2).sum_into(&mut lhs)
+      },
+      EdgeConstrKind::Loading => {
+        x_edges.insert(*t1);
+      },
+      EdgeConstrKind::Unloading => {
+        x_edges.insert(*t2);
+      }
+    }
+  }
+
+  rhs += x_edges.len();
+  x_edges.iter()
+    .flat_map(|t| &cb.lu.tasks.task_to_pvtasks[t])
+    .map(|t| cb.mp_vars.x[t])
+    .sum_into(&mut lhs);
+
+  trace!(rhs, iis_size=path.len()-1, "generate cut");
+  debug_assert!(rhs > 1);
+  rhs -= 1;
+  c!( lhs <= rhs)
 }
 
 pub fn build_cyclic_infeasiblity_cut(cb: &cb::Cb, cycle: &[Task]) -> IneqExpr {
-  todo!()
+  debug_assert!(cycle.len() > 2, "cycle too short: {:?}", cycle);
+  let lhs = cycle.iter().copied()
+    .tuple_windows()
+    .chain(std::iter::once((cycle[cycle.len()-1], cycle[0])))
+    .flat_map(|(t1, t2)| cb.mp_vars.max_weight_edge_sum(cb.lu, t1, t2))
+    .grb_sum();
+  c!(lhs <= cycle.len() - 1)
 }
-
-// FIXME: this should live in the sp_lp module, wont need it with daggylp
-// pub fn build_optimality_cut(cb: &cb::Cb, spc: &SpConstraints, sp_obj: Time) -> IneqExpr {
-// let (k, mrs_sum) = cb.mp_vars.sum_responsible(cb.sets, spc);
-//
-// let theta_sum = spc.iter()
-//   .filter_map(|c| match c {
-//       SpConstr::AvTravelTime(last_task, dd) =>
-//           if dd.is_depot() { Some(last_task) }
-//           else { None },
-//       _ => None,
-//   })
-//   .cartesian_product(cb.sets.avs())
-//   .filter_map(|(&t, a)| cb.mp_vars.theta.get(&(a, t)))
-//   .grb_sum();
-// c!( sp_obj*(mrs_sum - k + 1) <= theta_sum)
-// todo!()
-// }
 
 #[derive(Copy, Clone, Debug)]
 enum XEdgeConstraint<'a> {
