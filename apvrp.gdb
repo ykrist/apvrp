@@ -26,12 +26,16 @@ define run_until_panic
     uplib
 end
 
+define hook-quit
+    set confirm off
+end
+
 dashboard -layout breakpoints expressions source stack threads variables
 dashboard source -style height 20
 dashboard stack -style limit 30
 dashboard -style discard_scrollback False
 
-file target/debug/apvrp
-set env DATA_ROOT = /home/yannik/phd/data
-set args 0
+#file target/debug/apvrp
+#set env DATA_ROOT = /home/yannik/phd/data
+#set args 0
 run_until_panic

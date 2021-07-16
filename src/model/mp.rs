@@ -87,6 +87,11 @@ impl MpVars {
       .map(move |t| self.x[t])
   }
 
+  pub fn y_sum_av<'a>(&'a self, lu: &'a Lookups, t1: Task, t2: Task)  -> impl Iterator<Item=Var> + 'a {
+    lu.sets.avs()
+      .filter_map(move |a| self.y.get(&(a, t1, t2)).copied())
+  }
+
   // FIXME: this should go into sp_lp, it is just the no-good cut
   // / Construct a expression of variables which is at most `k` (the other return value),
   // /// If the expression is equal to `k` then the supplied constraints are guaranteed to appear in the subproblem.

@@ -33,6 +33,29 @@ impl<O, I> SpStatus<O, I> {
   }
 }
 
+pub fn solve_subproblem_and_add_cuts<'a, S: Subproblem<'a>>(cb: &'a mut cb::Cb, sol: &'a Solution, theta: &Map<(Avg, Task), Time>) -> Result<()> {
+  let mut subproblem = S::build(cb.lu, sol)?;
+  loop {
+    match subproblem.solve()? {
+      SpStatus::Optimal(sp_obj, o) => {
+        subproblem.add_optimality_cuts(cb, o)?;
+        break;
+      }
+      SpStatus::Infeasible(i) => {
+        for iis in subproblem.extract_and_remove_iis(i)?.into_iter() {
+          let cut = match iis {
+            Iis::Path { lb, ub, path } =>
+              build_path_infeasiblity_cut(cb, lb, ub, &path),
+            Iis::Cycle(cycle) => build_cyclic_infeasiblity_cut(cb, &cycle),
+          };
+          cb.enqueue_cut(cut, CutType::LpFeas); // FIXME cuttype should be changed
+        }
+      }
+    }
+  }
+  Ok(())
+}
+
 pub trait Subproblem<'a>: Sized {
   // Additional information obtained when solving the subproblem to optimality
   type Optimal;
@@ -49,28 +72,6 @@ pub trait Subproblem<'a>: Sized {
   fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Self::IisConstraintSets>;
   // Find and remove one or more MRS when optimal
   fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()>;
-
-  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>) -> Result<()> {
-    loop {
-      match self.solve()? {
-        SpStatus::Optimal(sp_obj, o) => {
-          self.add_optimality_cuts(cb, o)?;
-          break;
-        }
-        SpStatus::Infeasible(i) => {
-          for iis in self.extract_and_remove_iis(i)?.into_iter() {
-            let cut = match iis {
-              Iis::Path { lb, ub, path } =>
-                build_path_infeasiblity_cut(cb, lb, ub, &path),
-              Iis::Cycle(cycle) => build_cyclic_infeasiblity_cut(cb, &cycle),
-            };
-            cb.enqueue_cut(cut, CutType::LpFeas); // FIXME cuttype should be changed
-          }
-        }
-      }
-    }
-    Ok(())
-  }
 }
 
 pub fn build_path_infeasiblity_cut(cb: &cb::Cb, lb_task: PvTask, ub_task: PvTask, path: &[Task]) -> IneqExpr {

@@ -50,7 +50,7 @@ pub fn iter_cycle<'a, T>(vals: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> + 
 
 pub trait PermuteSliceClone {
   type Item;
-  fn permute(&self) -> Permutator<Self::Item>;
+  fn permutations(&self) -> Permutator<Self::Item>;
 }
 
 /// # Safety:
@@ -69,7 +69,7 @@ pub fn iter_pairs<'a, T>(slice: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> {
 
 impl<T: Clone + Debug> PermuteSliceClone for &[T] {
   type Item = T;
-  fn permute(&self) -> Permutator<Self::Item> {
+  fn permutations(&self) -> Permutator<Self::Item> {
     Permutator::new(self.to_vec())
   }
 }

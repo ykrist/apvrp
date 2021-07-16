@@ -11,7 +11,7 @@ use tracing::*;
 use grb::prelude::*;
 use crate::model::cb::CutType;
 
-struct GraphModel<'a> {
+pub struct GraphModel<'a> {
   lu: &'a Lookups,
   vars: Map<Task, Var>,
   var_to_task: Map<Var, PvTask>,

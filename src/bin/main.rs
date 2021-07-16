@@ -132,8 +132,8 @@ fn main() -> Result<()> {
 
   let mut callback = model::cb::Cb::new(&lookups, &exp, &mp)?;
 
-  // match mp.model.optimize_with_callback(&mut callback) {
-  match mp.model.optimize() {
+  match mp.model.optimize_with_callback(&mut callback) {
+  // match mp.model.optimize() {
     Err(e) => {
       match callback.error.take() {
         // errors handled

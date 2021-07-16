@@ -4,7 +4,7 @@ use crate::solution::*;
 use grb::prelude::*;
 use grb::callback::{Callback, Where, CbResult, MIPSolCtx};
 use fnv::FnvHashSet;
-use super::{sp::lp::TimingSubproblem};
+use super::sp::*;
 use tracing::{info, info_span, debug, trace, error_span, warn, error, trace_span};
 use std::fmt;
 use grb::constr::IneqExpr;
@@ -14,8 +14,9 @@ use std::hash::Hash;
 use std::env::var;
 use std::collections::{HashSet, HashMap};
 use std::io::Write;
-use experiment::Params;
+use experiment::{Params, SpSolverKind};
 use slurm_harray::{ExperimentAuto, Experiment};
+use crate::utils::PermuteSliceClone;
 
 #[derive(Debug, Clone)]
 pub enum CbError {
@@ -251,137 +252,127 @@ impl<'a> Cb<'a> {
   }
 
   #[inline]
-  fn av_chain_fork_lhs(&self, chain: &[Task]) -> Expr {
-    todo!()
-    // chain.iter()
-    //   .tuple_windows()
-    //   .flat_map(|(&t1, &t2)|
-    //     self.mp_vars.ysum_from_edge(self.sets, self.tasks, t1, t2)
-    //   )
-    //   .grb_sum()
+  fn av_chain_fork_lhs(&self, chain: & [Task]) -> Expr {
+    chain.iter()
+      .tuple_windows()
+      .flat_map(move |(&t1, &t2)|
+        self.mp_vars.y_sum_av(self.lu, t1, t2)
+      )
+      .grb_sum()
   }
 
   #[tracing::instrument(level = "trace", skip(self))]
   fn av_chain_infork_cut(&mut self, chain: &[Task]) {
-    todo!("fixme");
-    // let chain = &chain[1..];
-    // let t2 = *chain.first().expect("chain should have at least three tasks");
-    // let n = chain.len() - 1; // number of arcs in legal chain
-    // let y = &self.mp_vars.y;
-    // debug_assert!(schedule::check_av_route(self.data, chain));
-    //
-    // let rhs_sum = av_legal_before(self.data, self.tasks, chain)
-    //   .flat_map(|t1| {
-    //     self.sets.avs().filter_map(move |av| y.get(&(av, t1, t2)).copied())
-    //   })
-    //   .grb_sum();
-    //
-    // // let lhs = self.av_chain_fork_lhs(chain);
-    //
-    // let lhs = self.tasks.similar_tasks[&chain[1]].iter()
-    //   .cartesian_product(self.sets.avs())
-    //   .filter_map(move |(&t2, a)| y.get(&(a, chain[0], t2)).copied())
-    //   .grb_sum() + self.av_chain_fork_lhs(&chain[1..]);
-    //
-    // self.enqueue_cut(c!(lhs <= n - 1 + rhs_sum), CutType::AvChainInfork);
+    let chain = &chain[1..];
+    let first_task = *chain.first().expect("chain should have at least three tasks");
+    let n = chain.len() - 1; // number of arcs in legal chain
+    let y = &self.mp_vars.y;
+    debug_assert!(schedule::check_av_route(self.lu, chain));
+
+    let rhs_sum = chain.legal_before(self.lu)
+      .flat_map(|t| {
+        self.lu.sets.avs().filter_map(move |av| y.get(&(av, t, first_task)).copied())
+      })
+      .grb_sum();
+
+    let lhs = self.av_chain_fork_lhs(chain);
+
+    self.enqueue_cut(c!(lhs <= n - 1 + rhs_sum), CutType::AvChainInfork);
   }
 
   #[tracing::instrument(level = "trace", skip(self))]
   fn av_chain_outfork_cut(&mut self, chain: &[Task]) {
-    todo!("fixme");
-    // let chain = &chain[..chain.len() - 1];
-    // let t1 = *chain.last().expect("chain should have at least three tasks");
-    // let n = chain.len() - 1;  // number of arcs in legal chain
-    // let y = &self.mp_vars.y;
-    //
-    // debug_assert!(schedule::check_av_route(self.data, chain));
-    //
-    // let rhs_sum = av_legal_after(self.data, self.tasks, chain)
-    //   .flat_map(|t2| {
-    //     self.sets.avs().filter_map(move |av| y.get(&(av, t1, t2)).copied())
-    //   })
-    //   .grb_sum();
-    //
-    //
-    // let lhs = self.tasks.similar_tasks[&chain[n - 1]].iter()
-    //   .cartesian_product(self.sets.avs())
-    //   .filter_map(move |(&t1, a)| y.get(&(a, t1, chain[n])).copied())
-    //   .grb_sum() + self.av_chain_fork_lhs(&chain[..n]);
-    //
-    // self.enqueue_cut(c!(lhs <= n - 1 + rhs_sum), CutType::AvChainOutfork);
+    let chain = &chain[..chain.len() - 1];
+    let last_task = *chain.last().expect("chain should have at least three tasks");
+    let n = chain.len() - 1;  // number of arcs in legal chain
+    let y = &self.mp_vars.y;
+
+    debug_assert!(schedule::check_av_route(self.lu, chain));
+
+    let rhs_sum = chain.legal_after(self.lu)
+      .flat_map(|t2| {
+        self.lu.sets.avs().filter_map(move |av| y.get(&(av, last_task, t2)).copied())
+      })
+      .grb_sum();
+
+    let lhs = self.av_chain_fork_lhs(chain);
+    self.enqueue_cut(c!(lhs <= n - 1 + rhs_sum), CutType::AvChainOutfork);
   }
 
   #[tracing::instrument(level = "trace", skip(self))]
   fn av_chain_tournament_cut(&mut self, chain: &[Task]) {
-    todo!()
-    // let n = chain.len() - 1;
-    // // Are all permutations illegal?
-    // let mut all_illegal = true;
-    // // Are all permutations where the first Task in the chain is held fixed illegal?
-    // let mut all_illegal_first_fixed = true;
-    // // Are all permutations where the last Task in the chain is held fixed illegal?
-    // let mut all_illegal_last_fixed = true;
-    //
-    // for c in chain.permutations() {
-    //   let c = c.as_slice();
-    //   if schedule::check_av_route(self.data, c) {
-    //     all_illegal = false;
-    //
-    //     if c[0] == chain[0] {
-    //       all_illegal_first_fixed = false;
-    //     }
-    //
-    //     if c[n] == chain[n] {
-    //       all_illegal_last_fixed = false
-    //     }
-    //
-    //     if !all_illegal_first_fixed && !all_illegal_last_fixed && !all_illegal {
-    //       break;
-    //     }
-    //   }
-    // }
-    //
-    //
-    // let mut lhs = chain.iter().enumerate()
-    //   .flat_map(|(k, &t1)| chain[(k + 1)..].iter().map(move |&t2| (t1, t2)))
-    //   .flat_map(|(t1, t2)| self.mp_vars.ysum_from_edge(self.sets, self.tasks, t1, t2))
-    //   .grb_sum();
-    //
-    // let mut add_similar_tasks_to_lhs = |i,j| {
-    //   for y in self.mp_vars.ysum_from_edge(self.sets, self.tasks, chain[i], chain[j]) {
-    //     lhs += y;
-    //   }
-    // };
-    //
-    // let ty = if all_illegal {
-    //   for i in 1..=n {
-    //     for j in 0..i {
-    //       add_similar_tasks_to_lhs(i,j);
-    //     }
-    //   }
-    //   CutType::AvChainFullTourn
-    //
-    // } else if all_illegal_last_fixed {
-    //   for i in 1..n {
-    //     for j in 0..i {
-    //       add_similar_tasks_to_lhs(i,j)
-    //     }
-    //   }
-    //   CutType::AvChainFixEndFullTourn
-    //
-    // } else if all_illegal_first_fixed {
-    //   for i in 1..=n {
-    //     for j in 1..i {
-    //       add_similar_tasks_to_lhs(i,j)
-    //     }
-    //   }
-    //   CutType::AvChainFixStartFullTourn
-    //
-    // } else {
-    //   CutType::AvChainForwardTourn
-    // };
-    //
-    // self.enqueue_cut(c!(lhs <= chain.len() - 2), ty)
+    let n = chain.len() - 1;
+    // Are all permutations illegal?
+    let mut all_illegal = true;
+    // Are all permutations where the first Task in the chain is held fixed illegal?
+    let mut all_illegal_first_fixed = true;
+    // Are all permutations where the last Task in the chain is held fixed illegal?
+    let mut all_illegal_last_fixed = true;
+
+    for c in chain.permutations() {
+      let c = c.as_slice();
+      if schedule::check_av_route(self.lu, c) {
+        all_illegal = false;
+
+        if c[0] == chain[0] {
+          all_illegal_first_fixed = false;
+        }
+
+        if c[n] == chain[n] {
+          all_illegal_last_fixed = false
+        }
+
+        if !all_illegal_first_fixed && !all_illegal_last_fixed && !all_illegal {
+          break;
+        }
+      }
+    }
+
+    // Forward tournament
+    let mut lhs = chain.iter().enumerate()
+      .flat_map(|(k, &t1)| chain[(k + 1)..].iter().map(move |&t2| (t1, t2)))
+      .flat_map(|(t1, t2)| self.mp_vars.y_sum_av(self.lu, t1, t2))
+      .grb_sum();
+
+    let mut add_similar_tasks_to_lhs = |i,j| {
+      for y in self.mp_vars.y_sum_av(self.lu, chain[i], chain[j]) {
+        lhs += y;
+      }
+    };
+
+    // Full tournament, add backarcs as well
+    let ty = if all_illegal {
+      for i in 1..=n {
+        for j in 0..i {
+          add_similar_tasks_to_lhs(i,j);
+        }
+      }
+      CutType::AvChainFullTourn
+
+      // Partial full tournament, add backarcs for all except chain[n]
+    } else if all_illegal_last_fixed {
+      for i in 1..n {
+        for j in 0..i {
+          add_similar_tasks_to_lhs(i,j)
+        }
+      }
+      CutType::AvChainFixEndFullTourn
+
+      // Partial full tournament, add backarcs for all except chain[0]
+    } else if all_illegal_first_fixed {
+      for i in 1..=n {
+        for j in 1..i {
+          add_similar_tasks_to_lhs(i,j)
+        }
+      }
+      CutType::AvChainFixStartFullTourn
+
+      // Fallback
+    } else {
+      CutType::AvChainForwardTourn
+    };
+
+    self.enqueue_cut(c!(lhs <= chain.len() - 2), ty)
   }
 
   /// Given `chain`, which violates the AV timing constraints, find the shortest subchain which still violates
@@ -442,15 +433,14 @@ impl<'a> Cb<'a> {
 
   #[tracing::instrument(level = "trace", skip(self))]
   fn pv_cycle_cut(&mut self, cycle: &PvPath) {
-    // debug_assert!(cycle.first() != cycle.last());
-    // let xsum = cycle.iter()
-    //   .flat_map(|t|
-    //     self.tasks.by_locs[&(t.start, t.end)].iter()
-    //       .map(|t| self.mp_vars.x[t]))
-    //   .grb_sum();
-    // // cycle is a list of n nodes (start != end), which form n-1 arcs
-    // self.enqueue_cut(c!(xsum <= cycle.len() - 1), CutType::PvCycle);
-    todo!()
+    debug_assert!(cycle.first() != cycle.last());
+    // TODO tournament?
+    let xsum = cycle.iter()
+      .flat_map(|t| &self.lu.tasks.task_to_pvtasks[&self.lu.tasks.pvtask_to_task[t]])
+      .map(|t| self.mp_vars.x[t])
+      .grb_sum();
+    // cycle is a list of n nodes (start != end), which form n-1 arcs
+    self.enqueue_cut(c!(xsum <= cycle.len() - 1), CutType::PvCycle);
   }
 
   // #[allow(unused_variables)]
@@ -461,9 +451,10 @@ impl<'a> Cb<'a> {
   #[allow(unused_variables)]
   #[tracing::instrument(level = "trace", skip(self))]
   fn pv_chain_infork_cut(&mut self, chain: &[PvTask]) {
+    // FIXME sum over all p?
     let chain = &chain[1..];
     let rhs_sum = chain.legal_before(self.lu)
-      .map(|t| self.mp_vars.x[&t]) // FIXME sum over all p?
+      .map(|t| self.mp_vars.x[&t])
       .grb_sum();
 
     let lhs_sum = chain.iter()
@@ -476,9 +467,11 @@ impl<'a> Cb<'a> {
   #[allow(unused_variables)]
   #[tracing::instrument(level = "trace", skip(self))]
   fn pv_chain_outfork_cut(&mut self, chain: &[PvTask]) {
+    // FIXME sum over all p?
     let chain = &chain[..chain.len() - 1];
     let rhs_sum = chain.legal_after(self.lu)
-      .map(|t| self.mp_vars.x[&t])
+      .flat_map(|t| &self.lu.tasks.pvtask_to_similar_pvtask[&t])
+      .map(|t| self.mp_vars.x[t])
       .grb_sum();
 
     let lhs_sum = chain.iter()
@@ -514,12 +507,12 @@ impl<'a> Cb<'a> {
 
   fn av_chain_cuts(&mut self, chain: &[Task]) {
     let n = chain.len() as u32;
-    if self.params.av_fork_cuts_min_chain_len <= n && n <= self.params.av_fork_cuts_max_chain_len {
+    if (self.params.av_fork_cuts_min_chain_len..=self.params.av_fork_cuts_max_chain_len).contains(&n) {
       self.av_chain_infork_cut(&chain);
       self.av_chain_outfork_cut(&chain);
     }
 
-    if self.params.av_tournament_cuts_min_chain_len <= n && n <= self.params.av_tournament_cuts_max_chain_len {
+    if (self.params.av_tournament_cuts_min_chain_len..=self.params.av_tournament_cuts_max_chain_len).contains(&n) {
       self.av_chain_tournament_cut(&chain);
     }
   }
@@ -618,27 +611,30 @@ impl<'a> Callback for Cb<'a> {
           if self.cut_cache.len() > initial_cut_cache_len {
             info!(ncuts = self.cut_cache.len() - initial_cut_cache_len, "heuristic cuts added");
           } else {
-            let _span = error_span!("lp_sp").entered();
+            let _span = error_span!("sp").entered();
             info!("no heuristic cuts found, solving LP subproblem");
             let sol = Solution{ objective: None, av_routes, pv_routes };
             if let Some(sol_log) = self.sol_log.as_mut() {
-              // let sol = SerialisableSolution::from(sol.clone());
-              // serde_json::to_writer(&mut *sol_log, &sol)?; // need to re-borrow here
-              // write!(sol_log, "\n")?;
+              serde_json::to_writer(&mut *sol_log, &sol.to_serialisable())?; // need to re-borrow here
+              write!(sol_log, "\n")?;
             }
 
-            // FIXME
-            // let sp = TimingSubproblem::build(&self.sp_env, self.data, self.tasks, &sol)?;
-            //
-            // let theta: Map<_, _> = get_var_values_mapped(&ctx, &self.mp_vars.theta, |t| t.round() as Time)?.collect();
-            // trace!(?theta);
-            // let estimate : Time = theta.values().sum();
+            let theta: Map<_, _> = get_var_values_mapped(&ctx, &self.mp_vars.theta, |t| t.round() as Time)?.collect();
+            trace!(?theta);
+            let estimate : Time = theta.values().sum();
+            match self.params.sp {
+              SpSolverKind::Dag => {
+                solve_subproblem_and_add_cuts::<dag::GraphModel>(self, &sol, &theta)?;
+              },
+              SpSolverKind::Lp => {
+                solve_subproblem_and_add_cuts::<lp::TimingSubproblem>(self, &sol, &theta)?;
+              }
+            }
             //
             // solve_subproblem_and_add_cuts(&mut sp, self, &theta);
             // sp.add_cuts(self, estimate)?;
           }
         }
-
         for (_, _, cut) in &self.cut_cache[initial_cut_cache_len..] {
           ctx.add_lazy(cut.clone())?;
         }

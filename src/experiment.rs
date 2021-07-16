@@ -37,7 +37,7 @@ pub struct Params {
   pub timelimit: u64,
   pub cpus: u32,
   pub param_name: String,
-  #[slurm(help="Subproblem algorithm", default="dag", choices)]
+  #[slurm(help="Subproblem algorithm", default="lp", choices)]
   pub sp: SpSolverKind,
   pub av_fork_cuts_min_chain_len: u32,
   pub av_fork_cuts_max_chain_len: u32,
@@ -59,7 +59,7 @@ impl std::default::Default for Params {
       timelimit: 7200,
       cpus: 4,
       param_name: String::new(),
-      sp: SpSolverKind::Dag,
+      sp: SpSolverKind::Lp,
       av_fork_cuts_min_chain_len: 0,
       av_fork_cuts_max_chain_len: 4,
       av_tournament_cuts_min_chain_len: 3,

@@ -138,8 +138,7 @@ pub fn construct_pv_route(tasks_used: &[PvTask]) -> (PvPath, Vec<PvPath>) {
     }
   }
 
-  let pv_origin = first_task.start;
-  debug_assert!(matches!(pv_origin, Loc::Po(_)));
+  let pv_origin = Loc::Po(first_task.p);
   let graph = PvGraph {
     pv_origin,
     pv_dest: pv_origin.dest(),
@@ -227,53 +226,17 @@ pub struct Solution {
   pub pv_routes: Vec<(Pv, Vec<PvTask>)>,
 }
 
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerialisableSolution {
-  pub objective: Option<Cost>,
-  pub av_routes: Vec<(Avg, Vec<ShorthandTask>)>,
-  pub pv_routes: Vec<(Pv, Vec<ShorthandPvTask>)>,
-}
-
-impl From<Solution> for SerialisableSolution {
-  fn from(sol: Solution) -> Self {
-    let av_routes = sol.av_routes.into_iter()
-      .map(|(avg, tasks)| (avg, tasks.into_iter().map(ShorthandTask::from).collect()))
+impl Solution {
+  pub fn to_serialisable(&self) -> SerialisableSolution {
+    let av_routes = self.av_routes.iter()
+      .map(|(avg, tasks)| (*avg, tasks.iter().map(|t| ShorthandTask::from(*t)).collect()))
       .collect();
-    let pv_routes = sol.pv_routes.into_iter()
-      .map(|(pv, tasks)| (pv, tasks.into_iter().map(ShorthandPvTask::from).collect()))
+    let pv_routes = self.pv_routes.iter()
+      .map(|(pv, tasks)| (*pv, tasks.iter().map(|t| ShorthandPvTask::from(*t)).collect()))
       .collect();
 
     SerialisableSolution {
-      objective: sol.objective,
-      av_routes,
-      pv_routes,
-    }
-  }
-}
-
-
-impl Solution {
-  pub fn from_serialisable(tasks: &Tasks, sol: &SerialisableSolution) -> Self {
-    let av_routes = sol.av_routes.iter()
-      .map(|(avg, route)| {
-        let route = route.iter()
-          .map(move |t| tasks.by_shorthand[t])
-          .collect();
-        (*avg, route)
-      })
-      .collect();
-    let pv_routes = sol.pv_routes.iter()
-      .map(|(pv, route)| {
-        let route = route.iter()
-          .map(move |t| tasks.by_shorthandpv[t])
-          .collect();
-        (*pv, route)
-      })
-      .collect();
-
-    Solution {
-      objective: sol.objective,
+      objective: self.objective,
       av_routes,
       pv_routes,
     }
@@ -314,6 +277,43 @@ impl Solution {
     }
   }
 }
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerialisableSolution {
+  pub objective: Option<Cost>,
+  pub av_routes: Vec<(Avg, Vec<ShorthandTask>)>,
+  pub pv_routes: Vec<(Pv, Vec<ShorthandPvTask>)>,
+}
+
+impl SerialisableSolution {
+  pub fn to_solution(&self, tasks: impl AsRef<Tasks>) -> Solution {
+    let tasks = tasks.as_ref();
+    let av_routes = self.av_routes.iter()
+      .map(|(avg, route)| {
+        let route = route.iter()
+          .map(move |t| tasks.by_shorthand[t])
+          .collect();
+        (*avg, route)
+      })
+      .collect();
+    let pv_routes = self.pv_routes.iter()
+      .map(|(pv, route)| {
+        let route = route.iter()
+          .map(move |t| tasks.by_shorthandpv[t])
+          .collect();
+        (*pv, route)
+      })
+      .collect();
+
+    Solution {
+      objective: self.objective,
+      av_routes,
+      pv_routes,
+    }
+  }
+}
+
 
 #[derive(Clone, Debug)]
 pub struct SpSolution {
@@ -442,37 +442,39 @@ struct JsonSolution {
   pv_routes: Map<String, Vec<JsonTask>>,
 }
 
-#[tracing::instrument(level = "trace")]
-fn json_task_to_sh_task(lss: &LocSetStarts, st: &JsonTask) -> ShorthandPvTask {
-  use ShorthandPvTask::*;
+impl JsonTask {
+  #[tracing::instrument(level = "trace", name="json_task_to_sh_task")]
+  pub fn to_shorthand(&self, lss: &LocSetStarts) -> ShorthandPvTask {
+    use ShorthandPvTask::*;
 
-  let start = Loc::decode(st.start, lss);
-  let end = Loc::decode(st.end, lss);
-  let p =
-    if st.p < 0 { None } else if st.p == 0 { unreachable!() } else { Some(st.p as Pv - 1) };
+    let start = Loc::decode(self.start, lss);
+    let end = Loc::decode(self.end, lss);
+    let p =
+      if self.p < 0 { None } else if self.p == 0 { unreachable!() } else { Some(self.p as Pv - 1) };
 
-  let sht = match start {
-    Loc::Ao => unimplemented!(),
-    Loc::Ad => unimplemented!(),
-    Loc::ReqP(r) => Request(p.unwrap(), r),
-    Loc::Po(p) => {
-      match end {
-        Loc::Pd(p2) if p2 == p => Direct(p),
-        Loc::ReqP(r) => Start(p, r),
-        _ => unreachable!("unmatched end: start={:?}, end={:?}", start, end),
+    let sht = match start {
+      Loc::Ao => unimplemented!(),
+      Loc::Ad => unimplemented!(),
+      Loc::ReqP(r) => Request(p.unwrap(), r),
+      Loc::Po(p) => {
+        match end {
+          Loc::Pd(p2) if p2 == p => Direct(p),
+          Loc::ReqP(r) => Start(p, r),
+          _ => unreachable!("unmatched end: start={:?}, end={:?}", start, end),
+        }
       }
-    }
-    Loc::ReqD(r1) => {
-      match end {
-        Loc::ReqP(r2) => Transfer(p.unwrap(), r1, r2),
-        Loc::Pd(p) => End(p, r1),
-        _ => unreachable!("unmatched end: start={:?}, end={:?}", start, end)
+      Loc::ReqD(r1) => {
+        match end {
+          Loc::ReqP(r2) => Transfer(p.unwrap(), r1, r2),
+          Loc::Pd(p) => End(p, r1),
+          _ => unreachable!("unmatched end: start={:?}, end={:?}", start, end)
+        }
       }
-    }
-    _ => unreachable!("unmatched start: start={:?}, end={:?}", start, end)
-  };
-  trace!(sh_task=?sht);
-  sht
+      _ => unreachable!("unmatched start: start={:?}, end={:?}", start, end)
+    };
+    trace!(sh_task=?sht);
+    sht
+  }
 }
 
 
@@ -485,7 +487,7 @@ pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &Tasks, lss: &LocSetStar
     let av: Avg = av.parse().context("parsing AV")?;
     for r in routes {
       let r: Vec<_> = r.iter()
-        .map(|t| tasks.by_shorthand[&json_task_to_sh_task(lss, t).into()])
+        .map(|t| tasks.by_shorthand[&t.to_shorthand(lss).into()])
         .collect();
       av_routes.push((av, r));
     }
@@ -495,7 +497,7 @@ pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &Tasks, lss: &LocSetStar
   for (pv, route) in &soln.pv_routes {
     let pv: Pv = pv.parse().context("parsing PV")?;
     let route = route.iter()
-      .map(|t| tasks.by_shorthandpv[&json_task_to_sh_task(lss, t)])
+      .map(|t| tasks.by_shorthandpv[&t.to_shorthand(&lss).into()])
       .collect();
     pv_routes.push((pv, route));
   }
