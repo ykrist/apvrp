@@ -19,11 +19,15 @@ pub enum EdgeConstrKind {
 
 
 pub fn edge_constr_kind(t1: &Task, t2: &Task) -> EdgeConstrKind {
-    if &t2.ty == &TaskType::Request {
-        EdgeConstrKind::Loading
-    } else if &t1.ty == &TaskType::Request {
-        EdgeConstrKind::Unloading
-    } else {
+    if t1.end != t2.start {
         EdgeConstrKind::AvTravelTime
+    } else {
+        if &t2.ty == &TaskType::Request {
+            EdgeConstrKind::Loading
+        } else if &t1.ty == &TaskType::Request {
+            EdgeConstrKind::Unloading
+        } else {
+            unreachable!("bugalug")
+        }
     }
 }

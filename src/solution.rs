@@ -16,7 +16,6 @@ pub(crate) type AvPath = Vec<Task>;
 /// A (possibly cyclic) Passive Vehicle path.  If the path is a cycle, the first and last Tasks are the same.
 pub(crate) type PvPath = Vec<PvTask>;
 
-
 #[inline]
 fn discard_edge_weights<T, W>(pairs: Vec<(T, W)>) -> Vec<T> {
   pairs.into_iter().map(|(x, _)| x).collect()

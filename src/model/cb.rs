@@ -16,8 +16,9 @@ use std::env::var;
 use std::collections::{HashSet, HashMap};
 use std::io::Write;
 use experiment::{Params, SpSolverKind};
-use slurm_harray::{ExperimentAuto, Experiment};
+use slurm_harray::{Experiment};
 use crate::utils::PermuteSliceClone;
+use smallvec::SmallVec;
 
 #[derive(Debug, Clone)]
 pub enum CbError {
@@ -135,7 +136,34 @@ impl Phase {
   }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct InfeasibilityTracker {
+  av_cycles: HashMap<Vec<Task>, usize>,
+  path_iis: Set<PathIis>,
+}
+
+impl InfeasibilityTracker {
+  pub fn av_cycle(&mut self, cycle: &[Task]) {
+    let mut sorted_cycle = cycle.to_vec();
+    sorted_cycle.sort_by_key(|t| t.id());
+    let count = self.av_cycles.entry(sorted_cycle).or_insert(0);
+    if *count > 0 { warn!(?count, ?cycle, "cycle has been encountered before") }
+    *count += 1;
+  }
+
+  pub fn path_iis(&mut self, iis: &PathIis) {
+    if self.path_iis.contains(iis) {
+      error!(?iis, "IIS has been seen before");
+      panic!("bugalug")
+    } else {
+      self.path_iis.insert(iis.clone());
+    }
+  }
+}
+
+
 pub struct Cb<'a> {
+  pub major_it: usize,
   pub lu: &'a Lookups,
   pub params: &'a Params,
   pub var_names: Map<Var, String>,
@@ -144,7 +172,7 @@ pub struct Cb<'a> {
   pub stats: CbStats,
   pub cut_cache: Vec<(CutType, usize, IneqExpr)>,
   #[cfg(debug_assertions)]
-  av_cycles: HashMap<Vec<Task>, usize>,
+  pub infeasibilities: InfeasibilityTracker,
   #[cfg(debug_assertions)]
   pub var_vals: Map<Var, f64>,
   #[cfg(debug_assertions)]
@@ -172,6 +200,7 @@ impl<'a> Cb<'a> {
     } else { None };
 
     Ok(Cb {
+      major_it: 0,
       lu,
       mp_vars: mp.vars.clone(),
       stats,
@@ -180,7 +209,7 @@ impl<'a> Cb<'a> {
       params: &exp.parameters,
       sol_log,
       #[cfg(debug_assertions)]
-      av_cycles: Default::default(),
+      infeasibilities: Default::default(),
       #[cfg(debug_assertions)]
       var_vals: Map::default(),
       #[cfg(debug_assertions)]
@@ -220,11 +249,7 @@ impl<'a> Cb<'a> {
   fn av_cycle_cut(&mut self, cycle: &AvPath) {
     // TODO: might be able to use the IIS stronger cut?
     #[cfg(debug_assertions)] {
-      let mut sorted_cycle = cycle.clone();
-      sorted_cycle.sort_by_key(|t| t.id());
-      let count = self.av_cycles.entry(sorted_cycle).or_insert(0);
-      if *count > 0 { warn!(?count, "cycle has been encountered before") }
-      *count += 1;
+      self.infeasibilities.av_cycle(cycle);
     }
 
     let cycle_tasks = &cycle[..cycle.len() - 1];
@@ -232,7 +257,7 @@ impl<'a> Cb<'a> {
     let ysum = cycle_tasks.iter()
       .cartesian_product(cycle_tasks.iter())
       .flat_map(|(&t1, &t2)|
-        self.mp_vars.y_sum_av(self.lu, t1, t2)
+        self.mp_vars.y_sum_av_possibly_empty(self.lu, t1, t2)
       )
       .grb_sum();
 
@@ -321,11 +346,11 @@ impl<'a> Cb<'a> {
     // Forward tournament
     let mut lhs = chain.iter().enumerate()
       .flat_map(|(k, &t1)| chain[(k + 1)..].iter().map(move |&t2| (t1, t2)))
-      .flat_map(|(t1, t2)| self.mp_vars.y_sum_av(self.lu, t1, t2))
+      .flat_map(|(t1, t2)| self.mp_vars.y_sum_av_possibly_empty(self.lu, t1, t2))
       .grb_sum();
 
     let mut add_similar_tasks_to_lhs = |i,j| {
-      for y in self.mp_vars.y_sum_av(self.lu, chain[i], chain[j]) {
+      for y in self.mp_vars.y_sum_av_possibly_empty(self.lu, chain[i], chain[j]) {
         lhs += y;
       }
     };
@@ -579,7 +604,8 @@ impl<'a> Cb<'a> {
 
 impl<'a> Callback for Cb<'a> {
   fn callback(&mut self, w: Where) -> CbResult {
-    let _span = info_span!("cb").entered();
+    let _span = info_span!("cb", major_it=self.major_it).entered();
+    self.major_it += 1;
 
     match w {
       Where::MIPSol(ctx) => {
@@ -615,15 +641,14 @@ impl<'a> Callback for Cb<'a> {
             tracing::span::Span::current().record("estimate", &estimate);
             match self.params.sp {
               SpSolverKind::Dag => {
-                solve_subproblem_and_add_cuts::<dag::GraphModel>(self, &sol, estimate)?;
+                dag::GraphModel::build(self.lu, &sol, &theta)?
+                  .solve_subproblem_and_add_cuts(self, estimate)?;
               },
               SpSolverKind::Lp => {
-                solve_subproblem_and_add_cuts::<lp::TimingSubproblem>(self, &sol, estimate)?;
+                lp::TimingSubproblem::build(self.lu, &sol)?
+                  .solve_subproblem_and_add_cuts(self, estimate)?;
               }
             }
-            //
-            // solve_subproblem_and_add_cuts(&mut sp, self, &theta);
-            // sp.add_cuts(self, estimate)?;
           }
         }
         for (_, _, cut) in &self.cut_cache[initial_cut_cache_len..] {

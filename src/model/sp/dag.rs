@@ -1,7 +1,7 @@
-use daggylp::{Var, Graph, SolveStatus, edge_storage::{AdjacencyList, ArrayVec}, Weight, InfKind};
+use daggylp::{Var, Graph, SolveStatus, edge_storage::{AdjacencyList, ArrayVec}, Weight, InfKind, mrs::MrsTree};
 
 use crate::*;
-use crate::model::sp::{Iis, Subproblem, SpStatus, iter_edge_constraints, XEdgeConstraint};
+use crate::model::sp::{Iis, Subproblem, SpStatus, iter_edge_constraints, XEdgeConstraint, PathIis};
 use crate::solution::Solution;
 use crate::model::cb;
 use crate::utils::iter_pairs;
@@ -13,25 +13,33 @@ use crate::model::cb::CutType;
 
 pub struct GraphModel<'a> {
   lu: &'a Lookups,
+  theta_val: &'a Map<(Avg, Task), Time>,
   vars: Map<Task, Var>,
   var_to_task: Map<Var, PvTask>,
   edges: Map<(Var, Var), (Task, Task)>,
-  model: Graph<AdjacencyList<ArrayVec<2>>>,
+  pub model: Graph<AdjacencyList<ArrayVec<2>>>,
 }
 
-impl<'a> Subproblem<'a> for GraphModel<'a> {
-  // Additional information obtained when solving the subproblem to optimality
-  type Optimal = ();
-  // Additional information obtained when proving the subproblem to be infeasible
-  type Infeasible = InfKind;
-  // A group of constraint sets representing one or more IIS
-  type IisConstraintSets = std::iter::Once<Iis>;
+impl<'a> GraphModel<'a> {
+  fn optimality_cut_required(&self, mrs: &MrsTree) -> bool {
+    let mut theta_sum = 0;
+    for t in mrs.obj_vars().map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]]) {
+      for a in self.lu.sets.avs() {
+        if let Some(&theta_v) = self.theta_val.get(&(a, t)) {
+          theta_sum += theta_v;
+        }
+      }
+    }
+    (theta_sum as Weight) < mrs.obj()
+  }
+}
 
-  #[tracing::instrument(level="trace", skip(lu, sol))]
-  fn build(lu: &'a Lookups, sol: &'a Solution) -> Result<Self> {
+impl<'a> GraphModel<'a> {
+  #[tracing::instrument(level = "trace", skip(lu, sol, theta_val))]
+  pub fn build(lu: &'a Lookups, sol: &'a Solution, theta_val: &'a Map<(Avg, Task), Time>) -> Result<Self> {
     let mut model = Graph::new();
     let mut vars = map_with_capacity(lu.data.n_req as usize * 2);
-    let mut var_to_task = map_with_capacity(lu.data.n_req  as usize * 2);
+    let mut var_to_task = map_with_capacity(lu.data.n_req as usize * 2);
 
     vars.insert(lu.tasks.odepot, model.add_var(0, lu.tasks.odepot.t_release as Weight, lu.tasks.odepot.t_deadline as Weight));
     for (_, pv_route) in &sol.pv_routes {
@@ -39,7 +47,7 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
         let t = lu.tasks.pvtask_to_task[&pt];
 
         // loop over all AVs here, probably better than allocating.
-        let obj = if sol.av_routes.iter().any(|(_, av_route)| av_route[av_route.len()-2] == t) {
+        let obj = if sol.av_routes.iter().any(|(_, av_route)| av_route[av_route.len() - 2] == t) {
           1
         } else {
           0
@@ -56,7 +64,7 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
     for (_, pv_route) in &sol.pv_routes {
       for c in iter_edge_constraints(pv_route) {
         let (pt1, pt2) = match c {
-          XEdgeConstraint::Unloading(pt1, pt2) =>  {
+          XEdgeConstraint::Unloading(pt1, pt2) => {
             trace!(t1=?pt1, t2=?pt2, "unloading constraint");
             (pt1, pt2)
           }
@@ -77,7 +85,7 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
 
     for (_, av_route) in &sol.av_routes {
       // last task is ddepot
-      for (t1, t2) in iter_pairs(&av_route[..av_route.len()-1]) {
+      for (t1, t2) in iter_pairs(&av_route[..av_route.len() - 1]) {
         trace!(?t1, ?t2);
         let v1 = vars[&t1];
         let v2 = vars[&t2];
@@ -93,12 +101,23 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
     }
     Ok(GraphModel {
       lu,
+      theta_val,
       vars,
       var_to_task,
       edges: constraints,
       model: model.finish(),
     })
   }
+
+}
+
+impl<'a> Subproblem<'a> for GraphModel<'a> {
+  // Additional information obtained when solving the subproblem to optimality
+  type Optimal = ();
+  // Additional information obtained when proving the subproblem to be infeasible
+  type Infeasible = InfKind;
+  // A group of constraint sets representing one or more IIS
+  type IisConstraintSets = std::iter::Once<Iis>;
 
   // Solve the subproblem and return status
   fn solve(&mut self) -> Result<SpStatus<Self::Optimal, Self::Infeasible>> {
@@ -110,40 +129,41 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
   }
   // Find and remove one or more IIS when infeasible
   fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Self::IisConstraintSets> {
-    let iis = self.model.compute_iis(true);
+    let graph_iis= self.model.compute_iis(true);
     let iis = match i {
       InfKind::Path => {
-        let (lb_var, ub_var) = iis.bounds().unwrap();
+        let (lb_var, ub_var) = graph_iis.bounds().unwrap();
         let lb_pt = self.var_to_task[&lb_var];
         let ub_pt = self.var_to_task[&ub_var];
-        let path = iis.iter_edge_vars()
+        let path = graph_iis.iter_edge_vars()
           .map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]])
           .collect();
 
-        Iis::Path {
+        Iis::Path(PathIis {
           ub: ub_pt,
           lb: lb_pt,
           path,
-        }
-      },
+        })
+      }
 
       InfKind::Cycle => {
-        let cycle = iis.iter_edge_vars()
+        let cycle = graph_iis.iter_edge_vars()
           .map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]])
           .collect();
         Iis::Cycle(cycle)
-      },
+      }
     };
-
+    self.model.remove_iis(&graph_iis);
     Ok(std::iter::once(iis))
   }
 
   fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()> {
     for mrs in self.model.compute_mrs() {
+      if !self.optimality_cut_required(&mrs) {
+        continue
+      }
+
       let (obj, edges) = self.model.edge_sensitivity_analysis(&mrs);
-
-      // Fixme: need to pass individual thetas in here, and only add the necessary disaggregated cuts
-
       let mut cut = cb.mp_vars.x_sum_similar_tasks(self.lu, self.var_to_task[&mrs.root()]).grb_sum() * obj;
 
       for ((v1, v2), old_obj, new_obj) in edges {

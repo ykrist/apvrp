@@ -8,9 +8,11 @@ use std::collections::HashMap;
 use std::hash::{Hash, BuildHasher};
 use std::cell::{RefCell, Ref};
 use std::rc::Rc;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::iter::Peekable;
 use std::ops::AddAssign;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 
 pub fn iter_cycle<'a, T>(vals: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> + 'a {
@@ -220,6 +222,21 @@ impl<I: Iterator> PeekableExt for Peekable<I> {
     None
   }
 }
+
+pub trait Json: Serialize + DeserializeOwned {
+  fn from_json_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    let f = std::io::BufReader::new(std::fs::File::open(path)?);
+    Ok(serde_json::from_reader(f)?)
+  }
+
+  fn to_json_file(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+    let f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    serde_json::to_writer_pretty(f, self)?;
+    Ok(())
+  }
+}
+
+impl<T: Serialize + DeserializeOwned> Json for T {}
 
 
 #[cfg(test)]

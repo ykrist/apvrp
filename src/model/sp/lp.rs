@@ -108,7 +108,42 @@ pub struct TimingSubproblem<'a> {
 }
 
 impl<'a> TimingSubproblem<'a> {
+  pub fn build(lu: &'a Lookups, sol: &'a Solution) -> Result<TimingSubproblem<'a>> {
+    let _span = error_span!("sp_build").entered();
 
+    let mut model = ENV.with(|env| Model::with_env("subproblem", env))?;
+    let vars: Map<_, _> = {
+      let mut v = map_with_capacity(sol.pv_routes.iter().map(|(_, tasks)| tasks.len()).sum());
+      for (_, pv_route) in &sol.pv_routes {
+        for t in pv_route {
+          let t = lu.tasks.pvtask_to_task[t];
+          #[cfg(debug_assertions)]
+            v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
+          #[cfg(not(debug_assertions))]
+            v.insert(t, add_ctsvar!(model)?);
+        }
+      }
+      v
+    };
+
+    let cons = TimingConstraints::build(lu, sol, &mut model, &vars)?;
+
+    let mut second_last_tasks = SmallVec::new();
+
+    let obj = sol.av_routes.iter()
+      .map(|(_, route)| {
+        let second_last_task = &route[route.len() - 2];
+        second_last_tasks.push(*second_last_task);
+        trace!(?second_last_task);
+        vars[second_last_task]
+      })
+      .grb_sum();
+    model.update()?;
+    trace!(obj=?obj.with_names(&model));
+    model.set_objective(obj, Minimize)?;
+
+    Ok(TimingSubproblem { vars, cons, model, mp_sol: sol, second_last_tasks, lu })
+  }
 
   // pub fn add_cuts(mut self, cb: &mut super::cb::Cb, estimate: Time) -> Result<()> {
   //   let _s = error_span!("add_cuts", estimate).entered();
@@ -288,43 +323,6 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
   type Infeasible = ();
   type IisConstraintSets = std::iter::Once<Iis>;
 
-  fn build(lu: &'a Lookups, sol: &'a Solution) -> Result<TimingSubproblem<'a>> {
-    let _span = error_span!("sp_build").entered();
-
-    let mut model = ENV.with(|env| Model::with_env("subproblem", env))?;
-    let vars: Map<_, _> = {
-      let mut v = map_with_capacity(sol.pv_routes.iter().map(|(_, tasks)| tasks.len()).sum());
-      for (_, pv_route) in &sol.pv_routes {
-        for t in pv_route {
-          let t = lu.tasks.pvtask_to_task[t];
-          #[cfg(debug_assertions)]
-            v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
-          #[cfg(not(debug_assertions))]
-            v.insert(t, add_ctsvar!(model)?);
-        }
-      }
-      v
-    };
-
-    let cons = TimingConstraints::build(lu, sol, &mut model, &vars)?;
-
-    let mut second_last_tasks = SmallVec::new();
-
-    let obj = sol.av_routes.iter()
-      .map(|(_, route)| {
-        let second_last_task = &route[route.len() - 2];
-        second_last_tasks.push(*second_last_task);
-        trace!(?second_last_task);
-        vars[second_last_task]
-      })
-      .grb_sum();
-    model.update()?;
-    trace!(obj=?obj.with_names(&model));
-    model.set_objective(obj, Minimize)?;
-
-    Ok(TimingSubproblem { vars, cons, model, mp_sol: sol, second_last_tasks, lu })
-  }
-
   fn solve(&mut self) -> Result<SpStatus<(), ()>> {
     self.model.optimize()?;
     match self.model.status()? {
@@ -411,7 +409,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
       }
       debug_assert_eq!(path.last(), self.lu.tasks.pvtask_to_task.get(&ub_task));
 
-      Iis::Path { ub: ub_task, lb: lb_task, path }
+      Iis::Path(PathIis { ub: ub_task, lb: lb_task, path } )
     } else {
       // Path IIS
       let mut cycle = SmallVec::with_capacity(iis_succ.len());

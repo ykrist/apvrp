@@ -5,18 +5,16 @@ use anyhow::Result;
 use grb::prelude::*;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
-#[slurm(inputs)]
+#[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct Inputs {
   pub index: usize
 }
 
-impl ExpInputs for Inputs {
+impl IdStr for Inputs {
   fn id_str(&self) -> String {
     format!("{}", self.index)
   }
 }
-
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum SpSolverKind {
@@ -24,82 +22,81 @@ pub enum SpSolverKind {
   Lp
 }
 
-impl_arg_choices! { SpSolverKind;
+impl_arg_enum! { SpSolverKind;
   Dag = "dag",
   Lp = "lp",
 }
 
-
-#[derive(Debug, Clone, FromArgs, AddArgs, Serialize, Deserialize)]
-#[slurm(parameters)]
+#[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct Params {
-  #[slurm(valname="seconds")]
+  #[structopt(long, short, default_value="7200", value_name="seconds")]
   pub timelimit: u64,
+
+  #[structopt(long)]
+  #[cfg_attr(debug_assertions, structopt(default_value="1"))]
+  #[cfg_attr(not(debug_assertions), structopt(default_value="4"))]
   pub cpus: u32,
-  pub param_name: String,
-  #[slurm(help="Subproblem algorithm", default="lp", choices)]
+
+  #[structopt(long)]
+  pub param_name: Option<String>,
+
+  /// Subproblem algorithm
+  #[structopt(long, default_value="lp", possible_values=SpSolverKind::choices())]
   pub sp: SpSolverKind,
+
+  #[structopt(long, default_value="0")]
   pub av_fork_cuts_min_chain_len: u32,
+
+  #[structopt(long, default_value="4")]
   pub av_fork_cuts_max_chain_len: u32,
+
+  #[structopt(long, default_value="3")]
   pub av_tournament_cuts_min_chain_len: u32,
+
+  #[structopt(long, default_value="6")]
   pub av_tournament_cuts_max_chain_len: u32,
+
+  #[structopt(long, default_value="0")]
   pub pv_fork_cuts_min_chain_len: u32,
+
+  #[structopt(long, default_value="3")]
   pub pv_fork_cuts_max_chain_len: u32,
+
+  #[structopt(long, default_value="0")]
   pub pv_tournament_cuts_min_chain_len: u32,
+
+  #[structopt(long, default_value="u32::MAX")]
   pub pv_tournament_cuts_max_chain_len: u32,
-  #[slurm(default="true")]
+
+  #[structopt(long="no_endtime_cuts", parse(from_flag=std::ops::Not::not))]
   pub endtime_cuts: bool,
-  #[slurm(default="true")]
+
+  #[structopt(long="no_soln_log", parse(from_flag=std::ops::Not::not))]
   pub soln_log: bool,
 }
 
-impl std::default::Default for Params {
-  fn default() -> Self {
-    Params {
-      timelimit: 7200,
-      #[cfg(debug_assertions)]
-      cpus: 1,
-      #[cfg(not(debug_assertions))]
-      cpus: 4,
-      param_name: String::new(),
-      sp: SpSolverKind::Lp,
-      av_fork_cuts_min_chain_len: 0,
-      av_fork_cuts_max_chain_len: 4,
-      av_tournament_cuts_min_chain_len: 3,
-      av_tournament_cuts_max_chain_len: 6,
-      pv_fork_cuts_min_chain_len: 0,
-      pv_fork_cuts_max_chain_len: 3,
-      pv_tournament_cuts_min_chain_len: 0,
-      pv_tournament_cuts_max_chain_len: u32::MAX,
-      endtime_cuts: true,
-      soln_log: true,
-    }
-  }
-}
-
-impl ExpParameters for Params {
+impl IdStr for Params {
   fn id_str(&self) -> String {
-    if self.param_name.len() > 0 {
-      self.param_name.clone()
-    } else {
-      #[cfg(debug_assertions)] {
-        String::from("debug")
-      }
-      #[cfg(not(debug_assertions))] {
-        id_from_serialised(self)
-      }
-    }
+    self.param_name.clone()
+      .unwrap_or_else(|| {
+        #[cfg(debug_assertions)] {
+          String::from("debug")
+        }
+        #[cfg(not(debug_assertions))] {
+          id_from_serialised(self)
+        }
+    })
   }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Outputs {
   pub trace_log: String,
   pub solution_log: String,
   pub info: String,
 }
 
-impl ExpOutputs for Outputs {
+impl NewOutput for Outputs {
   type Inputs = Inputs;
   type Params = Params;
 
@@ -112,10 +109,19 @@ impl ExpOutputs for Outputs {
   }
 }
 
-define_experiment!{ pub struct ApvrpExp, Inputs, Params, Outputs }
+#[derive(Debug, Clone)]
+pub struct ApvrpExp {
+  pub inputs: Inputs,
+  pub parameters: Params,
+  pub outputs: Outputs,
+}
 
-impl Experiment for ApvrpExp {
-  fn log_root_dir() -> std::path::PathBuf {
+impl_experiment!{
+  ApvrpExp;
+  inputs: Inputs;
+  parameters: Params;
+  outputs: Outputs;
+  {
     concat!(env!("CARGO_MANIFEST_DIR"), "/logs/").into()
   }
 }

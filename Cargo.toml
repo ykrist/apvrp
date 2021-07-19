@@ -6,7 +6,7 @@ edition = "2018"
 default-run="apvrp"
 
 [dependencies]
-anyhow = "1.0.38"
+anyhow = { version = "1.0.38", features = ["backtrace"] }
 #grb = "^1.0.3"
 #grb = { git = "https://github.com/ykrist/rust-grb", branch="dogfood" }
 grb = { path = "./grb"}
@@ -20,7 +20,8 @@ tracing-subscriber = { version = "0.2", features = ["json"] }
 tracing-appender = "0.1"
 variant_count = "^1.1.0"
 prettytable-rs = "^0.8"
-slurm-harray = { git = "ssh://git@bitbucket.org/yannik_rist/slurm-utils-rs.git" }
+#slurm-harray = { git = "ssh://git@bitbucket.org/yannik_rist/slurm-utils-rs.git" }
+slurm-harray = { path = "./slurm-utils-rs" }
 smallvec = "^1.6.1"
 regex = "^1.5.4"
 clap = "^2.33.3"

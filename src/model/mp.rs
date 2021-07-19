@@ -92,7 +92,15 @@ impl MpVars {
       .map(move |t| self.x[t])
   }
 
-  pub fn y_sum_av<'a>(&'a self, lu: &'a Lookups, t1: Task, t2: Task)  -> impl Iterator<Item=Var> + 'a {
+  #[inline(always)]
+  pub fn y_sum_av<'a>(&'a self, lu: &'a Lookups, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {
+    trace!(?t1, ?t2, "y_sum_av");
+    debug_assert_ne!(lu.sets.avs().filter_map(move |a| self.y.get(&(a, t1, t2))).count(), 0);
+    self.y_sum_av_possibly_empty(lu, t1, t2)
+  }
+
+  #[inline(always)]
+  pub fn y_sum_av_possibly_empty<'a>(&'a self, lu: &'a Lookups, t1: Task, t2: Task)  -> impl Iterator<Item=Var> + 'a {
     lu.sets.avs()
       .filter_map(move |a| self.y.get(&(a, t1, t2)).copied())
   }

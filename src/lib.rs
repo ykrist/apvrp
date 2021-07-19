@@ -7,8 +7,15 @@
 #![deny(unused_must_use)]
 pub use fnv::{FnvHashMap as Map, FnvHashSet as Set};
 pub use anyhow::Result;
+
 use itertools::Itertools;
 use std::fmt;
+
+
+mod tasks;
+pub use tasks::*;
+
+use logging::*;
 
 pub use instances::dataset::apvrp::{
   MEISEL_A,
@@ -55,8 +62,6 @@ pub struct Data {
   pub av_groups: Map<Avg, Vec<Av>>,
 }
 
-mod tasks;
-pub use tasks::*;
 
 pub fn map_with_capacity<K,V>(capacity: usize) -> Map<K,V> {
   Map::with_capacity_and_hasher(capacity, fnv::FnvBuildHasher::default())
@@ -175,6 +180,23 @@ pub struct Lookups {
   pub tasks: Tasks,
 }
 
+impl Lookups {
+  pub fn load_data_and_build(data_index: usize) -> Result<Self> {
+    let data = dataset(0.5)
+      .load_instance(data_index)
+      .map(preprocess::full_pipeline)?;
+
+    let sets = Sets::new(&data);
+
+    // `pv_req_t_start` is the earliest time we can *depart* from request r's pickup with passive vehicle p
+    let pv_req_t_start = schedule::earliest_departures(&data);
+    let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
+
+    info!(num_tasks = tasks.all.len(), "task generation finished");
+    Ok(Lookups { data, sets, tasks })
+  }
+}
+
 impl AsRef<Data> for Lookups {
   fn as_ref(&self) -> &Data {
     &self.data
@@ -197,11 +219,12 @@ impl AsRef<Data> for Data {
   fn as_ref(&self) -> &Data { self }
 }
 
+
 mod sets;
 pub use sets::Sets;
 
 mod utils;
-pub use utils::{iter_cycle};
+pub use utils::{iter_cycle, Json};
 
 mod constants;
 pub use constants::*;

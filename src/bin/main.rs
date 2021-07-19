@@ -3,7 +3,6 @@ use instances::dataset::Dataset;
 use tracing::{info, error};
 use grb::prelude::*;
 use slurm_harray::{Experiment, handle_slurm_args};
-
 use apvrp::model::mp::{ObjWeights, TaskModelMaster};
 use apvrp::*;
 
@@ -81,6 +80,7 @@ fn print_obj_breakdown(mp: &TaskModelMaster) -> Result<Cost> {
   Ok(obj)
 }
 
+
 #[tracing::instrument]
 fn main() -> Result<()> {
   #[allow(non_snake_case)]
@@ -89,22 +89,10 @@ fn main() -> Result<()> {
   let exp: experiment::ApvrpExp = handle_slurm_args()?;
   exp.write_index_file()?;
   exp.write_parameter_file()?;
-
   let _g = logging::init_logging(Some(exp.get_output_path(&exp.outputs.trace_log)), Some("apvrp.logfilter"));
   info!(inputs=?exp.inputs, params=?exp.parameters);
 
-  let data = dataset(0.5)
-    .load_instance(exp.inputs.index)
-    .map(preprocess::full_pipeline)?;
-
-  let sets = Sets::new(&data);
-
-  // `pv_req_t_start` is the earliest time we can *depart* from request r's pickup with passive vehicle p
-  let pv_req_t_start = schedule::earliest_departures(&data);
-  let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
-
-  info!(num_tasks = tasks.all.len(), "task generation finished");
-  let lookups = Lookups { data, sets, tasks };
+  let lookups = Lookups::load_data_and_build(exp.inputs.index)?;
 
   let mut mp = model::mp::TaskModelMaster::build(&lookups, ObjWeights::default())?;
   mp.model.update()?;
@@ -173,9 +161,9 @@ fn main() -> Result<()> {
   }
 
   let sol = solution::Solution::from_mp(&mp)?;
+  sol.to_serialisable().to_json_file(exp.get_output_path(&format!("{}-soln.json", exp.inputs.index)))?;
   let sol = sol.solve_for_times(&lookups)?;
   sol.pretty_print(&lookups);
-
 
   for (cut_ty, num) in callback.stats.get_cut_counts() {
     println!("Num {:?} Cuts: {}", cut_ty, num);
@@ -200,13 +188,7 @@ fn main() -> Result<()> {
     gurobi: experiment::GurobiInfo::new(&mp.model)?,
   };
 
-  std::fs::write(
-    exp.get_output_path(&exp.outputs.info),
-    serde_json::to_string_pretty(&info)?,
-  )?;
-  // let tasks: Vec<RawPvTask> = tasks.all.into_iter().filter_map(RawPvTask::new).collect();
-  // let task_filename = format!("scrap/tasks/{}.json", idx);
-  // std::fs::write(task_filename, serde_json::to_string_pretty(&tasks)?)?;
+  info.to_json_file(exp.get_output_path(&exp.outputs.info))?;
 
   Ok(())
 }
