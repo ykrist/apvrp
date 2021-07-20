@@ -54,7 +54,7 @@ impl<'a> GraphModel<'a> {
           0
         };
 
-        let var = model.add_var(obj, pt.t_release as Weight, pt.t_deadline as Weight);
+        let var = model.add_var(obj, pt.t_release as Weight, (pt.t_deadline - pt.tt) as Weight);
         vars.insert(t, var);
         var_to_task.insert(var, pt);
       }

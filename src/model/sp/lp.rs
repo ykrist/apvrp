@@ -50,6 +50,13 @@ impl TimingConstraints {
 
     let mut add_bounds = |pvt: PvTask, t: Task, model: &mut Model| -> Result<()> {
       // Constraints (3e)
+      trace!(
+        p_lb=pvt.t_release,
+        p_ub=(pvt.t_deadline - pvt.tt),
+        lb=t.t_release,
+        ub=(t.t_deadline - t.tt),
+        ?t, ?pvt, "bounds"
+      );
       lb.insert(pvt, model.add_constr("", c!(vars[&t] >= pvt.t_release))?);
       ub.insert(pvt, model.add_constr("", c!(vars[&t] <= pvt.t_deadline - pvt.tt))?);
       Ok(())
