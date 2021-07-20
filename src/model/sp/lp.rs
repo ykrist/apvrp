@@ -348,7 +348,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
       }
     }
 
-    trace!(%num_lbs, %num_edges_constraints);
+    trace!(num_lbs, num_edges_constraints);
     lhs = sp_obj * (1 - num_lbs - num_edges_constraints + lhs);
 
     let rhs = self.lu.sets.avs()

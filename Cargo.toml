@@ -37,5 +37,5 @@ name = "apvrp"
 path = "src/bin/main.rs"
 
 [[bin]]
-name = "sp-viz"
-path = "src/bin/sp-viz.rs"
+name = "sol-viz"
+path = "src/bin/sol-viz.rs"

@@ -74,6 +74,7 @@ pub trait Subproblem<'a>: Sized {
               }
               Iis::Cycle(cycle) => {
                 #[cfg(debug_assertions)] {
+                  assert_ne!(cycle.first(), cycle.last());
                   cb.infeasibilities.av_cycle(&cycle);
                 }
                 build_cyclic_infeasiblity_cut(cb, &cycle)
@@ -229,7 +230,6 @@ mod tests {
   #[test]
   fn compare_subproblem_methods() -> Result<()> {
     let _g = crate::logging::init_test_logging(None::<&str>);
-
     let mut patt = crate::test::test_data_dir().join("subproblems").into_os_string().into_string().unwrap();
     patt.push_str("/*index.json");
     for p in glob::glob(&patt)? {

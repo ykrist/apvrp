@@ -435,80 +435,90 @@ impl SpSolution {
   }
 }
 
-#[derive(Deserialize, Copy, Clone, Debug, Hash, Eq, PartialEq)]
-struct JsonTask {
-  start: RawLoc,
-  end: RawLoc,
-  p: i32,
-}
+mod debugging {
+  use super::*;
 
-#[derive(Deserialize, Clone)]
-struct JsonSolution {
-  index: usize,
-  objective: Cost,
-  av_routes: Map<String, Vec<Vec<JsonTask>>>,
-  pv_routes: Map<String, Vec<JsonTask>>,
-}
-
-impl JsonTask {
-  #[tracing::instrument(level = "trace", name="json_task_to_sh_task")]
-  pub fn to_shorthand(&self, lss: &LocSetStarts) -> ShorthandPvTask {
-    use ShorthandPvTask::*;
-
-    let start = Loc::decode(self.start, lss);
-    let end = Loc::decode(self.end, lss);
-    let p =
-      if self.p < 0 { None } else if self.p == 0 { unreachable!() } else { Some(self.p as Pv - 1) };
-
-    let sht = match start {
-      Loc::Ao => unimplemented!(),
-      Loc::Ad => unimplemented!(),
-      Loc::ReqP(r) => Request(p.unwrap(), r),
-      Loc::Po(p) => {
-        match end {
-          Loc::Pd(p2) if p2 == p => Direct(p),
-          Loc::ReqP(r) => Start(p, r),
-          _ => unreachable!("unmatched end: start={:?}, end={:?}", start, end),
-        }
-      }
-      Loc::ReqD(r1) => {
-        match end {
-          Loc::ReqP(r2) => Transfer(p.unwrap(), r1, r2),
-          Loc::Pd(p) => End(p, r1),
-          _ => unreachable!("unmatched end: start={:?}, end={:?}", start, end)
-        }
-      }
-      _ => unreachable!("unmatched start: start={:?}, end={:?}", start, end)
-    };
-    trace!(sh_task=?sht);
-    sht
+  #[derive(Deserialize, Copy, Clone, Debug, Hash, Eq, PartialEq)]
+  struct JsonTask {
+    start: RawLoc,
+    end: RawLoc,
+    p: i32,
   }
-}
 
+  #[derive(Deserialize, Clone)]
+  struct JsonSolution {
+    index: usize,
+    objective: Cost,
+    av_routes: Map<String, Vec<Vec<JsonTask>>>,
+    pv_routes: Map<String, Vec<JsonTask>>,
+  }
 
-pub fn load_michael_soln(path: impl AsRef<Path>, tasks: &Tasks, lss: &LocSetStarts) -> Result<Solution> {
-  let s = std::fs::read_to_string(path)?;
-  let soln: JsonSolution = serde_json::from_str(&s)?;
+  impl JsonTask {
+    #[tracing::instrument(level = "trace", name="json_task_to_sh_task")]
+    pub fn to_shorthand(&self, lss: &LocSetStarts) -> ShorthandPvTask {
+      use ShorthandPvTask::*;
 
-  let mut av_routes = Vec::new();
-  for (av, routes) in &soln.av_routes {
-    let av: Avg = av.parse().context("parsing AV")?;
-    for r in routes {
-      let r: Vec<_> = r.iter()
-        .map(|t| tasks.by_shorthand[&t.to_shorthand(lss).into()])
-        .collect();
-      av_routes.push((av, r));
+      let start = lss.decode(self.start);
+      let end = lss.decode(self.end);
+      let p =
+        if self.p < 0 { None } else { Some(self.p as Pv) };
+
+      let sht = match start {
+        Loc::Ao => unimplemented!(),
+        Loc::Ad => unimplemented!(),
+        Loc::ReqP(r) => Request(p.unwrap(), r),
+        Loc::Po(p) => {
+          match end {
+            Loc::Pd(p2) if p2 == p => Direct(p),
+            Loc::ReqP(r) => Start(p, r),
+            _ => unreachable!("unmatched end: start={:?}, end={:?}", start, end),
+          }
+        }
+        Loc::ReqD(r1) => {
+          match end {
+            Loc::ReqP(r2) => Transfer(p.unwrap(), r1, r2),
+            Loc::Pd(p) => End(p, r1),
+            _ => unreachable!("unmatched end: start={:?}, end={:?}", start, end)
+          }
+        }
+        _ => unreachable!("unmatched start: start={:?}, end={:?}", start, end)
+      };
+      trace!(sh_task=?sht);
+      sht
     }
   }
 
-  let mut pv_routes = Vec::new();
-  for (pv, route) in &soln.pv_routes {
-    let pv: Pv = pv.parse().context("parsing PV")?;
-    let route = route.iter()
-      .map(|t| tasks.by_shorthandpv[&t.to_shorthand(&lss).into()])
-      .collect();
-    pv_routes.push((pv, route));
-  }
 
-  Ok(Solution { objective:  Some(soln.objective), av_routes, pv_routes })
+  pub fn load_michael_soln(path: impl AsRef<Path>, tasks: impl AsRef<Tasks>, lss: &LocSetStarts) -> Result<Solution> {
+    let tasks = tasks.as_ref();
+    let s = std::fs::read_to_string(path)?;
+    let soln: JsonSolution = serde_json::from_str(&s)?;
+
+    let mut av_routes = Vec::new();
+    for (av, routes) in &soln.av_routes {
+      let av: Avg = av.parse().context("parsing AV")?;
+      for route in routes {
+        let mut r = Vec::with_capacity(route.len() + 2);
+        r.push(tasks.odepot);
+        r.extend(
+          route.iter() .map(|t| tasks.by_shorthand[&t.to_shorthand(lss).into()])
+        );
+        r.push(tasks.ddepot);
+        av_routes.push((av, r));
+      }
+    }
+
+    let mut pv_routes = Vec::new();
+    for (pv, route) in &soln.pv_routes {
+      let pv: Pv = pv.parse().context("parsing PV")?;
+      let route = route.iter()
+        .map(|t| tasks.by_shorthandpv[&t.to_shorthand(&lss).into()])
+        .collect();
+      pv_routes.push((pv, route));
+    }
+
+    Ok(Solution { objective:  Some(soln.objective), av_routes, pv_routes })
+  }
 }
+
+pub use debugging::load_michael_soln;

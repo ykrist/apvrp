@@ -103,6 +103,7 @@ impl fmt::Display for Loc {
 }
 
 impl Loc {
+  /// Return the "destination" for Request pickups and origin depots
   pub fn dest(&self) -> Loc {
     match self {
       Loc::ReqP(r) => Loc::ReqD(*r),
@@ -112,6 +113,7 @@ impl Loc {
     }
   }
 
+  /// Return the "origin" for Request deliverys and dest depots
   pub fn origin(&self) -> Loc {
     match self {
       Loc::ReqD(r) => Loc::ReqD(*r),
@@ -136,35 +138,70 @@ impl Loc {
   }
 
 
-  pub fn decode(loc: RawLoc, starts: &LocSetStarts) -> Loc {
-    if loc == starts.avo {
+  // pub fn decode(loc: RawLoc, starts: &LocSetStarts) -> Loc {
+  //   if loc == starts.avo {
+  //     Loc::Ao
+  //   } else if loc < starts.pv_d {
+  //     Loc::Po(loc - starts.pv_o)
+  //   } else if loc < starts.req_p {
+  //     Loc::Pd(loc - starts.pv_d)
+  //   } else if loc < starts.req_d {
+  //     Loc::ReqP(loc - starts.req_p)
+  //   } else if loc < starts.avd {
+  //     Loc::ReqD(loc - starts.req_d)
+  //   } else if loc == starts.avd {
+  //     Loc::Ad
+  //   } else {
+  //     panic!("{} is out of range (max {})", loc, starts.avd)
+  //   }
+  // }
+  //
+  // pub fn encode(&self, starts: &LocSetStarts) -> RawLoc {
+  //   match self {
+  //     Loc::Ao => starts.avo,
+  //     Loc::Ad => starts.avd,
+  //     Loc::Po(p) => starts.pv_o + *p,
+  //     Loc::Pd(p) => starts.pv_d + *p,
+  //     Loc::ReqP(r) => starts.req_p + *r,
+  //     Loc::ReqD(r) => starts.req_d + *r,
+  //   }
+  // }
+}
+
+pub trait LocSetStartsExt {
+  fn decode(&self, loc: RawLoc) -> Loc;
+  fn encode(&self, loc: Loc) -> RawLoc;
+}
+
+impl LocSetStartsExt for LocSetStarts {
+  fn decode(&self, loc: RawLoc) -> Loc {
+    if loc == self.avo {
       Loc::Ao
-    } else if loc < starts.pv_d {
-      Loc::Po(loc - starts.pv_o)
-    } else if loc < starts.req_p {
-      Loc::Pd(loc - starts.pv_d)
-    } else if loc < starts.req_d {
-      Loc::ReqP(loc - starts.req_p)
-    } else if loc < starts.avd {
-      Loc::ReqD(loc - starts.req_d)
-    } else if loc == starts.avd {
+    } else if loc < self.pv_d {
+      Loc::Po(loc - self.pv_o)
+    } else if loc < self.req_p {
+      Loc::Pd(loc - self.pv_d)
+    } else if loc < self.req_d {
+      Loc::ReqP(loc - self.req_p)
+    } else if loc < self.avd {
+      Loc::ReqD(loc - self.req_d)
+    } else if loc == self.avd {
       Loc::Ad
     } else {
-      panic!("{} is out of range (max {})", loc, starts.avd)
+      panic!("{} is out of range (max {})", loc, self.avd)
     }
   }
 
-  pub fn encode(&self, starts: &LocSetStarts) -> RawLoc {
-    match self {
-      Loc::Ao => starts.avo,
-      Loc::Ad => starts.avd,
-      Loc::Po(p) => starts.pv_o + *p,
-      Loc::Pd(p) => starts.pv_d + *p,
-      Loc::ReqP(r) => starts.req_p + *r,
-      Loc::ReqD(r) => starts.req_d + *r,
+  fn encode(&self, loc: Loc) -> RawLoc {
+    match loc {
+      Loc::Ao => self.avo,
+      Loc::Ad => self.avd,
+      Loc::Po(p) => self.pv_o + p,
+      Loc::Pd(p) => self.pv_d + p,
+      Loc::ReqP(r) => self.req_p + r,
+      Loc::ReqD(r) => self.req_d + r,
     }
   }
-
 }
 
 #[derive(Debug, Clone)]
@@ -239,5 +276,5 @@ use fnv::FnvHashSet;
 
 pub mod schedule;
 pub mod experiment;
-pub(crate) mod test;
+pub mod test;
 // TODO tests for encode and decode.

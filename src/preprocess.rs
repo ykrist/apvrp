@@ -42,10 +42,10 @@ pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
   trace!(av_groups=?&av_groups);
 
   let decode_keys_loc =
-    |(i, val): (&RawLoc, &Time)| { (Loc::decode(*i, lss), *val) };
+    |(i, val): (&RawLoc, &Time)| { (lss.decode(*i), *val) };
 
   let decode_keys_locpair = |(&(i,j), &val): (&(RawLoc, RawLoc), &Time)| {
-    ((Loc::decode(i, lss), Loc::decode(j, lss)), val)
+    ((lss.decode(i), lss.decode(j)), val)
   };
 
   let compat_req_passive : Map<_, Vec<_>> = data.compat_req_passive.iter()

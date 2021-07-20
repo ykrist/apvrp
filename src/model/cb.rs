@@ -77,11 +77,18 @@ impl CutType {
 pub struct CbStats {
   n_cuts: Vec<usize>,
   n_cuts_total: usize,
+  n_mipsol: usize,
+  n_subproblems: usize,
 }
 
 impl std::default::Default for CbStats {
   fn default() -> Self {
-    CbStats { n_cuts: vec![0; CutType::VARIANT_COUNT], n_cuts_total: 0 }
+    CbStats {
+      n_cuts: vec![0; CutType::VARIANT_COUNT],
+      n_cuts_total: 0,
+      n_mipsol: 0,
+      n_subproblems: 0
+    }
   }
 }
 
@@ -114,6 +121,18 @@ impl CbStats {
         (cut_ty, cnt)
       })
       .collect()
+  }
+
+  fn inc_and_return_old(val: &mut usize) -> usize {
+    std::mem::replace(val, *val + 1)
+  }
+
+  pub fn inc_n_mipsol(&mut self) -> usize {
+    Self::inc_and_return_old(&mut self.n_mipsol)
+  }
+
+  pub fn inc_n_sp(&mut self) -> usize {
+    Self::inc_and_return_old(&mut self.n_subproblems)
   }
 }
 
@@ -164,9 +183,7 @@ impl InfeasibilityTracker {
   }
 }
 
-
 pub struct Cb<'a> {
-  pub major_it: usize,
   pub lu: &'a Lookups,
   pub params: &'a Params,
   pub var_names: Map<Var, String>,
@@ -203,7 +220,6 @@ impl<'a> Cb<'a> {
     } else { None };
 
     Ok(Cb {
-      major_it: 0,
       lu,
       mp_vars: mp.vars.clone(),
       stats,
@@ -607,8 +623,8 @@ impl<'a> Cb<'a> {
 
 impl<'a> Callback for Cb<'a> {
   fn callback(&mut self, w: Where) -> CbResult {
-    let _span = info_span!("cb", major_it=self.major_it).entered();
-    self.major_it += 1;
+    let cb_it = self.stats.inc_n_mipsol();
+    let _span = info_span!("cb", cb_it).entered();
 
     match w {
       Where::MIPSol(ctx) => {
@@ -630,7 +646,8 @@ impl<'a> Callback for Cb<'a> {
           if self.cut_cache.len() > initial_cut_cache_len {
             info!(ncuts = self.cut_cache.len() - initial_cut_cache_len, "heuristic cuts added");
           } else {
-            let _span = error_span!("sp", estimate=tracing::field::Empty).entered();
+            let sp_idx = self.stats.inc_n_sp();
+            let _span = error_span!("sp", sp_idx, estimate=tracing::field::Empty).entered();
             info!("no heuristic cuts found, solving LP subproblem");
             let sol = Solution{ objective: None, av_routes, pv_routes };
             if let Some(sol_log) = self.sol_log.as_mut() {

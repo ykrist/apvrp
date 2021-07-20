@@ -29,12 +29,12 @@ pub struct RawPvTask {
   pub p: Pv,
 }
 
-impl RawPvTask {
-  pub fn new(task: PvTask, lss: &LocSetStarts) -> Option<RawPvTask> {
-    // FIXME: what is this even used for
-    Some(RawPvTask { start: task.start.encode(lss), end: task.end.encode(lss), p: task.p })
-  }
-}
+// impl RawPvTask {
+//   pub fn new(task: PvTask, lss: &LocSetStarts) -> Option<RawPvTask> {
+//     // FIXME: what is this even used for
+//     Some(RawPvTask { start: task.start.encode(lss), end: task.end.encode(lss), p: task.p })
+//   }
+// }
 
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]

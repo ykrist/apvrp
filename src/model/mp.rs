@@ -4,7 +4,7 @@ use crate::logging::*;
 use grb::prelude::*;
 use fnv::FnvHashSet;
 use crate::solution::Solution;
-use crate::model::EdgeConstrKind;
+use crate::model::{EdgeConstrKind, edge_constr_kind};
 
 #[derive(Clone)]
 pub struct MpVars {
@@ -75,15 +75,21 @@ impl MpVars {
       lu.tasks.task_to_pvtasks[&t].iter().map(move |t| x[t])
     }
 
-    if &t2.ty == &TaskType::Request {
-      trace!(t=?t1, edge_ty=?EdgeConstrKind::Loading, "all PVs for task");
-      Left(iter_x_all_pv(lu, &self.x, t1))
-    } else if &t1.ty == &TaskType::Request {
-      trace!(t=?t2, edge_ty=?EdgeConstrKind::Unloading, "all PVs for task");
-      Left(iter_x_all_pv(lu, &self.x, t2))
-    } else {
-      trace!(?t1, ?t2, edge_ty=?EdgeConstrKind::AvTravelTime, "all AVs for edge");
-      Right(self.y_sum_av(lu, t1, t2))
+    match edge_constr_kind(&t1, &t2) {
+      EdgeConstrKind::Loading => {
+        trace!(t=?t1, edge_ty=?EdgeConstrKind::Loading, "sum all PVs for task");
+        Left(iter_x_all_pv(lu, &self.x, t1))
+      }
+
+      EdgeConstrKind::Unloading => {
+        trace!(t=?t2, edge_ty=?EdgeConstrKind::Unloading, "sum all PVs for task");
+        Left(iter_x_all_pv(lu, &self.x, t2))
+      }
+
+      EdgeConstrKind::AvTravelTime => {
+        trace!(?t1, ?t2, edge_ty=?EdgeConstrKind::AvTravelTime, "all AVs for edge");
+        Right(self.y_sum_av(lu, t1, t2))
+      }
     }
   }
 
@@ -104,44 +110,6 @@ impl MpVars {
     lu.sets.avs()
       .filter_map(move |a| self.y.get(&(a, t1, t2)).copied())
   }
-
-  // FIXME: this should go into sp_lp, it is just the no-good cut
-  // / Construct a expression of variables which is at most `k` (the other return value),
-  // /// If the expression is equal to `k` then the supplied constraints are guaranteed to appear in the subproblem.
-  // pub fn sum_responsible(&self, sets: &Sets, sp_constraints: &[super::SpConstr]) -> (usize, Expr) {
-  //   use super::SpConstr::*;
-  //
-  //   let mut x_tasks = set_with_capacity(sp_constraints.len());
-  //   let mut y_tasks = set_with_capacity(sp_constraints.len());
-  //
-  //   let mut expr = Expr::default();
-  //   let mut k = 0;
-  //
-  //   for &c in sp_constraints {
-  //     match c {
-  //       Unloading(t) | Lb(t) | Ub(t) | Loading(t) => {
-  //         x_tasks.insert(t);
-  //       }
-  //       AvTravelTime(t1, t2) => {
-  //         k += 1;
-  //         for a in sets.avs() {
-  //           if let Some(&y) = self.y.get(&(a, t1, t2)) {
-  //             expr += y;
-  //           }
-  //         }
-  //         y_tasks.insert(t1);
-  //         y_tasks.insert(t2);
-  //       }
-  //     }
-  //   }
-  //
-  //   for t in x_tasks.difference(&y_tasks) {
-  //     k += 1;
-  //     expr += self.x[t]
-  //   }
-  //
-  //   (k, expr)
-  // }
 }
 
 pub struct MpConstraints {

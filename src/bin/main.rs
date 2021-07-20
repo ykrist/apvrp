@@ -5,7 +5,9 @@ use grb::prelude::*;
 use slurm_harray::{Experiment, handle_slurm_args};
 use apvrp::model::mp::{ObjWeights, TaskModelMaster};
 use std::io::Write;
+use instances::dataset::apvrp::LocSetStarts;
 use apvrp::*;
+use apvrp::test::test_data_dir;
 
 
 fn infeasibility_analysis(mp: &mut TaskModelMaster) -> Result<()> {
@@ -40,8 +42,6 @@ fn infeasibility_analysis(mp: &mut TaskModelMaster) -> Result<()> {
           error!(var=%name, ?lb, "iis bound");
         }
       }
-
-
     }
     status => {
       if status == Status::Optimal {
@@ -98,13 +98,13 @@ fn main() -> Result<()> {
   let mut mp = model::mp::TaskModelMaster::build(&lookups, ObjWeights::default())?;
   mp.model.update()?;
 
-  // let true_soln = solution::load_michael_soln(
-  //   format!("/home/yannik/phd/src/apvrp/scrap/soln/{}.json", exp.inputs.index),
-  //   &tasks,
-  //   &LocSetStarts::new(data.n_passive, data.n_req))
-  //     .map_err(|e| error!(error=%e, "unable to load solution"))
-  //     .ok();
-
+  let true_soln = solution::load_michael_soln(
+    test_data_dir().join(format!("soln/{}.json", exp.inputs.index)),
+    &lookups,
+    &LocSetStarts::new(lookups.data.n_passive, lookups.data.n_req),
+    )
+    .map_err(|e| error!(error=%e, "unable to load solution"))
+    .ok();
 
   mp.model.set_obj_attr_batch(attr::BranchPriority, mp.vars.u.values().map(|&u| (u, 100)))?;
   mp.model.set_obj_attr_batch(attr::UB, mp.vars.u.values().map(|&u| (u, 0.0)))?;
@@ -122,7 +122,7 @@ fn main() -> Result<()> {
   let mut callback = model::cb::Cb::new(&lookups, &exp, &mp)?;
 
   match mp.model.optimize_with_callback(&mut callback) {
-  // match mp.model.optimize() {
+    // match mp.model.optimize() {
     Err(e) => {
       match callback.error.take() {
         // errors handled
@@ -139,7 +139,6 @@ fn main() -> Result<()> {
           // mp.model.set_obj_attr(attr::LB, &y, 0.)?;;
           infeasibility_analysis(&mut mp)?;
           anyhow::bail!("bugalug")
-
         }
         // errors propagated
         _ => {
@@ -157,7 +156,7 @@ fn main() -> Result<()> {
       infeasibility_analysis(&mut mp)?;
       anyhow::bail!("bugalug")
     }
-    Status::Optimal => {},
+    Status::Optimal => {}
     status => anyhow::bail!("unexpected master problem status: {:?}", status)
   }
 
@@ -180,16 +179,17 @@ fn main() -> Result<()> {
 
   callback.flush_cut_cache(&mut mp.model)?;
   mp.model.update()?;
-  mp.model.write("master_problem.lp")?;
+  mp.model.write(exp.get_output_path_prefixed("master_problem.lp").to_str().unwrap())?;
 
-  // if let Some(true_soln) = true_soln { // FIXME add check back in
-  //   if true_soln.objective != Some(obj) {
-  //     error!(correct = true_soln.objective.unwrap(), obj, "objective mismatch");
-  //     mp.fix_solution(&true_soln)?;
-  //     infeasibility_analysis(&mut mp)?;
-  //     anyhow::bail!("bugalug");
-  //   }
-  // }
+  if let Some(true_soln) = true_soln {
+    if true_soln.objective != Some(obj) {
+      true_soln.to_serialisable().to_json_file(exp.get_output_path_prefixed("true_soln.json"))?;
+      error!(correct = true_soln.objective.unwrap(), obj, "objective mismatch");
+      mp.fix_solution(&true_soln)?;
+      infeasibility_analysis(&mut mp)?;
+      anyhow::bail!("bugalug");
+    }
+  }
 
   let info = experiment::Info {
     gurobi: experiment::GurobiInfo::new(&mp.model)?,
