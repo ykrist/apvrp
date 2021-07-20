@@ -10,11 +10,20 @@ use grb::callback::MIPSolCtx;
 use grb::prelude::*;
 use std::hash::Hash;
 use crate::graph::DecomposableDigraph;
+use crate::utils::IoContext;
 
 /// A (possibly cyclic) Active Vehicle path.  If the path is a cycle, the first and last Tasks are the same.
 pub(crate) type AvPath = Vec<Task>;
 /// A (possibly cyclic) Passive Vehicle path.  If the path is a cycle, the first and last Tasks are the same.
 pub(crate) type PvPath = Vec<PvTask>;
+
+pub fn iter_solution_log(p: impl AsRef<Path>) -> Result<impl Iterator<Item=SerialisableSolution>> {
+  let contents = std::io::Cursor::new(std::fs::read(&p).read_context(&p)?);
+  let stream = serde_json::Deserializer::from_reader(contents)
+    .into_iter()
+    .map(|r| r.expect("failure parsing file"));
+  Ok(stream)
+}
 
 #[inline]
 fn discard_edge_weights<T, W>(pairs: Vec<(T, W)>) -> Vec<T> {

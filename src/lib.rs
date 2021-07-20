@@ -11,12 +11,6 @@ pub use anyhow::Result;
 use itertools::Itertools;
 use std::fmt;
 
-
-mod tasks;
-pub use tasks::*;
-
-use logging::*;
-
 pub use instances::dataset::apvrp::{
   MEISEL_A,
   TILK_AB,
@@ -220,6 +214,12 @@ impl AsRef<Data> for Data {
 }
 
 
+
+mod tasks;
+pub use tasks::*;
+
+use logging::*;
+
 mod sets;
 pub use sets::Sets;
 
@@ -239,4 +239,5 @@ use fnv::FnvHashSet;
 
 pub mod schedule;
 pub mod experiment;
+pub(crate) mod test;
 // TODO tests for encode and decode.

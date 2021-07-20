@@ -13,7 +13,7 @@ use std::iter::Peekable;
 use std::ops::AddAssign;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-
+use anyhow::Context;
 
 pub fn iter_cycle<'a, T>(vals: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> + 'a {
   let n = vals.len();
@@ -321,3 +321,15 @@ mod tests {
     let y = permutator.next();
   }
 }
+
+pub trait IoContext<T, E>: Context<T, E> + Sized {
+  fn read_context(self, p: impl AsRef<Path>) -> anyhow::Result<T> {
+    self.with_context(|| format!( "Failed to read file {:?}", p.as_ref()))
+  }
+
+  fn write_context(self, p: impl AsRef<Path>) -> anyhow::Result<T> {
+    self.with_context(|| format!("Failed to write to file {:?}", p.as_ref()))
+  }
+}
+
+impl<R, T, E> IoContext<T, E> for R where R: Context<T, E> + Sized {}

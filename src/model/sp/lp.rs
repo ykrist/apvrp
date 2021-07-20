@@ -13,9 +13,13 @@ use crate::tasks::TaskId;
 use crate::model::mp::MpVars;
 use crate::solution::*;
 use crate::model::cb::{CutType, Cb, CbError};
-use crate::utils::HashMapExt;
+use crate::utils::{HashMapExt, IoContext};
 
 use super::*;
+use std::path::Path;
+use std::io::BufWriter;
+use std::fs::File;
+use daggylp::Weight;
 
 
 thread_local! {
@@ -145,177 +149,51 @@ impl<'a> TimingSubproblem<'a> {
     Ok(TimingSubproblem { vars, cons, model, mp_sol: sol, second_last_tasks, lu })
   }
 
-  // pub fn add_cuts(mut self, cb: &mut super::cb::Cb, estimate: Time) -> Result<()> {
-  //   let _s = error_span!("add_cuts", estimate).entered();
-  //
-  //   let mut iter = 0;
-  //   loop {
-  //     self.model.optimize()?;
-  //     let status = self.model.status();
-  //     let _s = debug_span!("lp_solve_loop", ?iter).entered();
-  //     debug!(?status);
-  //     match status? {
-  //       Status::Infeasible => {
-  //         self.model.compute_iis()?;
-  //         cb.enqueue_cut(self.build_iis_cut(cb)?, CutType::LpFeas);
-  //       }
-  //
-  //       Status::Optimal => {
-  //         if iter > 0 {
-  //           return Ok(());
-  //         }
-  //         let obj = self.model.get_attr(attr::ObjVal)?.round() as Time;
-  //         // trace!(obj); // FIXME this assertion is not quite right - need to manually minimise theta
-  //         // #[cfg(debug_assertions)] {
-  //         //   if estimate > obj {
-  //         //     error!(obj,T=?get_var_values(&self.model, &self.vars)?.collect_vec(), "invalid Benders cut(s)");
-  //         //     let sol = SpSolution::from_sp(&self)?;
-  //         //     sol.pretty_print(&self.data);
-  //         //     for (ty, i, cut) in &cb.cut_cache {
-  //         //       if ty.is_opt_cut() {
-  //         //         let (lhs, rhs) = cut.evaluate(&cb.var_vals);
-  //         //         warn!(?ty, idx=i, ?obj, ?lhs, ?rhs, cut=?cut.with_names(&cb.var_names),  "possible invalid opt cut");
-  //         //       }
-  //         //     }
-  //         //     let mut solution = self.mp_sol.clone();
-  //         //     solution.objective = Some(obj);
-  //         //     let err = CbError::InvalidBendersCut { estimate, obj, solution };
-  //         //     cb.error = Some(err.clone());
-  //         //     return Err(err.into());
-  //         //   }
-  //         // }
-  //
-  //         if estimate < obj {
-  //           cb.enqueue_cut(self.build_mrs_cut(cb)?, CutType::LpOpt);
-  //         }
-  //
-  //         return Ok(());
-  //       }
-  //
-  //       other => {
-  //         let err = CbError::Status(other);
-  //         error!(status=?other, "{}", err);
-  //         return Err(err.into());
-  //       }
-  //     }
-  //     iter += 1;
-  //   }
-  // }
+  pub fn write_debug_graph(&self, path: impl AsRef<Path>) -> Result<()> {
+    use std::io::Write;
 
-  // #[tracing::instrument(level = "trace", skip(self, cb))]
-  // fn build_iis_cut(&mut self, cb: &Cb) -> Result<IneqExpr> {
-  //   let mut tasks = HashSet::new();
-  //
-  //   let model = &mut self.model;
-  //   let mut retain_non_iis_constr = |t: &PvTask, c: &mut Constr| -> Result<bool> {
-  //     if model.get_obj_attr(attr::IISConstr, &c)? > 0 {
-  //       trace!(?t, ?c, c_group="x_cons", "remove SP constr");
-  //       tasks.insert(*t);
-  //       model.remove(*c)?;
-  //       Ok(false)
-  //     } else {
-  //       Ok(true)
-  //     }
-  //   };
-  //
-  //   self.cons.unloading.retain_ok(&mut retain_non_iis_constr)?;
-  //   self.cons.loading.retain_ok(&mut retain_non_iis_constr)?;
-  //   self.cons.lb.retain_ok(&mut retain_non_iis_constr)?;
-  //   self.cons.ub.retain_ok(&mut retain_non_iis_constr)?;
-  //
-  //   let mut lhs = tasks.iter().map(|t| cb.mp_vars.x[t]).grb_sum();
-  //   let mut n = tasks.len();
-  //
-  //   let model = &mut self.model;
-  //   self.cons.av_sync.retain_ok(|&(t1, t2), &mut c| -> Result<bool> {
-  //     if model.get_obj_attr(attr::IISConstr, &c)? > 0 {
-  //       trace!(?t1, ?t2, c_group="y_cons", "remove SP constr");
-  //       model.remove(c)?;
-  //
-  //       for a in cb.sets.avs() {
-  //         if let Some(&y) = cb.mp_vars.y.get(&(a, t1, t2)) {
-  //           lhs += y;
-  //           n += 1;
-  //         }
-  //       }
-  //       Ok(false) // remove this constraint
-  //     } else {
-  //       Ok(true) // keep this constraint
-  //     }
-  //   })?;
-  //
-  //   Ok(c!( lhs <= n - 1 ))
-  // }
-  //
-  // #[tracing::instrument(level = "trace", skip(self, cb))]
-  // fn build_mrs_cut(&self, cb: &Cb) -> Result<IneqExpr> {
-  //   let sp_obj = self.model.get_attr(attr::ObjVal)?;
-  //
-  //   let mut ysum = Expr::default();
-  //   let mut n_x_y_terms = 0i32;
-  //
-  //   for (&(t1, t2), c) in &self.cons.av_sync {
-  //     trace!(?t1, ?t2, dual=?self.model.get_obj_attr(attr::Pi, c), slack=?self.model.get_obj_attr(attr::Slack, c));
-  //     if self.model.get_obj_attr(attr::Pi, c)?.abs() > 1e-6 {
-  //       for a in cb.sets.avs() {
-  //         if let Some(&y) = cb.mp_vars.y.get(&(a, t1, t2)) {
-  //           ysum += y;
-  //         }
-  //       }
-  //       n_x_y_terms += 1;
-  //     }
-  //   }
-  //
-  //   #[cfg(debug_assertions)] {
-  //     fn log_nonzero_dual_tasks<'a>(model: &grb::Model, cgroup: &str, cons: impl IntoIterator<Item=(&'a PvTask,&'a Constr)>) -> Result<()> {
-  //       for (t, c) in cons {
-  //         let dual =model.get_obj_attr(attr::Pi, c)?;
-  //         if dual.abs() > 0.0001  {
-  //           trace!(?t, ?dual, ?cgroup, "non-zero dual");
-  //         }
-  //       }
-  //       Ok(())
-  //     }
-  //
-  //     log_nonzero_dual_tasks(&self.model, "start_req", &self.cons.loading)?;
-  //     log_nonzero_dual_tasks(&self.model, "end_req", &self.cons.unloading)?;
-  //     log_nonzero_dual_tasks(&self.model, "ub", &self.cons.ub)?;
-  //     log_nonzero_dual_tasks(&self.model, "lb", &self.cons.lb)?;
-  //   }
-  //
-  //   fn add_tasks_with_nonzero_dual<'a>(model: &grb::Model, taskset: &mut Set<Task>, cons: impl IntoIterator<Item=(&'a Task,&'a Constr)>) -> Result<()> {
-  //     for (t, c) in cons {
-  //       if model.get_obj_attr(attr::Pi, c)?.abs() > 0.0001  {
-  //          taskset.insert(*t);
-  //       }
-  //     }
-  //     Ok(())
-  //   }
-  //
-  //   let mut critial_tasks = Set::default();
-  //   add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.unloading)?;
-  //   add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.loading)?;
-  //   add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.ub)?;
-  //   add_tasks_with_nonzero_dual(&self.model, &mut critial_tasks, &self.cons.lb)?;
-  //   n_x_y_terms += critial_tasks.len() as i32;
-  //
-  //   let xsum = critial_tasks.into_iter().map(|t| cb.mp_vars.x[&t]).grb_sum();
-  //
-  //   let mut theta_sum = Expr::default();
-  //   for &t in &self.second_last_tasks {
-  //     for a in cb.sets.avs() {
-  //       if let Some(&theta) = cb.mp_vars.theta.get(&(a, t)) {
-  //         theta_sum += theta;
-  //         ysum += cb.mp_vars.y[&(a, t, cb.tasks.ddepot)];
-  //         n_x_y_terms += 1;
-  //       }
-  //     }
-  //   }
-  //   let sol = SpSolution::from_sp(self)?;
-  //   let cut = c!(sp_obj*(1 - n_x_y_terms + ysum + xsum) <= theta_sum);
-  //   trace!(n_x_y_terms, cut=?cut.with_names(&cb.var_names), ?sol);
-  //   Ok(cut)
-  // }
+    let mut writer = BufWriter::new(File::create(&path).write_context(&path)?);
+    let mut task_order = map_with_capacity(self.cons.lb.len());
+
+    for (k,&pt) in self.cons.lb.keys().enumerate() {
+      let t = self.lu.tasks.pvtask_to_task[&pt];
+      let obj = if self.second_last_tasks.contains(&t) { 1 } else { 0 };
+      task_order.insert(t, k);
+      writeln!(writer, "{} {} {}", pt.t_release, pt.t_deadline, obj)?;
+    }
+    writeln!(writer, "edges")?;
+
+    for ((t1, t2), c) in &self.cons.edge_constraints {
+      let rhs : f64 = self.model.get_obj_attr(attr::RHS, c)?;
+      let d = rhs.abs().round() as Time;
+      let i = task_order[t1];
+      let j = task_order[t2];
+      writeln!(writer, "{} {} {}", i, j, d)?;
+    }
+
+    Ok(())
+  }
+
+  #[instrument(level="error", name="debug_iis", skip(self))]
+  pub fn debug_infeasibility(&mut self) -> Result<()> {
+    self.model.compute_iis()?;
+    for (t, lb) in &self.cons.lb {
+      if self.model.get_obj_attr(attr::IISConstr, lb)? > 0 {
+        error!(cons="lb", ?t, val=?self.model.get_obj_attr(attr::RHS, lb)?);
+      }
+    }
+    for (t, ub) in &self.cons.ub {
+      if self.model.get_obj_attr(attr::IISConstr, ub)? > 0 {
+        error!(cons="ub", ?t, val=?self.model.get_obj_attr(attr::RHS, ub)?);
+      }
+    }
+    for ((t1, t2), c) in &self.cons.edge_constraints {
+      if self.model.get_obj_attr(attr::IISConstr, c)? > 0 {
+        error!(cons="edge", ?t1, ?t2, val=?-self.model.get_obj_attr(attr::RHS, c)?);
+      }
+    }
+    Ok(())
+  }
 }
 
 impl<'a> Subproblem<'a> for TimingSubproblem<'a> {

@@ -4,6 +4,7 @@ use tracing::{info, error};
 use grb::prelude::*;
 use slurm_harray::{Experiment, handle_slurm_args};
 use apvrp::model::mp::{ObjWeights, TaskModelMaster};
+use std::io::Write;
 use apvrp::*;
 
 
@@ -161,7 +162,13 @@ fn main() -> Result<()> {
   }
 
   let sol = solution::Solution::from_mp(&mp)?;
-  sol.to_serialisable().to_json_file(exp.get_output_path(&format!("{}-soln.json", exp.inputs.index)))?;
+  let json_sol = sol.to_serialisable();
+  if let Some(sol_log) = callback.sol_log.as_mut() {
+    serde_json::to_writer(&mut *sol_log, &json_sol)?; // need to re-borrow here
+    write!(sol_log, "\n")?;
+  }
+  json_sol.to_json_file(exp.get_output_path(&format!("{}-soln.json", exp.inputs.index)))?;
+
   let sol = sol.solve_for_times(&lookups)?;
   sol.pretty_print(&lookups);
 

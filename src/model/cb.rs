@@ -5,6 +5,8 @@ use grb::prelude::*;
 use grb::callback::{Callback, Where, CbResult, MIPSolCtx};
 use fnv::FnvHashSet;
 use super::sp::*;
+use crate::model::sp::PathIis;
+
 #[macro_use]
 use crate::logging::*;
 use std::fmt;
@@ -19,6 +21,7 @@ use experiment::{Params, SpSolverKind};
 use slurm_harray::{Experiment};
 use crate::utils::PermuteSliceClone;
 use smallvec::SmallVec;
+
 
 #[derive(Debug, Clone)]
 pub enum CbError {

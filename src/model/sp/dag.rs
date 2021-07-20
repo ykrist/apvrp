@@ -12,11 +12,12 @@ use grb::prelude::*;
 use crate::model::cb::CutType;
 
 pub struct GraphModel<'a> {
-  lu: &'a Lookups,
-  theta_val: &'a Map<(Avg, Task), Time>,
-  vars: Map<Task, Var>,
-  var_to_task: Map<Var, PvTask>,
-  edges: Map<(Var, Var), (Task, Task)>,
+  pub lu: &'a Lookups,
+  pub theta_val: &'a Map<(Avg, Task), Time>,
+  pub vars: Map<Task, Var>,
+  /// ODepot var is *not* in this lookup.
+  pub var_to_task: Map<Var, PvTask>,
+  pub edges: Map<(Var, Var), (Task, Task)>,
   pub model: Graph<AdjacencyList<ArrayVec<2>>>,
 }
 
@@ -41,7 +42,7 @@ impl<'a> GraphModel<'a> {
     let mut vars = map_with_capacity(lu.data.n_req as usize * 2);
     let mut var_to_task = map_with_capacity(lu.data.n_req as usize * 2);
 
-    vars.insert(lu.tasks.odepot, model.add_var(0, lu.tasks.odepot.t_release as Weight, lu.tasks.odepot.t_deadline as Weight));
+    // vars.insert(lu.tasks.odepot, model.add_var(0, lu.tasks.odepot.t_release as Weight, lu.tasks.odepot.t_deadline as Weight));
     for (_, pv_route) in &sol.pv_routes {
       for &pt in pv_route {
         let t = lu.tasks.pvtask_to_task[&pt];
@@ -85,7 +86,8 @@ impl<'a> GraphModel<'a> {
 
     for (_, av_route) in &sol.av_routes {
       // last task is ddepot
-      for (t1, t2) in iter_pairs(&av_route[..av_route.len() - 1]) {
+      // Skip the ODepot
+      for (t1, t2) in iter_pairs(&av_route[1..av_route.len() - 1]) {
         trace!(?t1, ?t2);
         let v1 = vars[&t1];
         let v2 = vars[&t2];

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::Result;
 use grb::prelude::*;
 use std::str::FromStr;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct Inputs {
@@ -41,7 +42,7 @@ pub struct Params {
   pub param_name: Option<String>,
 
   /// Subproblem algorithm
-  #[structopt(long, default_value="lp", possible_values=SpSolverKind::choices())]
+  #[structopt(long, default_value="dag", possible_values=SpSolverKind::choices())]
   pub sp: SpSolverKind,
 
   #[structopt(long, default_value="0")]
@@ -65,7 +66,7 @@ pub struct Params {
   #[structopt(long, default_value="0")]
   pub pv_tournament_cuts_min_chain_len: u32,
 
-  #[structopt(long, default_value="u32::MAX")]
+  #[structopt(long, default_value="100000000")]
   pub pv_tournament_cuts_max_chain_len: u32,
 
   #[structopt(long="no_endtime_cuts", parse(from_flag=std::ops::Not::not))]
@@ -116,15 +117,25 @@ pub struct ApvrpExp {
   pub outputs: Outputs,
 }
 
-impl_experiment!{
-  ApvrpExp;
-  inputs: Inputs;
-  parameters: Params;
-  outputs: Outputs;
-  {
+impl Experiment for ApvrpExp {
+  impl_experiment_helper! {
+    ApvrpExp;
+    inputs: Inputs;
+    parameters: Params;
+    outputs: Outputs;
+  }
+
+  fn log_root_dir() -> PathBuf {
     concat!(env!("CARGO_MANIFEST_DIR"), "/logs/").into()
   }
+
+  fn post_parse(inputs: &Self::Inputs, params: &mut Self::Parameters) {
+    if params.param_name.is_none() {
+      params.param_name = Some(params.id_str())
+    }
+  }
 }
+
 
 impl ResourcePolicy for ApvrpExp {
   fn time(&self) -> Duration { Duration::from_secs(self.parameters.timelimit) }
