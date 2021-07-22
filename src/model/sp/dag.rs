@@ -1,10 +1,11 @@
 use daggylp::{Var, Graph, SolveStatus, edge_storage::{AdjacencyList, ArrayVec}, Weight, InfKind, mrs::MrsTree};
+use smallvec::SmallVec;
 
 use crate::*;
 use crate::model::sp::{Iis, Subproblem, SpStatus, iter_edge_constraints, XEdgeConstraint, PathIis};
 use crate::solution::Solution;
 use crate::model::cb;
-use crate::utils::iter_pairs;
+use crate::utils::{iter_pairs, VarIterExt};
 
 
 use tracing::*;
@@ -12,6 +13,7 @@ use grb::prelude::*;
 use crate::model::cb::CutType;
 
 pub struct GraphModel<'a> {
+  pub second_last_tasks: SmallVec<[Task; NUM_AV_UB]>,
   pub lu: &'a Lookups,
   pub theta_val: &'a Map<(Avg, Task), Time>,
   pub vars: Map<Task, Var>,
@@ -42,18 +44,15 @@ impl<'a> GraphModel<'a> {
     let mut vars = map_with_capacity(lu.data.n_req as usize * 2);
     let mut var_to_task = map_with_capacity(lu.data.n_req as usize * 2);
 
-    // vars.insert(lu.tasks.odepot, model.add_var(0, lu.tasks.odepot.t_release as Weight, lu.tasks.odepot.t_deadline as Weight));
+    let second_last_tasks: SmallVec<_> = sol.av_routes.iter()
+      .map(|(_, av_route)| av_route[av_route.len()-2]).collect();
+
     for (_, pv_route) in &sol.pv_routes {
       for &pt in pv_route {
         let t = lu.tasks.pvtask_to_task[&pt];
 
         // loop over all AVs here, probably better than allocating.
-        let obj = if sol.av_routes.iter().any(|(_, av_route)| av_route[av_route.len() - 2] == t) {
-          1
-        } else {
-          0
-        };
-
+        let obj = if second_last_tasks.as_slice().contains(&t) { 1 } else { 0 };
         let var = model.add_var(obj, pt.t_release as Weight, (pt.t_deadline - pt.tt) as Weight);
         vars.insert(t, var);
         var_to_task.insert(var, pt);
@@ -102,6 +101,7 @@ impl<'a> GraphModel<'a> {
       }
     }
     Ok(GraphModel {
+      second_last_tasks,
       lu,
       theta_val,
       vars,
@@ -184,6 +184,18 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
         cut += -old_obj;
       }
 
+      // Now need to add the conditional-objective terms
+      for &t in &self.second_last_tasks {
+        // I(x,y) = sum(Y[a, t, ddepot] for a in A)
+
+        // each term is - (1 - I(x, y) ) * c(t) * optimal_time(t) where c(t) = 1
+        // = I(x, y) * optimal_time(t) - optimal_time(t)
+        let time = self.model.get_solution(&self.vars[&t])?;
+        cb.mp_vars.y_sum_av(self.lu, t, self.lu.tasks.ddepot).map(|y| time * y).sum_into(&mut cut);
+        cut += -time;
+      }
+
+      // Theta-terms
       for t in mrs.obj_vars().map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]]) {
         for a in self.lu.sets.avs() {
           if let Some(&theta) = cb.mp_vars.theta.get(&(a, t)) {

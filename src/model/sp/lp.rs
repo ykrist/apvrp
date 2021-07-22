@@ -317,19 +317,21 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     let _s = trace_span!("optimality_cut", obj=%sp_obj).entered();
     let mut lhs = Expr::default();
 
-    let mut num_edges_constraints = 0;
+    let mut num_edges_constraints = 0i32;
     for ((t1, t2), c) in &self.cons.edge_constraints {
       let dual = self.model.get_obj_attr(attr::Pi, c)?;
       if dual.abs() > 0.1 {
         num_edges_constraints += 1;
         trace!(?t1, ?t2, ?dual, "non-zero edge dual");
-        for var in cb.mp_vars.max_weight_edge_sum(self.lu, *t1, *t2) {
-          lhs += var;
-        }
+        cb.mp_vars.max_weight_edge_sum(self.lu, *t1, *t2).sum_into(&mut lhs);
       }
     }
 
-    let mut num_lbs = 0;
+    self.second_last_tasks.iter()
+      .flat_map(|&t| cb.mp_vars.y_sum_av(cb.lu, t, cb.lu.tasks.ddepot))
+      .sum_into(&mut lhs);
+
+    let mut num_lbs = 0i32;
     for (t, c) in &self.cons.lb {
       let dual = self.model.get_obj_attr(attr::Pi, c)?;
       if dual.abs() > 0.1 {
@@ -348,8 +350,9 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
       }
     }
 
-    trace!(num_lbs, num_edges_constraints);
-    lhs = sp_obj * (1 - num_lbs - num_edges_constraints + lhs);
+    let num_obj_tasks = self.second_last_tasks.len() as i32;
+    trace!(num_lbs, num_edges_constraints, num_obj_tasks);
+    lhs = sp_obj * (1 - num_lbs - num_edges_constraints - num_obj_tasks + lhs);
 
     let rhs = self.lu.sets.avs()
       .cartesian_product(&self.second_last_tasks)
