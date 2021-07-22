@@ -29,6 +29,20 @@ impl_arg_enum! { SpSolverKind;
 }
 
 #[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
+pub struct AuxParams {
+  #[structopt(long="no-soln-log", parse(from_flag=std::ops::Not::not))]
+  pub soln_log: bool,
+}
+
+impl Default for AuxParams {
+  fn default() -> Self {
+    Self {
+      soln_log: false,
+    }
+  }
+}
+
+#[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct Params {
   #[structopt(long, short, default_value="7200", value_name="seconds")]
   pub timelimit: u64,
@@ -72,8 +86,8 @@ pub struct Params {
   #[structopt(long="no_endtime_cuts", parse(from_flag=std::ops::Not::not))]
   pub endtime_cuts: bool,
 
-  #[structopt(long="no_soln_log", parse(from_flag=std::ops::Not::not))]
-  pub soln_log: bool,
+  #[structopt(long)]
+  pub two_phase: bool,
 }
 
 impl IdStr for Params {
@@ -100,8 +114,9 @@ pub struct Outputs {
 impl NewOutput for Outputs {
   type Inputs = Inputs;
   type Params = Params;
+  type AuxParams = AuxParams;
 
-  fn new(inputs: &Inputs, _params: &Params) -> Self {
+  fn new(inputs: &Inputs, _params: &Params, _aux_params: &AuxParams) -> Self {
     Outputs{
       solution_log: format!("{}-sollog.ndjson", inputs.index).into(),
       trace_log: format!("{}-log.ndjson", inputs.index).into(),
@@ -114,15 +129,16 @@ impl NewOutput for Outputs {
 pub struct ApvrpExp {
   pub inputs: Inputs,
   pub parameters: Params,
+  pub aux_params: AuxParams,
   pub outputs: Outputs,
 }
 
 impl Experiment for ApvrpExp {
   impl_experiment_helper! {
-    ApvrpExp;
     inputs: Inputs;
     parameters: Params;
     outputs: Outputs;
+    aux_params: AuxParams;
   }
 
   fn log_root_dir() -> PathBuf {

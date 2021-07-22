@@ -26,6 +26,15 @@ impl std::default::Default for ObjWeights {
   fn default() -> Self { ObjWeights { tt: 10.0, av_finish_time: 1.0, cover: 10_000.0 } }
 }
 
+impl ObjWeights {
+  pub fn without_av_finish_time(&self) -> Self {
+    Self {
+      av_finish_time: 0.0,
+      ..*self
+    }
+  }
+}
+
 impl MpVars {
   pub fn build(l: &Lookups, model: &mut Model) -> Result<Self> {
     let mut x = map_with_capacity(l.tasks.pvtask_to_task.len());
@@ -67,7 +76,7 @@ impl MpVars {
 
   /// For task pair `(t1, t2)`, return a sum of variables which is 1 if the `(t1, t2)` edge constraint appears in the
   /// subproblem and 0 otherwise.
-  #[instrument(level="trace", skip(self, lu))]
+  #[instrument(level = "trace", skip(self, lu))]
   pub fn max_weight_edge_sum<'a>(&'a self, lu: &'a Lookups, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {
     use itertools::Either::*;
 
@@ -106,7 +115,7 @@ impl MpVars {
   }
 
   #[inline(always)]
-  pub fn y_sum_av_possibly_empty<'a>(&'a self, lu: &'a Lookups, t1: Task, t2: Task)  -> impl Iterator<Item=Var> + 'a {
+  pub fn y_sum_av_possibly_empty<'a>(&'a self, lu: &'a Lookups, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {
     lu.sets.avs()
       .filter_map(move |a| self.y.get(&(a, t1, t2)).copied())
   }
@@ -125,7 +134,7 @@ pub struct MpConstraints {
 }
 
 impl MpConstraints {
-  pub fn build(lu: &Lookups, model: &mut Model, vars: &MpVars, obj_param: &ObjWeights) -> Result<Self> {
+  pub fn build(lu: &Lookups, model: &mut Model, vars: &MpVars) -> Result<Self> {
     let req_cover = {
       let mut cmap = map_with_capacity(lu.data.n_req as usize);
       for r in lu.sets.reqs() {
@@ -241,7 +250,7 @@ impl MpConstraints {
       for (&pt, &x) in &vars.x {
         let t = lu.tasks.pvtask_to_task[&pt];
 
-        let ysum =lu.data.compat_passive_active[&pt.p].iter()
+        let ysum = lu.data.compat_passive_active[&pt.p].iter()
           .cartesian_product(&lu.tasks.pred[&t])
           .filter_map(|(&a, &td)| vars.y.get(&(a, td, t)))
           .grb_sum();
@@ -253,31 +262,31 @@ impl MpConstraints {
     };
 
     let obj = {
-      let mut obj_expr = Expr::default();
+      // let mut obj_expr = Expr::default();
 
-      for (t, &x) in &vars.x {
-        let obj = if !t.is_depot() {
-          obj_param.tt * (lu.data.travel_cost[&(t.start, t.end)] as f64)
-        } else { 0.0 };
-        obj_expr += obj * x;
-      }
+      // for (t, &x) in &vars.x {
+      //   let obj = if !t.is_depot() {
+      //     obj_param.tt * (lu.data.travel_cost[&(t.start, t.end)] as f64)
+      //   } else { 0.0 };
+      //   obj_expr += obj * x;
+      // }
+      //
+      // for ((_, t1, t2), &y) in &vars.y {
+      //   let obj = obj_param.tt * (lu.data.travel_cost[&(t1.end, t2.start)] as f64);
+      //   obj_expr += obj * y;
+      // }
+      //
+      // for (_, &u) in &vars.u {
+      //   obj_expr += obj_param.cover * u;
+      // }
+      //
+      // for (&(a, t), &theta) in &vars.theta {
+      //   obj_expr += obj_param.av_finish_time * theta;
+      //   let last_lil_bit = (t.tt + lu.data.travel_cost[&(t.end, Loc::Ad)]) as f64;
+      //   obj_expr += obj_param.av_finish_time * last_lil_bit * vars.y[&(a, t, lu.tasks.ddepot)];
+      // }
 
-      for ((_, t1, t2), &y) in &vars.y {
-        let obj = obj_param.tt * (lu.data.travel_cost[&(t1.end, t2.start)] as f64);
-        obj_expr += obj * y;
-      }
-
-      for (_, &u) in &vars.u {
-        obj_expr += obj_param.cover * u;
-      }
-
-      for (&(a, t), &theta) in &vars.theta {
-        obj_expr += obj_param.av_finish_time * theta;
-        let last_lil_bit = (t.tt + lu.data.travel_cost[&(t.end, Loc::Ad)]) as f64;
-        obj_expr += obj_param.av_finish_time * last_lil_bit * vars.y[&(a, t, lu.tasks.ddepot)];
-      }
-
-      model.add_constr("Obj", c!(vars.obj == obj_expr))?
+      model.add_constr("Obj", c!(-vars.obj == 0))?
     };
     Ok(MpConstraints { obj, req_cover, pv_cover, pv_flow, num_av, av_flow, xy_link, av_pv_compat })
   }
@@ -287,23 +296,47 @@ pub struct TaskModelMaster {
   pub vars: MpVars,
   pub cons: MpConstraints,
   pub model: Model,
-  pub obj_param: ObjWeights,
 }
 
 
 impl TaskModelMaster {
-  pub fn build(lu: &Lookups, obj_param: ObjWeights) -> Result<Self> {
+  pub fn build(lu: &Lookups) -> Result<Self> {
     let mut model = Model::new("Task Model MP")?;
     let vars = MpVars::build(lu, &mut model)?;
-    let cons = MpConstraints::build(lu, &mut model, &vars, &obj_param)?;
+    let cons = MpConstraints::build(lu, &mut model, &vars)?;
 
     // initial Benders Cuts
     for (&(av, t), &theta) in vars.theta.iter() {
-      let y =  vars.y[&(av, t, lu.tasks.ddepot)];
+      let y = vars.y[&(av, t, lu.tasks.ddepot)];
       model.add_constr(&format!("initial_bc[{:?}|{}]", &t, av), c!(theta >= t.t_release * y))?;
     }
 
-    Ok(TaskModelMaster { vars, cons, model, obj_param })
+    Ok(TaskModelMaster { vars, cons, model })
+  }
+
+  pub fn set_objective(&mut self, lu: &Lookups, obj_param: ObjWeights) -> Result<()> {
+    let vars = &self.vars;
+    let model = &mut self.model;
+    let constr = self.cons.obj;
+
+    let new_coeffs = vars.x.iter().map(|(t, &var)|
+      (var, obj_param.tt * (lu.data.travel_cost[&(t.start, t.end)] as f64))
+    ).chain(
+      vars.y.iter().map(|((_, t1, t2), &var)| {
+        let mut obj = obj_param.tt * (lu.data.travel_cost[&(t1.end, t2.start)] as f64);
+        if matches!(&t2.ty, TaskType::DDepot) {
+          obj += obj_param.av_finish_time * (t1.tt + lu.data.travel_time[&(t1.end, t2.start)]) as f64
+        }
+        (var, obj)
+      })
+    ).chain(
+      vars.u.values().map(|&var| (var, obj_param.cover))
+    ).chain(
+      vars.theta.values().map(|&var| (var, obj_param.av_finish_time))
+    );
+
+    model.set_coeffs(new_coeffs.map(|(var, coeff)| (var, constr, coeff)))?;
+    Ok(())
   }
 
   #[tracing::instrument(level = "error", skip(self, sol))]

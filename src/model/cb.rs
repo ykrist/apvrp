@@ -123,6 +123,12 @@ impl CbStats {
       .collect()
   }
 
+  pub fn print_cut_counts(&self) {
+    for (cut_ty, num) in self.get_cut_counts() {
+      println!("Num {:?} Cuts: {}", cut_ty, num);
+    }
+  }
+
   fn inc_and_return_old(val: &mut usize) -> usize {
     std::mem::replace(val, *val + 1)
   }
@@ -212,7 +218,7 @@ impl<'a> Cb<'a> {
         .collect()
     };
 
-    let sol_log = if exp.parameters.soln_log {
+    let sol_log = if exp.aux_params.soln_log {
       let log = exp.get_output_path(&exp.outputs.solution_log);
       let log = std::fs::OpenOptions::new().write(true).truncate(true).create(true).open(log)?;
       let log = std::io::BufWriter::new(log);
@@ -261,6 +267,7 @@ impl<'a> Cb<'a> {
       let name = format!("{:?}[{}]", ty, i);
       mp.add_constr(&name, cut)?;
     }
+    mp.update()?;
     Ok(())
   }
 

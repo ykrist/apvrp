@@ -95,7 +95,11 @@ fn main() -> Result<()> {
 
   let lookups = Lookups::load_data_and_build(exp.inputs.index)?;
 
-  let mut mp = model::mp::TaskModelMaster::build(&lookups, ObjWeights::default())?;
+  let obj_weights = ObjWeights::default();
+  let mut mp = model::mp::TaskModelMaster::build(&lookups)?;
+  mp.set_objective(&lookups,
+                   if exp.parameters.two_phase { obj_weights.without_av_finish_time() } else { obj_weights })?;
+
   mp.model.update()?;
 
   let true_soln = solution::load_michael_soln(
@@ -121,44 +125,58 @@ fn main() -> Result<()> {
 
   let mut callback = model::cb::Cb::new(&lookups, &exp, &mp)?;
 
-  match mp.model.optimize_with_callback(&mut callback) {
-    // match mp.model.optimize() {
-    Err(e) => {
-      match callback.error.take() {
-        // errors handled
-        Some(model::cb::CbError::InvalidBendersCut { obj, mut solution, .. }) => {
-          callback.flush_cut_cache(&mut mp.model)?;
-          // solution.objective = None;  // FIXME
-          // mp.fix_solution(&solution)?; // FIXME add back in
-          mp.model.add_constr("debug", c!(mp.vars.theta.values().grb_sum() <= obj))?;
-          // let theta = mp.model.get_var_by_name("Theta[End(2,7)|0]")?.unwrap();
-          // mp.model.add_constr("dbg1", c!(theta == 662))?;
-          // let theta = mp.model.get_var_by_name("Theta[End(0,9)|0]")?.unwrap();
-          // mp.model.add_constr("dbg2", c!(theta == 800))?;
-          // let y = mp.model.get_var_by_name("Y[End(3,1)-End(2,7)|0]")?.unwrap();
-          // mp.model.set_obj_attr(attr::LB, &y, 0.)?;;
-          infeasibility_analysis(&mut mp)?;
-          anyhow::bail!("bugalug")
+  let mut phase = 0;
+  let obj = loop {
+    match mp.model.optimize_with_callback(&mut callback) {
+      // match mp.model.optimize() {
+      Err(e) => {
+          #[cfg(debug_assertions)]
+          match callback.error.take() {
+            // errors handled
+            Some(model::cb::CbError::InvalidBendersCut { obj, mut solution, .. }) => {
+              callback.flush_cut_cache(&mut mp.model)?;
+              // solution.objective = None;  // FIXME
+              // mp.fix_solution(&solution)?; // FIXME add back in
+              mp.model.add_constr("debug", c!(mp.vars.theta.values().grb_sum() <= obj))?;
+              infeasibility_analysis(&mut mp)?;
+              anyhow::bail!("bugalug")
+            }
+            // errors propagated
+            _ => {
+              tracing::error!(err=%e, "error during optimisation");
+              return Err(e.into());
+            }
+          }
+
+          #[cfg(not(debug_assertions))] {
+            return Err(e.into())
+          }
         }
-        // errors propagated
-        _ => {
-          tracing::error!(err=%e, "error during optimisation");
-          return Err(e.into());
-        }
+      Ok(_) => {}
+    };
+
+    match mp.model.status()? {
+      Status::Infeasible => {
+        callback.flush_cut_cache(&mut mp.model)?;
+        infeasibility_analysis(&mut mp)?;
+        anyhow::bail!("bugalug")
       }
+      Status::Optimal => {}
+      status => anyhow::bail!("unexpected master problem status: {:?}", status)
     }
-    Ok(_) => {}
+
+    let obj = print_obj_breakdown(&mp)?;
+    callback.stats.print_cut_counts();
+
+    if !exp.parameters.two_phase || phase > 0 {
+      break obj;
+    } else {
+      phase += 1;
+      callback.flush_cut_cache(&mut mp.model)?;
+      mp.set_objective(&lookups, obj_weights)?;
+    }
   };
 
-  match mp.model.status()? {
-    Status::Infeasible => {
-      callback.flush_cut_cache(&mut mp.model)?;
-      infeasibility_analysis(&mut mp)?;
-      anyhow::bail!("bugalug")
-    }
-    Status::Optimal => {}
-    status => anyhow::bail!("unexpected master problem status: {:?}", status)
-  }
 
   let sol = solution::Solution::from_mp(&mp)?;
   let json_sol = sol.to_serialisable();
@@ -169,13 +187,7 @@ fn main() -> Result<()> {
   json_sol.to_json_file(exp.get_output_path(&format!("{}-soln.json", exp.inputs.index)))?;
 
   let sol = sol.solve_for_times(&lookups)?;
-  sol.pretty_print(&lookups);
-
-  for (cut_ty, num) in callback.stats.get_cut_counts() {
-    println!("Num {:?} Cuts: {}", cut_ty, num);
-  }
-
-  let obj = print_obj_breakdown(&mp)?;
+  // sol.pretty_print(&lookups);
 
   callback.flush_cut_cache(&mut mp.model)?;
   mp.model.update()?;
