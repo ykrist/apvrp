@@ -434,16 +434,19 @@ impl<'a> Cb<'a> {
 
   /// Given `chain`, which violates the PV timing constraints, find the shortest subchain which still violates
   /// the timing constraints.
+  #[instrument(level="trace", skip(self))]
   fn shorten_illegal_pv_chain<'b>(&self, chain: &'b [PvTask]) -> &'b [PvTask] {
     for l in 3..=chain.len() {
-      for start_pos in 0..(chain.len() - l) {
+      for start_pos in 0..=(chain.len() - l) {
         let c = &chain[start_pos..(start_pos + l)];
+        trace!(?c);
         if !schedule::check_pv_route(self.lu, c) {
           return c;
         }
       }
     }
-    unreachable!("chain must be illegal")
+    error!("chain must be illegal");
+    unreachable!()
   }
 
   /// Given a `cycle` where `cycle.first() == cycle.last()`, returns the shortest acyclic subchain
@@ -590,7 +593,12 @@ impl<'a> Cb<'a> {
         trace!(?av_cycles);
         for cycle in av_cycles {
           if let Some(chain) = self.illegal_av_chain_in_cycle(&cycle) {
-            self.av_chain_cuts(&chain);
+            if chain.len() <= 3 {
+              self.av_chain_infork_cut(&chain);
+              self.av_chain_outfork_cut(&chain);
+            } else {
+              self.av_chain_tournament_cut(&chain);
+            }
           } else {
             self.av_cycle_cut(&cycle);
           }
@@ -601,7 +609,16 @@ impl<'a> Cb<'a> {
         let av_path_without_depots = &av_path[1..av_path.len()-1];
         if !schedule::check_av_route(self.lu, &av_path) {
           let chain = self.shorten_illegal_av_chain(&av_path_without_depots);
-          self.av_chain_cuts(chain);
+          let n = chain.len() as u32;
+          if self.params.av_fork_cuts.contains(&n) {
+            self.av_chain_infork_cut(&chain);
+            self.av_chain_outfork_cut(&chain);
+          }
+
+          if self.params.av_tournament_cuts.contains(&n) {
+            self.av_chain_tournament_cut(&chain);
+          }
+
         } else if self.params.endtime_cuts {
           let finish_time = schedule::av_route_finish_time(self.lu, &av_path_without_depots);
           let n = av_path.len() - 2;
