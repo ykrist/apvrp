@@ -1,9 +1,8 @@
 use structopt::*;
 use std::path::PathBuf;
 use apvrp::*;
-use apvrp::solution::{SerialisableSolution, Solution, iter_solution_log};
+use apvrp::solution::{iter_solution_log};
 use slurm_harray::Experiment;
-use anyhow::Context;
 use daggylp::{SolveStatus, InfKind};
 use daggylp::viz::GraphViz;
 use serde::{Serialize, Deserialize};
@@ -32,8 +31,6 @@ fn main() -> anyhow::Result<()> {
   let exp = experiment::ApvrpExp::from_index_file(&args.index_file)?;
 
   let sol_log = args.index_file.with_file_name(&exp.outputs.solution_log);
-  let contents = std::fs::read_to_string(&sol_log).with_context(|| format!("read {:?}", &sol_log))?;
-
   let lookups = Lookups::load_data_and_build(exp.inputs.index)?;
   let dummy_theta = Map::default();
   let output_dir = args.index_file.with_file_name(format!("{}-sp", exp.inputs.index));

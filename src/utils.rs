@@ -9,11 +9,12 @@ use std::hash::{Hash, BuildHasher};
 use std::cell::{RefCell, Ref};
 use std::rc::Rc;
 use std::path::{Path, PathBuf};
-use std::iter::Peekable;
+use std::iter::{Peekable, FromIterator};
 use std::ops::AddAssign;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use anyhow::Context;
+use crate::Map;
 
 pub fn iter_cycle<'a, T>(vals: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> + 'a {
   let n = vals.len();
@@ -222,6 +223,28 @@ impl<I: Iterator> PeekableExt for Peekable<I> {
     None
   }
 }
+
+pub trait CollectExt<T>: Iterator<Item=anyhow::Result<T>> + Sized
+{
+  fn collect_ok<B: FromIterator<T>>(self) -> anyhow::Result<B> {
+    self.collect()
+  }
+}
+//
+// impl<I, T> CollectExt<T> for I
+//   where
+//     I: Iterator<Item=anyhow::Result<E>> + Sized,
+//     E: std::error::Error + Sync + Send + 'static,
+// {
+//   fn collect_ok<B: FromIterator<T>>(mut self) -> anyhow::Result<B> {
+//     self.map(|result| result.map_err(anyhow::Error::new))
+//       .collect()
+//   }
+// }
+impl<I, T> CollectExt<T> for I
+  where
+    I: Iterator<Item=anyhow::Result<T>> + Sized,
+{}
 
 pub trait Json: Serialize + DeserializeOwned {
   fn from_json_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {

@@ -1,5 +1,4 @@
 use anyhow::Result;
-use instances::dataset::Dataset;
 use tracing::{info, error};
 use grb::prelude::*;
 use slurm_harray::{Experiment, handle_slurm_args};
@@ -35,13 +34,13 @@ fn infeasibility_analysis(mp: &mut TaskModelMaster) -> Result<()> {
         error!(constr=%name, "iis constr");
       }
 
-      for var in mp.model.get_vars()? {
-        if mp.model.get_obj_attr(attr::IISLB, var)? > 0 {
-          let name = mp.model.get_obj_attr(attr::VarName, var)?;
-          let lb = mp.model.get_obj_attr(attr::LB, var)?;
-          error!(var=%name, ?lb, "iis bound");
-        }
-      }
+      // for var in mp.model.get_vars()? {
+      //   if mp.model.get_obj_attr(attr::IISLB, var)? > 0 {
+      //     let name = mp.model.get_obj_attr(attr::VarName, var)?;
+      //     let lb = mp.model.get_obj_attr(attr::LB, var)?;
+      //     error!(var=%name, ?lb, "iis bound");
+      //   }
+      // }
     }
     status => {
       if status == Status::Optimal {
@@ -133,14 +132,14 @@ fn main() -> Result<()> {
           #[cfg(debug_assertions)]
           match callback.error.take() {
             // errors handled
-            Some(model::cb::CbError::InvalidBendersCut { obj, mut solution, .. }) => {
-              callback.flush_cut_cache(&mut mp.model)?;
-              // solution.objective = None;  // FIXME
-              // mp.fix_solution(&solution)?; // FIXME add back in
-              mp.model.add_constr("debug", c!(mp.vars.theta.values().grb_sum() <= obj))?;
-              infeasibility_analysis(&mut mp)?;
-              anyhow::bail!("bugalug")
-            }
+            // Some(model::cb::CbError::InvalidBendersCut { obj, mut solution, .. }) => {
+            //   callback.flush_cut_cache(&mut mp.model)?;
+            //   // solution.objective = None;  // FIXME
+            //   // mp.fix_solution(&solution)?; // FIXME add back in
+            //   mp.model.add_constr("debug", c!(mp.vars.theta.values().grb_sum() <= obj))?;
+            //   infeasibility_analysis(&mut mp)?;
+            //   anyhow::bail!("bugalug")
+            // }
             // errors propagated
             _ => {
               tracing::error!(err=%e, "error during optimisation");
@@ -171,6 +170,8 @@ fn main() -> Result<()> {
     if !exp.parameters.two_phase || phase > 0 {
       break obj;
     } else {
+      // println!("Press [enter] to continue");
+      // std::io::stdin().read_line(&mut String::new()).unwrap();
       phase += 1;
       callback.flush_cut_cache(&mut mp.model)?;
       mp.set_objective(&lookups, obj_weights)?;
@@ -187,7 +188,7 @@ fn main() -> Result<()> {
   json_sol.to_json_file(exp.get_output_path(&format!("{}-soln.json", exp.inputs.index)))?;
 
   let sol = sol.solve_for_times(&lookups)?;
-  // sol.pretty_print(&lookups);
+  sol.print_objective_breakdown(&lookups, &obj_weights);
 
   callback.flush_cut_cache(&mut mp.model)?;
   mp.model.update()?;
@@ -197,6 +198,7 @@ fn main() -> Result<()> {
     if true_soln.objective != Some(obj) {
       true_soln.to_serialisable().to_json_file(exp.get_output_path_prefixed("true_soln.json"))?;
       error!(correct = true_soln.objective.unwrap(), obj, "objective mismatch");
+      true_soln.solve_for_times(&lookups)?.print_objective_breakdown(&lookups, &obj_weights);
       mp.fix_solution(&true_soln)?;
       infeasibility_analysis(&mut mp)?;
       anyhow::bail!("bugalug");

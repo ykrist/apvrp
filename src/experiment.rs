@@ -1,10 +1,11 @@
 use slurm_harray::*;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use grb::prelude::*;
 use std::str::FromStr;
 use std::path::PathBuf;
+use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct Inputs {
@@ -30,7 +31,9 @@ impl_arg_enum! { SpSolverKind;
 
 #[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct AuxParams {
-  #[structopt(long="no-soln-log", parse(from_flag=std::ops::Not::not))]
+  // #[structopt(long="no-soln-log", parse(from_flag=std::ops::Not::not))]
+  /// Log incumbent solutions which generate a subproblem
+  #[structopt(long)]
   pub soln_log: bool,
 }
 
@@ -42,16 +45,34 @@ impl Default for AuxParams {
   }
 }
 
+fn cl_parse_range(s: &str) -> Result<RangeInclusive<u32>> {
+  let mut tok = s.split(',');
+  let ctx_msg = || format!("unable to parse string `{}`, expected `integer,integer`", s);
+  let err = || anyhow::Error::msg(ctx_msg());
+
+  let a : u32 = tok.next().ok_or_else(err)?.parse().with_context(ctx_msg)?;
+  let b : u32 = tok.next().ok_or_else(err)?.parse().with_context(ctx_msg)?;
+  if tok.next().is_some() {
+    Err(err())
+  } else {
+    Ok(a..=b)
+  }
+}
+
 #[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct Params {
+  /// Give a time limit in second
   #[structopt(long, short, default_value="7200", value_name="seconds")]
   pub timelimit: u64,
 
+  /// Number of threads to use
   #[structopt(long)]
   #[cfg_attr(debug_assertions, structopt(default_value="1"))]
   #[cfg_attr(not(debug_assertions), structopt(default_value="4"))]
   pub cpus: u32,
 
+  /// Use the supplied string as a parameter name, instead of generating one from
+  /// a parameter hash.
   #[structopt(long)]
   pub param_name: Option<String>,
 
@@ -59,33 +80,28 @@ pub struct Params {
   #[structopt(long, default_value="dag", possible_values=SpSolverKind::choices())]
   pub sp: SpSolverKind,
 
-  #[structopt(long, default_value="0")]
-  pub av_fork_cuts_min_chain_len: u32,
+  /// Minimum and maximum infeasible chain length at which to add Active Vehicle Fork cuts
+  #[structopt(long, default_value="0,4", parse(try_from_str = cl_parse_range))]
+  pub av_fork_cuts: std::ops::RangeInclusive<u32>,
 
-  #[structopt(long, default_value="4")]
-  pub av_fork_cuts_max_chain_len: u32,
+  /// Minimum and maximum infeasible chain length at which to add Active Vehicle Tournament cuts
+  #[structopt(long, default_value="3,6", parse(try_from_str = cl_parse_range))]
+  pub av_tournament_cuts: std::ops::RangeInclusive<u32>,
 
-  #[structopt(long, default_value="3")]
-  pub av_tournament_cuts_min_chain_len: u32,
 
-  #[structopt(long, default_value="6")]
-  pub av_tournament_cuts_max_chain_len: u32,
+  /// Minimum and maximum infeasible chain length at which to add Passive Vehicle Fork cuts
+  #[structopt(long, default_value="0,3", parse(try_from_str = cl_parse_range))]
+  pub pv_fork_cuts: std::ops::RangeInclusive<u32>,
 
-  #[structopt(long, default_value="0")]
-  pub pv_fork_cuts_min_chain_len: u32,
+  /// Minimum and maximum infeasible chain length at which to add Passive Vehicle Tournament cuts
+  #[structopt(long, default_value="0,10000", parse(try_from_str = cl_parse_range))]
+  pub pv_tournament_cuts: std::ops::RangeInclusive<u32>,
 
-  #[structopt(long, default_value="3")]
-  pub pv_fork_cuts_max_chain_len: u32,
-
-  #[structopt(long, default_value="0")]
-  pub pv_tournament_cuts_min_chain_len: u32,
-
-  #[structopt(long, default_value="100000000")]
-  pub pv_tournament_cuts_max_chain_len: u32,
-
-  #[structopt(long="no_endtime_cuts", parse(from_flag=std::ops::Not::not))]
+  /// Disable End-time cuts
+  #[structopt(long="no-endtime-cuts", parse(from_flag=std::ops::Not::not))]
   pub endtime_cuts: bool,
 
+  /// Solve a preliminary MIP first, which discards the Active Vehicle Travel-Time component of the objective.
   #[structopt(long)]
   pub two_phase: bool,
 }

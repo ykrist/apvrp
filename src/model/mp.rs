@@ -5,6 +5,7 @@ use grb::prelude::*;
 use fnv::FnvHashSet;
 use crate::solution::Solution;
 use crate::model::{EdgeConstrKind, edge_constr_kind};
+use crate::utils::CollectExt;
 
 #[derive(Clone)]
 pub struct MpVars {
@@ -130,7 +131,9 @@ pub struct MpConstraints {
   pub av_flow: Map<(Av, Task), Constr>,
   pub xy_link: Map<Task, Constr>,
   pub av_pv_compat: Map<PvTask, Constr>,
-  // TODO add trivial lb on theta here
+  pub initial_cuts: Map<(Av, Task), Constr>,
+  pub initial_lifted_cuts: Map<(Av, Task), Constr>,
+  pub whole_route_cuts: Map<Av, Constr>,
 }
 
 impl MpConstraints {
@@ -261,34 +264,104 @@ impl MpConstraints {
       cmap
     };
 
-    let obj = {
-      // let mut obj_expr = Expr::default();
+    let obj = model.add_constr("Obj", c!(-vars.obj == 0))?;
 
-      // for (t, &x) in &vars.x {
-      //   let obj = if !t.is_depot() {
-      //     obj_param.tt * (lu.data.travel_cost[&(t.start, t.end)] as f64)
-      //   } else { 0.0 };
-      //   obj_expr += obj * x;
-      // }
-      //
-      // for ((_, t1, t2), &y) in &vars.y {
-      //   let obj = obj_param.tt * (lu.data.travel_cost[&(t1.end, t2.start)] as f64);
-      //   obj_expr += obj * y;
-      // }
-      //
-      // for (_, &u) in &vars.u {
-      //   obj_expr += obj_param.cover * u;
-      // }
-      //
-      // for (&(a, t), &theta) in &vars.theta {
-      //   obj_expr += obj_param.av_finish_time * theta;
-      //   let last_lil_bit = (t.tt + lu.data.travel_cost[&(t.end, Loc::Ad)]) as f64;
-      //   obj_expr += obj_param.av_finish_time * last_lil_bit * vars.y[&(a, t, lu.tasks.ddepot)];
-      // }
 
-      model.add_constr("Obj", c!(-vars.obj == 0))?
-    };
-    Ok(MpConstraints { obj, req_cover, pv_cover, pv_flow, num_av, av_flow, xy_link, av_pv_compat })
+    // initial Benders Cuts
+    let initial_cuts : Map<_, _> = vars.theta.iter()
+      .map(|(&(av, t), &theta)| {
+        let y = vars.y[&(av, t, lu.tasks.ddepot)];
+        let c = model.add_constr(&format!("initial_bc[{:?}|{}]", &t, av), c!(theta >= t.t_release * y))?;
+        Ok(((av, t), c))
+      })
+      .collect_ok()?;
+
+    // initial Benders Cuts
+    let initial_lifted_cuts : Map<_, _> = vars.theta.iter()
+      .map(|(&(av, t2), &theta)| {
+        let y_t2_depot = vars.y[&(av, t2, lu.tasks.ddepot)];
+        let finish_t2_dd = t2.t_release;
+
+        let mut rhs = y_t2_depot * finish_t2_dd;
+
+        for (t1, y_t1_t2) in lu.tasks.pred[&t2].iter().filter_map(|&t1| vars.y.get(&(av, t1, t2)).map(|&y| (t1, y))) {
+          if t1.is_depot() {
+            continue
+          }
+          let route = [t1, t2];
+          trace!(?route);
+          let finish_t1_t2_dd = schedule::av_route_finish_time(lu, &route);
+          let coeff = finish_t1_t2_dd - finish_t2_dd;
+          // (y_t1_t2 + y_t2_depot - 1) * coeff
+          rhs += coeff*y_t2_depot;
+          rhs += coeff*y_t1_t2;
+          rhs += -coeff;
+        }
+
+        let c = model.add_constr(&format!("initial_lifted[{:?}|{}]", &t2, av), c!(theta >= rhs))?;
+        Ok(((av, t2), c))
+      })
+      .collect_ok()?;
+
+    // { // At least one av route must finish on a Direct or End task
+    //   let lhs = vars.y.iter()
+    //     .filter(|((av, t1, t2), _) | t2.is_depot() && matches!(&t1.ty, TaskType::Direct | TaskType::End))
+    //     .map(|(_, &y)| y)
+    //     .grb_sum();
+    //   model.add_constr("", c!(lhs >= 1))?;
+    // }
+
+    let whole_route_cuts : Map<_, _> = lu.sets.avs().map(|av|{
+        let _s = trace_span!("whole_route_cuts", av).entered();
+        let mut cut = Expr::default();
+
+        for &t1 in &lu.tasks.compat_with_av[&av] {
+          for &t2 in &lu.tasks.succ[&t1] {
+            if let Some(&y) = vars.y.get(&(av, t1, t2)) {
+              if t1.is_depot() {
+                cut += t2.t_release * y;
+              } else if t2.is_depot() {
+                // handled already
+              } else {
+                let travel_time = t1.tt + lu.data.travel_time[&(t1.end, t2.start)];
+                let service_time = if t1.end == t2.start {
+                  trace!(?t1, ?t2, s=?lu.data.srv_time.get(&t1.end));
+                  debug_assert_eq!(t1.tt, travel_time);
+                  lu.data.srv_time.get(&t1.end).copied().unwrap_or(0)
+                  // 0
+                } else {
+                  0
+                };
+                let latest_arrival_at_t2 = t1.t_deadline + travel_time + service_time;
+                let minimum_waiting_time = std::cmp::max(t2.t_release - latest_arrival_at_t2, 0);
+                cut += (travel_time + service_time + minimum_waiting_time) * y;
+              }
+            }
+          }
+        }
+        let theta_sum = vars.theta.iter()
+          .filter(|((a, _), _)| a == &av)
+          .map(|(_, &theta)| theta)
+          .grb_sum();
+
+        let c = model.add_constr(&format!("WholeRoute[{}]", av), c!(theta_sum >= cut))?;
+        Ok((av, c))
+      })
+      .collect_ok()?;
+
+    Ok(MpConstraints {
+      obj,
+      req_cover,
+      pv_cover,
+      pv_flow,
+      num_av,
+      av_flow,
+      xy_link,
+      av_pv_compat,
+      initial_cuts,
+      initial_lifted_cuts,
+      whole_route_cuts,
+    })
   }
 }
 
@@ -304,12 +377,6 @@ impl TaskModelMaster {
     let mut model = Model::new("Task Model MP")?;
     let vars = MpVars::build(lu, &mut model)?;
     let cons = MpConstraints::build(lu, &mut model, &vars)?;
-
-    // initial Benders Cuts
-    for (&(av, t), &theta) in vars.theta.iter() {
-      let y = vars.y[&(av, t, lu.tasks.ddepot)];
-      model.add_constr(&format!("initial_bc[{:?}|{}]", &t, av), c!(theta >= t.t_release * y))?;
-    }
 
     Ok(TaskModelMaster { vars, cons, model })
   }
@@ -373,6 +440,32 @@ impl TaskModelMaster {
     )?;
     self.model.set_obj_attr(attr::UB, &self.vars.obj, grb::INFINITY)?;
     self.model.set_obj_attr(attr::LB, &self.vars.obj, 0.0)?;
+    Ok(())
+  }
+
+  pub fn print_constraint_at_current_sol(&self, c: &grb::Constr) -> Result<()> {
+    use std::fmt::Write;
+    let mut s = String::new();
+
+    for var in self.model.get_vars()? {
+      let coeff = self.model.get_coeff(var, c)?;
+      if coeff.abs() > 1e-4 {
+        let x = self.model.get_obj_attr(attr::X, var)?;
+        if x.abs() > 1e-4 {
+          let name = self.model.get_obj_attr(attr::VarName,var)?;
+          let sgn = if coeff.is_sign_negative() {'-' } else { '+' };
+          write!(s, " {} {} * ({} = {})", sgn, coeff.abs(), name, x)?;
+        }
+      }
+    }
+
+    match self.model.get_obj_attr(attr::Sense, c)? {
+      ConstrSense::Equal => s.push_str(" == "),
+      ConstrSense::Less => s.push_str(" <= "),
+      ConstrSense::Greater => s.push_str(" >= "),
+    }
+    write!(s, " {}", self.model.get_obj_attr(attr::RHS, c)?)?;
+    println!("{}", s);
     Ok(())
   }
 }

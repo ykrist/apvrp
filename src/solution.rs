@@ -5,7 +5,7 @@ use std::fs::read_to_string;
 use std::path::Path;
 use anyhow::Context;
 use tracing::trace;
-use crate::model::mp::{MpVars, TaskModelMaster};
+use crate::model::mp::{MpVars, TaskModelMaster, ObjWeights};
 use grb::callback::MIPSolCtx;
 use grb::prelude::*;
 use std::hash::Hash;
@@ -331,6 +331,37 @@ pub struct SpSolution {
 
 
 impl SpSolution {
+  pub fn print_objective_breakdown(&self, data: impl AsRef<Data>, obj: &ObjWeights) {
+    let data = data.as_ref();
+
+    let mut theta_costs = 0;
+    let mut theta_y = 0;
+    let mut y_travel_costs = 0;
+    let mut x_travel_costs = 0;
+
+    for (_, route) in &self.pv_routes {
+      for (t, _) in route {
+        x_travel_costs += data.travel_cost[&(t.start, t.end)];
+      }
+    }
+
+    for (_, route) in &self.av_routes {
+      for ((t1,_), (t2,_)) in route.iter().tuple_windows() {
+        y_travel_costs += data.travel_cost[&(t1.end, t2.start)];
+      }
+      let (t, time) = route[route.len()-2];
+      theta_costs += time;
+      theta_y += data.travel_time[&(t.start, t.end)] + data.travel_time[&(t.end, Loc::Ad)];
+    }
+
+    println!("\nObjective terms:");
+    println!("Component   Unweighted    Weighted");
+    println!("    Theta     {:8}    {:8}", theta_costs, obj.av_finish_time * theta_costs as f64);
+    println!("     Y TT     {:8}    {:8}", theta_y, obj.av_finish_time * theta_y as f64);
+    println!("   X Cost     {:8}    {:8}", x_travel_costs, obj.tt * x_travel_costs as f64);
+    println!("   Y Cost     {:8}    {:8}", y_travel_costs, obj.tt * y_travel_costs as f64);
+  }
+
   pub fn from_sp(sp: &TimingSubproblem) -> Result<SpSolution> {
     let task_start_times: Map<_, _> = get_var_values(&sp.model, &sp.vars)?
       .map(|(task, time)| (task, time.round() as Time))

@@ -72,7 +72,7 @@ pub fn av_route(data: impl AsRef<Data>, tasks: &[Task]) -> Vec<Time> {
 /// the last task is `DDp`
 pub fn av_route_finish_time(data: impl AsRef<Data>, tasks: &[Task]) -> Time {
   let data = data.as_ref();
-  debug_assert_eq!(tasks.last().unwrap().ty, TaskType::DDepot);
+  debug_assert_ne!(tasks.last().unwrap().ty, TaskType::DDepot);
   debug_assert_ne!(tasks.first().unwrap().ty, TaskType::ODepot);
   let mut t = max(tasks[0].t_release, data.travel_time[&(Loc::Ao, tasks[0].start)]);
   for (t1, t2) in tasks.iter().tuple_windows() {

@@ -7,7 +7,6 @@ use fnv::FnvHashSet;
 use super::sp::*;
 use crate::model::sp::PathIis;
 
-#[macro_use]
 use crate::logging::*;
 use std::fmt;
 use grb::constr::IneqExpr;
@@ -418,16 +417,19 @@ impl<'a> Cb<'a> {
 
   /// Given `chain`, which violates the AV timing constraints, find the shortest subchain which still violates
   /// the timing constraints.
+  #[instrument(level="trace", skip(self))]
   fn shorten_illegal_av_chain<'b>(&self, chain: &'b [Task]) -> &'b [Task] {
     for l in 3..=chain.len() {
-      for start_pos in 0..(chain.len() - l) {
+      for start_pos in 0..=(chain.len() - l) {
         let c = &chain[start_pos..(start_pos + l)];
+        trace!(?c);
         if !schedule::check_av_route(self.lu, c) {
           return c;
         }
       }
     }
-    unreachable!("chain must be illegal")
+    error!(?chain, "chain must be illegal");
+    unreachable!()
   }
 
   /// Given `chain`, which violates the PV timing constraints, find the shortest subchain which still violates
@@ -536,7 +538,7 @@ impl<'a> Cb<'a> {
       if !schedule::check_pv_route(self.lu, &pv_path) {
         let chain = self.shorten_illegal_pv_chain(&pv_path);
         let n = chain.len() as u32;
-        if self.params.pv_fork_cuts_min_chain_len <= n && n <= self.params.pv_fork_cuts_max_chain_len {
+        if self.params.pv_fork_cuts.contains(&n) {
           self.pv_chain_infork_cut(chain);
           self.pv_chain_outfork_cut(chain);
         }
@@ -548,31 +550,34 @@ impl<'a> Cb<'a> {
 
   fn av_chain_cuts(&mut self, chain: &[Task]) {
     let n = chain.len() as u32;
-    if (self.params.av_fork_cuts_min_chain_len..=self.params.av_fork_cuts_max_chain_len).contains(&n) {
+    if self.params.av_fork_cuts.contains(&n) {
       self.av_chain_infork_cut(&chain);
       self.av_chain_outfork_cut(&chain);
     }
 
-    if (self.params.av_tournament_cuts_min_chain_len..=self.params.av_tournament_cuts_max_chain_len).contains(&n) {
+    if self.params.av_tournament_cuts.contains(&n) {
       self.av_chain_tournament_cut(&chain);
     }
   }
 
-  // fn endtime_cut(&mut self, finish_time: Time, av: Av, av_route: &[Task]) {
-  //   let _s = trace_span!("endtime_cut", finish_time, av, ?av_route).entered();
-  //   // first task is ODp, last is DDp
-  //   let n = av_route.len() - 2;
-  //   let mut lhs = finish_time * self.mp_vars.y[&(av, av_route[n], av_route[n + 1])];
-  //
-  //   for k in 1..n {
-  //     let partial_finish_time = schedule::av_route_finish_time(self.data, &av_route[k + 1..]);
-  //     if partial_finish_time != finish_time {
-  //       lhs = lhs + (finish_time - partial_finish_time) * (self.mp_vars.y[&(av, av_route[k], av_route[k + 1])] - 1)
-  //     }
-  //   }
-  //
-  //   self.enqueue_cut(c!( lhs <= self.mp_vars.theta[&(av, av_route[n])] ), EndTime);
-  // }
+  /// `av_route_nd` should not have AV depots
+  #[instrument(level="trace", skip(self))]
+  fn endtime_cut(&mut self, finish_time: Time, av: Av, av_route_nd: &[Task]) {
+    let n = av_route_nd.len() - 1;
+    debug_assert!(!av_route_nd[0].is_depot());
+    debug_assert!(!av_route_nd[n].is_depot());
+
+    let mut lhs = finish_time * self.mp_vars.y[&(av, av_route_nd[n], self.lu.tasks.ddepot)];
+
+    for k in 0..n {
+      let partial_finish_time = schedule::av_route_finish_time(self.lu, &av_route_nd[k + 1..]);
+      if partial_finish_time != finish_time {
+        lhs += (finish_time - partial_finish_time) * (self.mp_vars.y[&(av, av_route_nd[k], av_route_nd[k + 1])] - 1)
+      }
+    }
+
+    self.enqueue_cut(c!( lhs <= self.mp_vars.theta[&(av, av_route_nd[n])] ), CutType::EndTime);
+  }
 
   fn sep_av_cuts(&mut self, ctx: &MIPSolCtx) -> Result<Vec<(Av, AvPath)>> {
     let task_pairs = get_task_pairs_by_av(ctx, &self.mp_vars.y)?;
@@ -593,17 +598,18 @@ impl<'a> Cb<'a> {
       }
 
       for av_path in av_paths {
+        let av_path_without_depots = &av_path[1..av_path.len()-1];
         if !schedule::check_av_route(self.lu, &av_path) {
-          let chain = self.shorten_illegal_av_chain(&av_path);
+          let chain = self.shorten_illegal_av_chain(&av_path_without_depots);
           self.av_chain_cuts(chain);
         } else if self.params.endtime_cuts {
-          let finish_time = schedule::av_route_finish_time(self.lu, &av_path[1..]);
+          let finish_time = schedule::av_route_finish_time(self.lu, &av_path_without_depots);
           let n = av_path.len() - 2;
           let theta_val = ctx.get_solution(std::iter::once(self.mp_vars.theta[&(av, av_path[n])]))?[0];
 
-          // if (theta_val.round() as Time) < finish_time {
-          //   self.endtime_cut(finish_time, av, &av_path);
-          // } // FIXME compare?
+          if (theta_val.round() as Time) < finish_time {
+            self.endtime_cut(finish_time, av, &av_path_without_depots);
+          }
         }
         av_routes.push((av, av_path));
       }
