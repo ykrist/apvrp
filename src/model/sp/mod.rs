@@ -147,13 +147,40 @@ pub fn build_path_infeasiblity_cut(cb: &cb::Cb, iis: &PathIis) -> IneqExpr {
 }
 
 pub fn build_cyclic_infeasiblity_cut(cb: &cb::Cb, cycle: &[Task]) -> IneqExpr {
-  debug_assert!(cycle.len() > 2, "cycle too short: {:?}", cycle);
-  let lhs = cycle.iter().copied()
-    .tuple_windows()
-    .chain(std::iter::once((cycle[cycle.len()-1], cycle[0])))
-    .flat_map(|(t1, t2)| cb.mp_vars.max_weight_edge_sum(cb.lu, t1, t2))
-    .grb_sum();
-  c!(lhs <= cycle.len() - 1)
+  debug_assert_ne!(cycle.first(), cycle.last());
+  debug_assert!(cycle.len() > 1, "cycle too short: {:?}", cycle);
+
+  let mut x_edges = set_with_capacity(cycle.len());
+  let mut rhs = 0u32;
+
+  let mut lhs = Expr::default();
+
+  for (t1, t2) in iter_cycle(cycle) {
+    match edge_constr_kind(t1, t2) {
+      EdgeConstrKind::AvTravelTime => {
+        rhs += 1;
+        cb.mp_vars.y_sum_av(cb.lu, *t1, *t2).sum_into(&mut lhs);
+        trace!("AV TT");
+      },
+      EdgeConstrKind::Loading => {
+        x_edges.insert(*t1);
+        trace!("Loading");
+      },
+      EdgeConstrKind::Unloading => {
+        x_edges.insert(*t2);
+        trace!("Unloading");
+      }
+    }
+  }
+
+  rhs += x_edges.len() as u32;
+  rhs -= 1;
+
+  for t in x_edges {
+    cb.mp_vars.x_sum_all_task(cb.lu, t).sum_into(&mut lhs);
+  }
+
+  c!(lhs <= rhs)
 }
 
 #[derive(Copy, Clone, Debug)]

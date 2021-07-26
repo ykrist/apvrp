@@ -45,13 +45,19 @@ impl<'a> GraphModel<'a> {
     let mut var_to_task = map_with_capacity(lu.data.n_req as usize * 2);
 
     let second_last_tasks: SmallVec<_> = sol.av_routes.iter()
-      .map(|(_, av_route)| av_route[av_route.len()-2]).collect();
+      .filter(|(_, av_route)| av_route.last().unwrap().is_depot())
+      .map(|(_, av_route)| av_route[av_route.len()-2])
+      .collect();
 
     for (_, pv_route) in &sol.pv_routes {
       for &pt in pv_route {
         let t = lu.tasks.pvtask_to_task[&pt];
-
-        // loop over all AVs here, probably better than allocating.
+        if vars.contains_key(&t) {
+          // cycle
+          debug_assert_eq!(pv_route.first(), pv_route.last());
+          continue;
+        }
+        // loop over all AVs here, probably better than allocating on the heap.
         let obj = if second_last_tasks.as_slice().contains(&t) { 1 } else { 0 };
         let var = model.add_var(obj, pt.t_release as Weight, (pt.t_deadline - pt.tt) as Weight);
         vars.insert(t, var);
@@ -84,9 +90,15 @@ impl<'a> GraphModel<'a> {
     }
 
     for (_, av_route) in &sol.av_routes {
-      // last task is ddepot
-      // Skip the ODepot
-      for (t1, t2) in iter_pairs(&av_route[1..av_route.len() - 1]) {
+      let av_route = if av_route[0].is_depot() {
+        // acyclic route - Skip the ODepot and DDepot
+        &av_route[1..av_route.len() - 1]
+      } else {
+        // cycle
+        av_route.as_slice()
+      };
+
+      for (t1, t2) in iter_pairs(av_route) {
         trace!(?t1, ?t2);
         let v1 = vars[&t1];
         let v2 = vars[&t2];

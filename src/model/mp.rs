@@ -107,6 +107,9 @@ impl MpVars {
     lu.tasks.pvtask_to_similar_pvtask[&t].iter()
       .map(move |t| self.x[t])
   }
+  pub fn x_sum_all_task<'a>(&'a self, lu: &'a Lookups, t: Task) -> impl Iterator<Item=Var> + 'a {
+    lu.tasks.task_to_pvtasks[&t].iter().map(move |t| self.x[t])
+  }
 
   #[inline(always)]
   pub fn y_sum_av<'a>(&'a self, lu: &'a Lookups, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {

@@ -2,7 +2,7 @@ use anyhow::Result;
 use tracing::{info, error};
 use grb::prelude::*;
 use slurm_harray::{Experiment, handle_slurm_args};
-use apvrp::model::mp::{ObjWeights, TaskModelMaster};
+use apvrp::model::{Phase, mp::{ObjWeights, TaskModelMaster}};
 use std::io::Write;
 use instances::dataset::apvrp::LocSetStarts;
 use apvrp::*;
@@ -81,6 +81,8 @@ fn print_obj_breakdown(mp: &TaskModelMaster) -> Result<Cost> {
 }
 
 
+
+
 #[tracing::instrument]
 fn main() -> Result<()> {
   #[allow(non_snake_case)]
@@ -122,9 +124,12 @@ fn main() -> Result<()> {
   mp.model.set_obj_attr_batch(attr::Sense, mp.cons.num_av.values().map(|&c| (c, ConstrSense::Equal)))?;
   mp.model.update()?;
 
-  let mut callback = model::cb::Cb::new(&lookups, &exp, &mp)?;
 
-  let mut phase = 0;
+  let mut callback = {
+    let initial_phase = if exp.parameters.two_phase { Phase::NoWaitCost } else { Phase::Final };
+    model::cb::Cb::new(&lookups, &exp, &mp, initial_phase)?
+  };
+
   let obj = loop {
     match mp.model.optimize_with_callback(&mut callback) {
       // match mp.model.optimize() {
@@ -167,14 +172,14 @@ fn main() -> Result<()> {
     let obj = print_obj_breakdown(&mp)?;
     callback.stats.print_cut_counts();
 
-    if !exp.parameters.two_phase || phase > 0 {
-      break obj;
-    } else {
-      // println!("Press [enter] to continue");
-      // std::io::stdin().read_line(&mut String::new()).unwrap();
-      phase += 1;
-      callback.flush_cut_cache(&mut mp.model)?;
-      mp.set_objective(&lookups, obj_weights)?;
+
+    match callback.phase {
+      Phase::Final => break obj,
+      Phase::NoWaitCost => {
+        callback.flush_cut_cache(&mut mp.model)?;
+        callback.phase.set_next();
+        mp.set_objective(&lookups, obj_weights)?;
+      }
     }
   };
 

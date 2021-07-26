@@ -8,6 +8,8 @@
 pub use fnv::{FnvHashMap as Map, FnvHashSet as Set};
 pub use anyhow::Result;
 
+pub(crate) use std::assert_matches::*;
+
 use itertools::Itertools;
 use std::fmt;
 

@@ -29,6 +29,17 @@ impl_arg_enum! { SpSolverKind;
   Lp = "lp",
 }
 
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub enum CycleHandling {
+  Cuts,
+  Sp,
+}
+
+impl_arg_enum! { CycleHandling;
+  Cuts = "cuts",
+  Sp = "sp",
+}
+
 #[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct AuxParams {
   // #[structopt(long="no-soln-log", parse(from_flag=std::ops::Not::not))]
@@ -100,6 +111,10 @@ pub struct Params {
   /// Disable End-time cuts
   #[structopt(long="no-endtime-cuts", parse(from_flag=std::ops::Not::not))]
   pub endtime_cuts: bool,
+
+  /// Try to separate cycle cuts without solving the subproblem
+  #[structopt(long)]
+  pub cycle_cuts: bool,
 
   /// Solve a preliminary MIP first, which discards the Active Vehicle Travel-Time component of the objective.
   #[structopt(long)]

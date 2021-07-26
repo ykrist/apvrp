@@ -31,3 +31,31 @@ pub fn edge_constr_kind(t1: &Task, t2: &Task) -> EdgeConstrKind {
         }
     }
 }
+
+
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Phase {
+    NoWaitCost,
+    Final,
+}
+
+impl Phase {
+    #[inline]
+    pub fn next(&self) -> Self {
+        use Phase::*;
+        match self {
+            NoWaitCost => Final,
+            _ => panic!("cannot call next() in Final phase"),
+        }
+    }
+
+    #[inline]
+    pub fn set_next(&mut self) {
+        *self = self.next();
+    }
+
+    pub fn is_final(&self) -> bool {
+        matches!(self, Phase::Final)
+    }
+}

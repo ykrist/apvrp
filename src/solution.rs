@@ -229,6 +229,7 @@ pub fn get_tasks_by_pv<M: QueryVarValues>(ctx: &M, xvars: &Map<PvTask, Var>) -> 
 
 #[derive(Debug, Clone)]
 pub struct Solution {
+  /// Total objective cost (optional)
   pub objective: Option<Cost>,
   pub av_routes: Vec<(Avg, Vec<Task>)>,
   pub pv_routes: Vec<(Pv, Vec<PvTask>)>,

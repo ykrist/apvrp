@@ -48,7 +48,10 @@ impl TimingConstraints {
     let mut lb = map_with_capacity(vars.len());
     let mut ub = map_with_capacity(vars.len());
 
-    let mut add_bounds = |pvt: PvTask, t: Task, model: &mut Model| -> Result<()> {
+    let mut add_bounds = |pvt: PvTask, t: &Task, model: &mut Model| -> Result<()> {
+      if lb.contains_key(&pvt) {
+        return Ok(())
+      }
       // Constraints (3e)
       trace!(
         p_lb=pvt.t_release,
@@ -57,8 +60,8 @@ impl TimingConstraints {
         ub=(t.t_deadline - t.tt),
         ?t, ?pvt, "bounds"
       );
-      lb.insert(pvt, model.add_constr("", c!(vars[&t] >= pvt.t_release))?);
-      ub.insert(pvt, model.add_constr("", c!(vars[&t] <= pvt.t_deadline - pvt.tt))?);
+      lb.insert(pvt, model.add_constr("", c!(vars[t] >= pvt.t_release))?);
+      ub.insert(pvt, model.add_constr("", c!(vars[t] <= pvt.t_deadline - pvt.tt))?);
       Ok(())
     };
 
@@ -66,7 +69,8 @@ impl TimingConstraints {
       let mut pv_route = pv_route.iter();
       let mut pt1 = *pv_route.next().unwrap();
       let mut t1 = lu.tasks.pvtask_to_task[&pt1];
-      add_bounds(pt1, t1, model)?;
+      add_bounds(pt1, &t1, model)?;
+
 
       for &pt2 in pv_route {
         let t2 = lu.tasks.pvtask_to_task[&pt2];
@@ -83,7 +87,7 @@ impl TimingConstraints {
           let c = c!(vars[&t1] + t1.tt + lu.data.srv_time[&t1.end] <= vars[&t2]);
           edge_constraints.insert((t1, t2), model.add_constr("", c)?);
         }
-        add_bounds(pt2, t2, model)?;
+        add_bounds(pt2, &t2, model)?;
         pt1 = pt2;
         t1 = t2;
       }
@@ -128,6 +132,10 @@ impl<'a> TimingSubproblem<'a> {
       for (_, pv_route) in &sol.pv_routes {
         for t in pv_route {
           let t = lu.tasks.pvtask_to_task[t];
+          if v.contains_key(&t) {
+            debug_assert_eq!(pv_route.first(), pv_route.last());
+            continue;
+          };
           #[cfg(debug_assertions)]
             v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
           #[cfg(not(debug_assertions))]
@@ -142,13 +150,18 @@ impl<'a> TimingSubproblem<'a> {
     let mut second_last_tasks = SmallVec::new();
 
     let obj = sol.av_routes.iter()
-      .map(|(_, route)| {
-        let second_last_task = &route[route.len() - 2];
-        second_last_tasks.push(*second_last_task);
-        trace!(?second_last_task);
-        vars[second_last_task]
+      .filter_map(|(_, route)| {
+        if route.last().unwrap().is_depot() {
+          let second_last_task = &route[route.len() - 2];
+          second_last_tasks.push(*second_last_task);
+          trace!(?second_last_task);
+          Some(vars[second_last_task])
+        } else {
+          None
+        }
       })
       .grb_sum();
+
     model.update()?;
     trace!(obj=?obj.with_names(&model));
     model.set_objective(obj, Minimize)?;
