@@ -19,7 +19,7 @@ use std::collections::{HashSet, HashMap};
 use std::io::Write;
 use experiment::{Params, SpSolverKind, CycleHandling};
 use slurm_harray::{Experiment};
-
+use serde::{Serialize, Deserialize};
 use smallvec::SmallVec;
 
 
@@ -49,8 +49,9 @@ impl fmt::Display for CbError {
 impl std::error::Error for CbError {}
 
 
-#[derive(VariantCount, Copy, Clone, Debug)]
+#[derive(VariantCount, Copy, Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 #[repr(usize)]
+#[serde(rename_all="snake_case")]
 pub enum CutType {
   // Optimality cuts
   LpOpt = 0,
@@ -69,24 +70,63 @@ pub enum CutType {
   PvChainOutfork,
 }
 
+type CutCountArray = [u64; CutType::VARIANT_COUNT];
+
+fn iter_cut_counts<'a>(arr: &'a CutCountArray) -> impl Iterator<Item=(CutType, u64)> + 'a {
+  arr.iter()
+    .enumerate()
+    .map(|(cut_ty, &cnt)| {
+      // Safety: We know the discriminant of `CutType` is always a valid index because the only
+      // way to create a CbStats struct is to call `default()`, which allocates a `Vec` of length
+      // equal to the number of variants.
+      let cut_ty: CutType = unsafe { std::mem::transmute(cut_ty) };
+      (cut_ty, cnt)
+    })
+}
+
 impl CutType {
   pub fn is_opt_cut(&self) -> bool {
     matches!(self, Self::EndTime | Self::LpOpt)
   }
 }
 
-#[derive(Clone)]
+mod cb_stats_serde {
+  use super::*;
+  use serde::{Serializer, Deserializer};
+  use serde::ser::SerializeMap;
+
+  pub fn serialize<S: Serializer>(arr: &CutCountArray, s: S) -> Result<S::Ok, S::Error> {
+    let mut m = s.serialize_map(Some(arr.len()))?;
+    for (ty, n) in iter_cut_counts(arr) {
+      m.serialize_entry(&ty, &n)?;
+    }
+    m.end()
+  }
+
+  pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<CutCountArray, D::Error> {
+    let map = Map::<CutType, u64>::deserialize(d)?;
+    let mut arr = CutCountArray::default();
+    for (ty, n) in map {
+      let idx : usize = unsafe { std::mem::transmute(ty) };
+      arr[idx] = n;
+    }
+    Ok(arr)
+  }
+}
+
+#[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct CbStats {
-  n_cuts: Vec<usize>,
-  n_cuts_total: usize,
-  n_mipsol: usize,
-  n_subproblems: usize,
+  #[serde(with="cb_stats_serde")]
+  n_cuts: CutCountArray,
+  n_cuts_total: u64,
+  n_mipsol: u64,
+  n_subproblems: u64,
 }
 
 impl std::default::Default for CbStats {
   fn default() -> Self {
     CbStats {
-      n_cuts: vec![0; CutType::VARIANT_COUNT],
+      n_cuts: [0; CutType::VARIANT_COUNT],
       n_cuts_total: 0,
       n_mipsol: 0,
       n_subproblems: 0,
@@ -96,7 +136,7 @@ impl std::default::Default for CbStats {
 
 impl CbStats {
   #[inline]
-  pub fn inc_cut_count(&mut self, cut_ty: CutType, inc: usize) -> usize {
+  pub fn inc_cut_count(&mut self, cut_ty: CutType, inc: u64) -> u64 {
     #[cfg(debug_assertions)]
       let val = self.n_cuts.get_mut(cut_ty as usize)
       .expect("vec should be large enough: will cause UB in release builds!");
@@ -112,17 +152,8 @@ impl CbStats {
     old_val
   }
 
-  pub fn get_cut_counts(&self) -> Vec<(CutType, usize)> {
-    self.n_cuts.iter()
-      .enumerate()
-      .map(|(cut_ty, &cnt)| {
-        // Safety: We know the discriminant of `CutType` is always a valid index because the only
-        // way to create a CbStats struct is to call `default()`, which allocates a `Vec` of length
-        // equal to the number of variants.
-        let cut_ty: CutType = unsafe { std::mem::transmute(cut_ty) };
-        (cut_ty, cnt)
-      })
-      .collect()
+  pub fn get_cut_counts<'a>(&'a self) -> impl Iterator<Item=(CutType, u64)> + 'a {
+    iter_cut_counts(&self.n_cuts)
   }
 
   pub fn print_cut_counts(&self) {
@@ -131,15 +162,15 @@ impl CbStats {
     }
   }
 
-  fn inc_and_return_old(val: &mut usize) -> usize {
+  fn inc_and_return_old(val: &mut u64) -> u64 {
     std::mem::replace(val, *val + 1)
   }
 
-  pub fn inc_n_mipsol(&mut self) -> usize {
+  pub fn inc_n_mipsol(&mut self) -> u64 {
     Self::inc_and_return_old(&mut self.n_mipsol)
   }
 
-  pub fn inc_n_sp(&mut self) -> usize {
+  pub fn inc_n_sp(&mut self) -> u64 {
     Self::inc_and_return_old(&mut self.n_subproblems)
   }
 }
@@ -172,7 +203,7 @@ impl InfeasibilityTracker {
 #[derive(Debug, Clone)]
 pub struct CachedCut {
   ty: CutType,
-  idx: usize,
+  idx: u64,
   expr: IneqExpr,
 }
 
@@ -237,6 +268,10 @@ impl<'a> Cb<'a> {
     })
   }
 
+  pub fn reset_stats(&mut self) -> CbStats {
+    std::mem::replace(&mut self.stats, CbStats::default())
+  }
+
 
   #[cfg(debug_assertions)]
   fn cut_check(&self, cut: &IneqExpr) {
@@ -260,7 +295,7 @@ impl<'a> Cb<'a> {
 
 
     let cut = CachedCut { ty, idx, expr: cut };
-    if matches!(&self.phase, Phase::NoWaitCost) && ty.is_opt_cut() {
+    if matches!(&self.phase, Phase::NoAvTTCost) && ty.is_opt_cut() {
       info!("store cut");
       self.stored_lazy_constraints.push(cut);
     } else {
@@ -270,14 +305,14 @@ impl<'a> Cb<'a> {
   }
 
   pub fn flush_cut_cache(&mut self, mp: &mut Model) -> Result<()> {
-    for CachedCut { ty, idx, expr, .. } in self.added_lazy_constraints.drain(0..) {
-      let name = format!("{:?}[{}]", ty, idx);
+    let cuts = self.added_lazy_constraints.drain(0..)
+      .chain(self.stored_lazy_constraints.drain(0..));
+
+    for CachedCut { ty, idx, expr, .. } in cuts {
+      let name = format!("{:?}[{}|{}]", ty, self.phase.idx(), idx);
       mp.add_constr(&name, expr)?;
     }
-    for CachedCut { ty, idx, expr, .. } in self.stored_lazy_constraints.drain(0..) {
-      let name = format!("{:?}[{}]", ty, idx);
-      mp.add_constr(&name, expr)?;
-    }
+
     mp.update()?;
     Ok(())
   }
@@ -502,12 +537,6 @@ impl<'a> Cb<'a> {
     self.enqueue_cut(c!(xsum <= cycle.len() - 1), CutType::PvCycle);
   }
 
-  // #[allow(unused_variables)]
-  // fn pv_chain_tournament_cut(&mut self, chain: &[Task]) {
-  //   todo!()
-  // }
-  //
-  #[allow(unused_variables)]
   #[tracing::instrument(level = "trace", skip(self))]
   fn pv_chain_infork_cut(&mut self, chain: &[PvTask]) {
     // FIXME sum over all p?
@@ -523,7 +552,6 @@ impl<'a> Cb<'a> {
     self.enqueue_cut(c!(lhs_sum <= chain.len() - 1 + rhs_sum), CutType::PvChainInfork);
   }
 
-  #[allow(unused_variables)]
   #[tracing::instrument(level = "trace", skip(self))]
   fn pv_chain_outfork_cut(&mut self, chain: &[PvTask]) {
     // FIXME sum over all p?
@@ -545,8 +573,7 @@ impl<'a> Cb<'a> {
     let pv_tasks = get_tasks_by_pv(ctx, &self.mp_vars.x)?;
     let mut pv_routes = Vec::with_capacity(pv_tasks.len());
 
-    let skip_pv_route_check =
-      self.params.pv_fork_cuts.is_empty() && self.params.pv_tournament_cuts.is_empty();
+    let skip_pv_route_check = self.params.pv_fork_cuts.is_empty();
 
     for (&pv, tasks) in &pv_tasks {
       let (pv_path, pv_cycles) = construct_pv_route(tasks);
@@ -615,7 +642,7 @@ impl<'a> Cb<'a> {
 
       if av_cycles.len() > 0 {
         info!(num_cycles = av_cycles.len(), "AV cycles found");
-        trace!(?av_cycles);
+        debug!(?av_cycles);
 
         for cycle in av_cycles {
           if self.params.cycle_cuts {
@@ -683,11 +710,10 @@ impl<'a> Cb<'a> {
 
 impl<'a> Callback for Cb<'a> {
   fn callback(&mut self, w: Where) -> CbResult {
-    let cb_it = self.stats.inc_n_mipsol();
-    let _span = info_span!("cb", cb_it).entered();
-
     match w {
       Where::MIPSol(ctx) => {
+        let icu = self.stats.inc_n_mipsol();
+        let _span = info_span!("cb", icu, ph=self.phase.idx()).entered();
         debug!("integer MP solution found");
 
         #[cfg(debug_assertions)]

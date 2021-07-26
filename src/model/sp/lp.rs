@@ -280,7 +280,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
       let cons = &mut self.cons.edge_constraints;
       let model = &mut self.model;
 
-      self.cons.edge_constraints.retain_ok::<_, anyhow::Error>(|(t1, t2), c| {
+      cons.retain_ok::<_, anyhow::Error>(|(t1, t2), c| {
         if model.get_obj_attr(attr::IISConstr, c)? > 0 {
           trace!(?t1, ?t2); // FIXME remove constraint from lookup as well ya dos cunt
           iis_succ.insert(*t1, *t2);
@@ -357,7 +357,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     }
 
     #[cfg(debug_assertions)] {
-      for (t, c) in &self.cons.ub {
+      for (_, c) in &self.cons.ub {
         let dual = self.model.get_obj_attr(attr::Pi, c)?;
         assert!(dual.abs() < 0.1, "non-zero dual on UB");
       }

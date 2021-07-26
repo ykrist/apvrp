@@ -6,6 +6,9 @@ use grb::prelude::*;
 use std::str::FromStr;
 use std::path::PathBuf;
 use std::ops::RangeInclusive;
+use crate::{Map, Time, Cost};
+use crate::model::cb::{CutType, CbStats};
+use crate::model::mp::TaskModelMaster;
 
 #[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct Inputs {
@@ -92,21 +95,19 @@ pub struct Params {
   pub sp: SpSolverKind,
 
   /// Minimum and maximum infeasible chain length at which to add Active Vehicle Fork cuts
-  #[structopt(long, default_value="0,4", parse(try_from_str = cl_parse_range))]
+  /// Set MIN > MAX to disable.
+  #[structopt(long, default_value="0,4", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub av_fork_cuts: std::ops::RangeInclusive<u32>,
 
   /// Minimum and maximum infeasible chain length at which to add Active Vehicle Tournament cuts
-  #[structopt(long, default_value="3,6", parse(try_from_str = cl_parse_range))]
+  /// Set MIN > MAX to disable.
+  #[structopt(long, default_value="3,6", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub av_tournament_cuts: std::ops::RangeInclusive<u32>,
 
-
   /// Minimum and maximum infeasible chain length at which to add Passive Vehicle Fork cuts
-  #[structopt(long, default_value="0,3", parse(try_from_str = cl_parse_range))]
+  /// Set MIN > MAX to disable.
+  #[structopt(long, default_value="0,3", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub pv_fork_cuts: std::ops::RangeInclusive<u32>,
-
-  /// Minimum and maximum infeasible chain length at which to add Passive Vehicle Tournament cuts
-  #[structopt(long, default_value="0,10000", parse(try_from_str = cl_parse_range))]
-  pub pv_tournament_cuts: std::ops::RangeInclusive<u32>,
 
   /// Disable End-time cuts
   #[structopt(long="no-endtime-cuts", parse(from_flag=std::ops::Not::not))]
@@ -176,7 +177,7 @@ impl Experiment for ApvrpExp {
     concat!(env!("CARGO_MANIFEST_DIR"), "/logs/").into()
   }
 
-  fn post_parse(inputs: &Self::Inputs, params: &mut Self::Parameters) {
+  fn post_parse(_inputs: &Self::Inputs, params: &mut Self::Parameters) {
     if params.param_name.is_none() {
       params.param_name = Some(params.id_str())
     }
@@ -193,20 +194,132 @@ impl ResourcePolicy for ApvrpExp {
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct GurobiInfo {
+  pub num_vars: u32,
+  pub num_cons: u32,
   pub fingerprint: u32,
 }
 
 impl GurobiInfo {
-  pub fn new(model: &grb::Model) -> Result<Self> {
+  pub fn from_model(model: &grb::Model) -> Result<Self> {
     // don't care about the value, only the bit-pattern
-    let fingerprint = unsafe{ std::mem::transmute(model.get_attr(attr::Fingerprint)?) };
+    let fingerprint = model.get_attr(attr::Fingerprint)?;
+    let fingerprint = unsafe{ std::mem::transmute(fingerprint) };
+    let num_vars = model.get_attr(attr::NumVars)? as u32;
+    let num_cons = model.get_attr(attr::NumConstrs)? as u32;
     Ok(GurobiInfo {
-      fingerprint
+      fingerprint,
+      num_cons,
+      num_vars,
+    })
+  }
+}
+
+pub enum BoundsRecorder {
+  Init,
+  PostLp(Cost),
+  PostMip(Bounds),
+}
+
+impl BoundsRecorder {
+  pub fn record_root_lb(&mut self, model: &TaskModelMaster) -> Result<()> {
+    use BoundsRecorder::*;
+    match self {
+      s @ Init => {
+        *s = PostLp(model.obj_val()?);
+      }
+      PostLp(..) | PostMip(..) => panic!("root LB already recorded"),
+    }
+    Ok(())
+  }
+
+  pub fn record_final_bounds(&mut self, model: &TaskModelMaster) -> Result<()> {
+    use BoundsRecorder::*;
+    match self {
+      Init => panic!("record root LB first"),
+      PostMip(..) => panic!("already recorded!"),
+      PostLp(root_lb)=> {
+        let bounds = Bounds {
+          lower: model.obj_bound()?,
+          upper: model.obj_val()?,
+          lower_root: *root_lb,
+          upper_full_obj: None,
+        };
+        *self = PostMip(bounds);
+      }
+    }
+    Ok(())
+  }
+
+  pub fn record_ub_full_obj(&mut self, ub: Cost) {
+    use BoundsRecorder::*;
+    match self {
+      Init | PostLp(..) => panic!("record final UB and LB first"),
+      PostMip(Bounds{ upper_full_obj, .. })=> {
+        if upper_full_obj.is_some() {
+          panic!("already recorded!")
+        }
+        *upper_full_obj = Some(ub);
+      }
+    }
+  }
+
+  pub fn finish(self) -> Bounds {
+    use BoundsRecorder::*;
+    match self {
+      Init | PostLp(..) => panic!("record final UB and LB first"),
+      PostMip(bounds) => bounds
+    }
+  }
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct Bounds {
+  pub lower_root: Cost,
+  pub lower: Cost,
+  pub upper: Cost,
+  pub upper_full_obj: Option<Cost>,
+}
+
+impl Bounds {
+  pub fn new() -> BoundsRecorder { BoundsRecorder::Init }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhaseInfo {
+  phase: String,
+  gurobi: GurobiInfo,
+  bounds: Option<Bounds>,
+  cb: Option<CbStats>,
+}
+
+impl PhaseInfo {
+  pub fn new_init(model: &grb::Model) -> Result<Self> {
+    Ok(PhaseInfo {
+      phase: "init".to_string(),
+      gurobi: GurobiInfo::from_model(model)?,
+      bounds: None,
+      cb: None,
+    })
+  }
+
+  pub fn new_post_mip(name: String,
+                      model: &grb::Model,
+                      bounds: Bounds,
+                      cb_stats: CbStats,
+  ) -> Result<Self> {
+    Ok(PhaseInfo {
+      phase: name,
+      gurobi: GurobiInfo::from_model(model).context("failed to gather Gurobi info")?,
+      bounds: Some(bounds),
+      cb: Some(cb_stats)
     })
   }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Info {
-  pub gurobi: GurobiInfo
+  pub info: Vec<PhaseInfo>,
+  pub time: Vec<(String, u128)>,
 }
+

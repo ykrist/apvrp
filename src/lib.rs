@@ -1,7 +1,6 @@
 #![feature(generic_associated_types)]
 #![feature(fn_traits)]
 #![feature(assert_matches)]
-#![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![deny(unused_must_use)]
@@ -138,36 +137,6 @@ impl Loc {
       _ => unimplemented!("only defined for passive vehicle origins and destinations")
     }
   }
-
-
-  // pub fn decode(loc: RawLoc, starts: &LocSetStarts) -> Loc {
-  //   if loc == starts.avo {
-  //     Loc::Ao
-  //   } else if loc < starts.pv_d {
-  //     Loc::Po(loc - starts.pv_o)
-  //   } else if loc < starts.req_p {
-  //     Loc::Pd(loc - starts.pv_d)
-  //   } else if loc < starts.req_d {
-  //     Loc::ReqP(loc - starts.req_p)
-  //   } else if loc < starts.avd {
-  //     Loc::ReqD(loc - starts.req_d)
-  //   } else if loc == starts.avd {
-  //     Loc::Ad
-  //   } else {
-  //     panic!("{} is out of range (max {})", loc, starts.avd)
-  //   }
-  // }
-  //
-  // pub fn encode(&self, starts: &LocSetStarts) -> RawLoc {
-  //   match self {
-  //     Loc::Ao => starts.avo,
-  //     Loc::Ad => starts.avd,
-  //     Loc::Po(p) => starts.pv_o + *p,
-  //     Loc::Pd(p) => starts.pv_d + *p,
-  //     Loc::ReqP(r) => starts.req_p + *r,
-  //     Loc::ReqD(r) => starts.req_d + *r,
-  //   }
-  // }
 }
 
 pub trait LocSetStartsExt {
@@ -228,6 +197,12 @@ impl Lookups {
     info!(num_tasks = tasks.all.len(), "task generation finished");
     Ok(Lookups { data, sets, tasks })
   }
+
+
+  pub fn travel_time_to_ddepot(&self, t: &Task) -> Time {
+    debug_assert!(!t.is_depot());
+    t.tt + self.data.travel_time[&(t.end, Loc::Ad)]
+  }
 }
 
 impl AsRef<Data> for Lookups {
@@ -267,6 +242,8 @@ pub use utils::{iter_cycle, Json};
 
 mod constants;
 pub use constants::*;
+
+pub mod stopwatch;
 
 pub mod model;
 pub mod preprocess;

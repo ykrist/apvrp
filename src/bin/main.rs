@@ -2,11 +2,13 @@ use anyhow::Result;
 use tracing::{info, error};
 use grb::prelude::*;
 use slurm_harray::{Experiment, handle_slurm_args};
-use apvrp::model::{Phase, mp::{ObjWeights, TaskModelMaster}};
+use apvrp::model::{Phase, mp::{ObjWeights, TaskModelMaster}, sp};
 use std::io::Write;
 use instances::dataset::apvrp::LocSetStarts;
 use apvrp::*;
 use apvrp::test::test_data_dir;
+use apvrp::experiment::{PhaseInfo, Bounds};
+use apvrp::solution::Solution;
 
 
 fn infeasibility_analysis(mp: &mut TaskModelMaster) -> Result<()> {
@@ -80,7 +82,18 @@ fn print_obj_breakdown(mp: &TaskModelMaster) -> Result<Cost> {
   Ok(obj)
 }
 
+fn evalutate_full_objective(lookups: &Lookups, mp: &TaskModelMaster, obj_weights: &ObjWeights, sol: &Solution) -> Result<Cost> {
+  let dummy_theta = Default::default();
+  let mut subproblem = sp::dag::GraphModel::build(&lookups, sol, &dummy_theta)?;
+  let sp_obj: Time = subproblem.solve_for_obj()?;
+  let y_obj_tt : Time = subproblem.second_last_tasks
+    .iter()
+    .map(|t| lookups.travel_time_to_ddepot(t))
+    .sum();
 
+  let true_cost = mp.obj_val()? + (sp_obj + y_obj_tt ) as Cost * obj_weights.av_finish_time;
+  Ok(true_cost)
+}
 
 
 #[tracing::instrument]
@@ -94,8 +107,13 @@ fn main() -> Result<()> {
   let _g = logging::init_logging(Some(exp.get_output_path(&exp.outputs.trace_log)), Some("apvrp.logfilter"));
   info!(inputs=?exp.inputs, params=?exp.parameters);
 
+  let mut stopwatch = crate::stopwatch::Stopwatch::new();
+  let mut phase_info = Vec::new();
+
+  stopwatch.start(String::from("task_generation"));
   let lookups = Lookups::load_data_and_build(exp.inputs.index)?;
 
+  stopwatch.lap(String::from("mp_build"));
   let obj_weights = ObjWeights::default();
   let mut mp = model::mp::TaskModelMaster::build(&lookups)?;
   mp.set_objective(&lookups,
@@ -120,19 +138,25 @@ fn main() -> Result<()> {
   mp.model.set_param(param::TimeLimit, exp.parameters.timelimit as f64)?;
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
-
   mp.model.set_obj_attr_batch(attr::Sense, mp.cons.num_av.values().map(|&c| (c, ConstrSense::Equal)))?;
   mp.model.update()?;
-
+  phase_info.push(PhaseInfo::new_init(&mp.model)?);
 
   let mut callback = {
-    let initial_phase = if exp.parameters.two_phase { Phase::NoWaitCost } else { Phase::Final };
+    let initial_phase = if exp.parameters.two_phase { Phase::NoAvTTCost } else { Phase::Final };
     model::cb::Cb::new(&lookups, &exp, &mp, initial_phase)?
   };
 
-  let obj = loop {
+
+  let sol = loop {
+    stopwatch.lap(callback.phase.name());
+    let mut bounds = Bounds::new();
+    mp.relax_integrality()?;
+    mp.model.optimize()?;
+    bounds.record_root_lb(&mp)?;
+    mp.enforce_integrality()?;
+
     match mp.model.optimize_with_callback(&mut callback) {
-      // match mp.model.optimize() {
       Err(e) => {
           #[cfg(debug_assertions)]
           match callback.error.take() {
@@ -169,22 +193,41 @@ fn main() -> Result<()> {
       status => anyhow::bail!("unexpected master problem status: {:?}", status)
     }
 
-    let obj = print_obj_breakdown(&mp)?;
-    callback.stats.print_cut_counts();
+    bounds.record_final_bounds(&mp)?;
 
+    println!();
+    print_obj_breakdown(&mp)?;
+    println!();
+    callback.stats.print_cut_counts();
+    println!();
+
+    let sol = Solution::from_mp(&mp)?;
+    if matches!(&callback.phase, Phase::NoAvTTCost) {
+      bounds.record_ub_full_obj(evalutate_full_objective(&lookups, &mp, &obj_weights, &sol)?);
+    }
+
+    phase_info.push(PhaseInfo::new_post_mip(
+      callback.phase.name(),
+      &mp.model,
+      bounds.finish(),
+      callback.reset_stats(),
+    )?);
+
+    callback.flush_cut_cache(&mut mp.model)?;
 
     match callback.phase {
-      Phase::Final => break obj,
-      Phase::NoWaitCost => {
-        callback.flush_cut_cache(&mut mp.model)?;
+      Phase::Final => {
+        break sol
+      },
+      Phase::NoAvTTCost => {
         callback.phase.set_next();
         mp.set_objective(&lookups, obj_weights)?;
       }
     }
   };
 
+  stopwatch.stop();
 
-  let sol = solution::Solution::from_mp(&mp)?;
   let json_sol = sol.to_serialisable();
   if let Some(sol_log) = callback.sol_log.as_mut() {
     serde_json::to_writer(&mut *sol_log, &json_sol)?; // need to re-borrow here
@@ -192,17 +235,22 @@ fn main() -> Result<()> {
   }
   json_sol.to_json_file(exp.get_output_path(&format!("{}-soln.json", exp.inputs.index)))?;
 
-  let sol = sol.solve_for_times(&lookups)?;
-  sol.print_objective_breakdown(&lookups, &obj_weights);
+  let sol_with_times = sol.solve_for_times(&lookups)?;
+  sol_with_times.print_objective_breakdown(&lookups, &obj_weights);
 
-  callback.flush_cut_cache(&mut mp.model)?;
+  println!();
+  stopwatch.print_laps();
+
   mp.model.update()?;
   mp.model.write(exp.get_output_path_prefixed("master_problem.lp").to_str().unwrap())?;
 
   if let Some(true_soln) = true_soln {
-    if true_soln.objective != Some(obj) {
+    let obj = sol.objective.unwrap();
+    let true_obj = true_soln.objective.unwrap();
+
+    if obj != true_obj {
       true_soln.to_serialisable().to_json_file(exp.get_output_path_prefixed("true_soln.json"))?;
-      error!(correct = true_soln.objective.unwrap(), obj, "objective mismatch");
+      error!(correct=true_obj, obj, "objective mismatch");
       true_soln.solve_for_times(&lookups)?.print_objective_breakdown(&lookups, &obj_weights);
       mp.fix_solution(&true_soln)?;
       infeasibility_analysis(&mut mp)?;
@@ -211,7 +259,8 @@ fn main() -> Result<()> {
   }
 
   let info = experiment::Info {
-    gurobi: experiment::GurobiInfo::new(&mp.model)?,
+    time: stopwatch.into_laps(),
+    info: phase_info,
   };
 
   info.to_json_file(exp.get_output_path(&exp.outputs.info))?;

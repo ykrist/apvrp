@@ -29,13 +29,6 @@ pub struct RawPvTask {
   pub p: Pv,
 }
 
-// impl RawPvTask {
-//   pub fn new(task: PvTask, lss: &LocSetStarts) -> Option<RawPvTask> {
-//     // FIXME: what is this even used for
-//     Some(RawPvTask { start: task.start.encode(lss), end: task.end.encode(lss), p: task.p })
-//   }
-// }
-
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub enum TaskType {
@@ -479,7 +472,7 @@ impl PvTasks {
       .collect();
 
     let av_task_conn = build_av_task_connections(data, &all);
-    let pv_task_conn = build_pv_task_connections(data, &all, &by_start, &by_end, &by_shorthand);
+    let pv_task_conn = build_pv_task_connections(data, &all, &by_start, &by_shorthand);
 
     PvTasks {
       all,
@@ -511,12 +504,10 @@ fn build_av_task_connections(data: &Data,
 fn build_pv_task_connections(data: &Data,
                              all: &Vec<PvTask>,
                              by_start: &Map<Loc, Vec<PvTask>>,
-                             by_end: &Map<Loc, Vec<PvTask>>,
                              by_shorthand: &Map<ShorthandPvTask, PvTask>,
 ) -> Vec<(PvTask, PvTask)> {
   use ShorthandPvTask::*;
   let mut connections = Vec::with_capacity(all.len());
-
 
   for &t1 in all {
     match t1.ty {
@@ -532,18 +523,20 @@ fn build_pv_task_connections(data: &Data,
       TaskType::Request => {
         let p = t1.p;
         let r = t1.start.req();
-        let dummy_task = t1;
-
-        let mut path = [by_shorthand[&Start(p, r)], t1, dummy_task, dummy_task, dummy_task];
 
         for &t2 in by_start[&t1.end].iter().filter(|t2| t2.p == t1.p) {
           match t2.ty {
             TaskType::End => connections.push((t1, t2)),
             TaskType::Transfer => {
               let r_after = t2.end.req();
-              path[2] = t2;
-              path[3] = by_shorthand[&Request(p, r_after)];
-              path[4] = by_shorthand[&End(p, r_after)];
+
+              let path = [
+                by_shorthand[&Start(p, r)],
+                t1,
+                t2,
+                by_shorthand[&Request(p, r_after)],
+                by_shorthand[&End(p, r_after)],
+              ];
 
               if schedule::check_pv_route(data, &path) {
                 connections.push((t1, t2));

@@ -35,8 +35,9 @@ pub fn edge_constr_kind(t1: &Task, t2: &Task) -> EdgeConstrKind {
 
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[repr(u8)]
 pub enum Phase {
-    NoWaitCost,
+    NoAvTTCost = 0,
     Final,
 }
 
@@ -45,9 +46,13 @@ impl Phase {
     pub fn next(&self) -> Self {
         use Phase::*;
         match self {
-            NoWaitCost => Final,
+            NoAvTTCost => Final,
             _ => panic!("cannot call next() in Final phase"),
         }
+    }
+
+    pub fn idx(&self) -> u8 {
+        *self as u8
     }
 
     #[inline]
@@ -57,5 +62,13 @@ impl Phase {
 
     pub fn is_final(&self) -> bool {
         matches!(self, Phase::Final)
+    }
+
+    pub fn name(&self) -> String {
+        let s = match self {
+            Phase::NoAvTTCost => "no_avtt_cost_mip",
+            Phase::Final => "final_mip",
+        };
+        s.to_string()
     }
 }

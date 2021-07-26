@@ -123,6 +123,12 @@ impl<'a> GraphModel<'a> {
     })
   }
 
+  pub fn solve_for_obj(&mut self) -> Result<Time> {
+    match self.solve()? {
+      SpStatus::Optimal(obj, _) => Ok(obj),
+      SpStatus::Infeasible(kind) => anyhow::bail!("subproblem was infeasible, inf kind {:?}", kind)
+    }
+  }
 }
 
 impl<'a> Subproblem<'a> for GraphModel<'a> {
@@ -171,7 +177,7 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
     Ok(std::iter::once(iis))
   }
 
-  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()> {
+  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, _o: Self::Optimal) -> Result<()> {
     for mrs in self.model.compute_mrs() {
       if !self.optimality_cut_required(&mrs) {
         continue

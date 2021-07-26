@@ -18,19 +18,19 @@ pub struct MpVars {
 
 #[derive(Debug, Copy, Clone)]
 pub struct ObjWeights {
-  pub tt: f64,
-  pub av_finish_time: f64,
-  pub cover: f64,
+  pub tt: Cost,
+  pub av_finish_time: Cost,
+  pub cover: Cost,
 }
 
 impl std::default::Default for ObjWeights {
-  fn default() -> Self { ObjWeights { tt: 10.0, av_finish_time: 1.0, cover: 10_000.0 } }
+  fn default() -> Self { ObjWeights { tt: 10, av_finish_time: 1, cover: 10_000 } }
 }
 
 impl ObjWeights {
   pub fn without_av_finish_time(&self) -> Self {
     Self {
-      av_finish_time: 0.0,
+      av_finish_time: 0,
       ..*self
     }
   }
@@ -74,6 +74,11 @@ impl MpVars {
     Ok(MpVars { obj, x, y, theta, u })
   }
 
+  pub fn binary_vars<'a>(&'a self) -> impl Iterator<Item=&'a Var> + 'a {
+    self.x.values()
+      .chain(self.y.values())
+      .chain(self.u.values())
+  }
 
   /// For task pair `(t1, t2)`, return a sum of variables which is 1 if the `(t1, t2)` edge constraint appears in the
   /// subproblem and 0 otherwise.
@@ -376,6 +381,28 @@ pub struct TaskModelMaster {
 
 
 impl TaskModelMaster {
+  pub fn relax_integrality(&mut self) -> Result<()> {
+    for var in self.vars.binary_vars() {
+      self.model.set_obj_attr(attr::VType, var, VarType::Continuous)?
+    }
+    Ok(())
+  }
+
+  pub fn enforce_integrality(&mut self) -> Result<()> {
+    for var in self.vars.binary_vars() {
+      self.model.set_obj_attr(attr::VType, var, VarType::Binary)?
+    }
+    Ok(())
+  }
+
+  pub fn obj_val(&self) -> Result<Cost> {
+    Ok(self.model.get_attr(attr::ObjVal)?.round() as Cost)
+  }
+
+  pub fn obj_bound(&self) -> Result<Cost> {
+    Ok(self.model.get_attr(attr::ObjBound)?.round() as Cost)
+  }
+
   pub fn build(lu: &Lookups) -> Result<Self> {
     let mut model = Model::new("Task Model MP")?;
     let vars = MpVars::build(lu, &mut model)?;
@@ -390,12 +417,12 @@ impl TaskModelMaster {
     let constr = self.cons.obj;
 
     let new_coeffs = vars.x.iter().map(|(t, &var)|
-      (var, obj_param.tt * (lu.data.travel_cost[&(t.start, t.end)] as f64))
+      (var, obj_param.tt * lu.data.travel_cost[&(t.start, t.end)])
     ).chain(
       vars.y.iter().map(|((_, t1, t2), &var)| {
-        let mut obj = obj_param.tt * (lu.data.travel_cost[&(t1.end, t2.start)] as f64);
-        if matches!(&t2.ty, TaskType::DDepot) {
-          obj += obj_param.av_finish_time * (t1.tt + lu.data.travel_time[&(t1.end, t2.start)]) as f64
+        let mut obj = obj_param.tt * lu.data.travel_cost[&(t1.end, t2.start)];
+        if t2.is_depot() {
+          obj += obj_param.av_finish_time * lu.travel_time_to_ddepot(t1)
         }
         (var, obj)
       })
@@ -405,7 +432,7 @@ impl TaskModelMaster {
       vars.theta.values().map(|&var| (var, obj_param.av_finish_time))
     );
 
-    model.set_coeffs(new_coeffs.map(|(var, coeff)| (var, constr, coeff)))?;
+    model.set_coeffs(new_coeffs.map(|(var, coeff)| (var, constr, coeff as f64)))?;
     Ok(())
   }
 

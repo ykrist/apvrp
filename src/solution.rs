@@ -43,7 +43,7 @@ fn to_path_nodes<N: Copy, W>(pairs: &[(Vec<(N, N)>, W)]) -> Vec<Vec<N>> {
 
 
 /// Given a list of task pairs (from the Y variables), construct routes for an Active Vehicle class, plus any cycles which occur.
-#[tracing::instrument(skip(task_pairs))]
+#[tracing::instrument(level="debug", skip(task_pairs))]
 pub fn construct_av_routes(task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvPath>) {
   trace!(?task_pairs);
   use crate::graph::DecomposableDigraph;
@@ -110,7 +110,7 @@ pub fn construct_av_routes(task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvP
 }
 
 /// Given a list of tasks, construct the route for a Passive vehicle, plus any cycles which occur.
-#[tracing::instrument(level="trace", skip(tasks_used))]
+#[tracing::instrument(level="debug", skip(tasks_used))]
 pub fn construct_pv_route(tasks_used: &[PvTask]) -> (PvPath, Vec<PvPath>) {
   trace!(?tasks_used);
   debug_assert!(!tasks_used.is_empty());
@@ -271,9 +271,7 @@ impl Solution {
       pv_routes.push((pv, pv_path));
     }
 
-    let objective = mp.model.get_attr(attr::ObjVal)?.round() as Cost;
-
-    Ok(Solution { objective: Some(objective), av_routes, pv_routes })
+    Ok(Solution { objective: Some(mp.obj_bound()?), av_routes, pv_routes })
   }
 
   pub fn solve_for_times(&self, lu: &Lookups) -> Result<SpSolution> {
@@ -357,10 +355,10 @@ impl SpSolution {
 
     println!("\nObjective terms:");
     println!("Component   Unweighted    Weighted");
-    println!("    Theta     {:8}    {:8}", theta_costs, obj.av_finish_time * theta_costs as f64);
-    println!("     Y TT     {:8}    {:8}", theta_y, obj.av_finish_time * theta_y as f64);
-    println!("   X Cost     {:8}    {:8}", x_travel_costs, obj.tt * x_travel_costs as f64);
-    println!("   Y Cost     {:8}    {:8}", y_travel_costs, obj.tt * y_travel_costs as f64);
+    println!("    Theta     {:8}    {:8}", theta_costs, obj.av_finish_time * theta_costs);
+    println!("     Y TT     {:8}    {:8}", theta_y, obj.av_finish_time * theta_y);
+    println!("   X Cost     {:8}    {:8}", x_travel_costs, obj.tt * x_travel_costs);
+    println!("   Y Cost     {:8}    {:8}", y_travel_costs, obj.tt * y_travel_costs);
   }
 
   pub fn from_sp(sp: &TimingSubproblem) -> Result<SpSolution> {
@@ -409,7 +407,7 @@ impl SpSolution {
       let mut tt_time = vec![cell!("TT")];
 
       println!("Active Vehicle Group {}", av);
-      for ((task1, t1), (task2, t2)) in route.iter().tuple_windows() {
+      for ((task1, t1), (task2, _)) in route.iter().tuple_windows() {
         task_row.push(cell!(format!("{:?}", task1)));
         task_row.push(cell!(format!("(drive)")));
         st_row.push(cell!(format!("{:?}", t1)));

@@ -32,9 +32,6 @@ fn build_and_set_global_subscriber(logfile: Option<impl AsRef<Path>>, logfilter_
     }
   };
 
-  let using_filter_from_file = filter_from_file.is_some();
-  let logfilter_file_supplied = logfilter_file.is_some();
-
   let stderr_log = fmt::layer().with_target(false).without_time();
   let env_filter = filter_from_file.map(EnvFilter::new).unwrap_or_else(EnvFilter::from_default_env);
   let r = registry().with(stderr_log).with(env_filter);

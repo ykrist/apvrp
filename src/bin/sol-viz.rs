@@ -24,9 +24,6 @@ fn main() -> Result<()> {
   let args : Args = StructOpt::from_args();
   let Args { index_file, solution_file, output_file } = args;
   let exp = ApvrpExp::from_index_file(&index_file)?;
-  // let solution_file =  solution_file.unwrap_or_else(||
-  //   index_file.with_file_name(&exp.outputs.)
-  // );
   let output_file = output_file.unwrap_or_else(||
     solution_file.with_extension("svg")
   );
