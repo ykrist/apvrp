@@ -691,6 +691,7 @@ impl<'a> Cb<'a> {
     Ok(av_routes)
   }
 
+  #[allow(unused_variables)]
   fn update_var_values(&mut self, ctx: &MIPSolCtx) -> Result<()> {
     #[cfg(debug_assertions)]
       {

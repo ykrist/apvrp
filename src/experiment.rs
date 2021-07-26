@@ -109,8 +109,8 @@ pub struct Params {
   #[structopt(long, default_value="0,3", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub pv_fork_cuts: std::ops::RangeInclusive<u32>,
 
-  /// Disable End-time cuts
-  #[structopt(long="no-endtime-cuts", parse(from_flag=std::ops::Not::not))]
+  /// Enable End-time optimality cuts
+  #[structopt(long)]
   pub endtime_cuts: bool,
 
   /// Try to separate cycle cuts without solving the subproblem

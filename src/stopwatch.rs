@@ -71,6 +71,25 @@ impl Stopwatch {
   }
 }
 
+pub struct Deadline {
+  start_time: Instant,
+  total_time: Duration
+}
+
+impl Deadline {
+  pub fn start(time_limit: Duration) -> Self {
+    Deadline{ start_time: Instant::now(), total_time: time_limit }
+  }
+  pub fn sec_remaining(&self) -> f64 {
+    (self.total_time - self.start_time.elapsed()).as_secs_f64()
+  }
+
+  pub fn reached(&self) -> bool {
+    self.start_time.elapsed() >= self.total_time
+  }
+}
+
+
 #[cfg(test)]
 mod tests {
   use super::*;
