@@ -214,6 +214,18 @@ fn main() -> Result<()> {
   mp.model.update()?;
   mp.model.write(exp.get_output_path_prefixed("master_problem.lp").to_str().unwrap())?;
 
+
+  println!();
+  stopwatch.print_laps();
+
+  let info = experiment::Info {
+    time: stopwatch.into_laps(),
+    info: phase_info,
+  };
+
+  info.to_json_file(exp.get_output_path(&exp.outputs.info))?;
+
+
   if let Some(sol) = solution {
     let json_sol = sol.to_serialisable();
     if let Some(sol_log) = callback.sol_log.as_mut() {
@@ -241,16 +253,6 @@ fn main() -> Result<()> {
       }
     }
   }
-
-  println!();
-  stopwatch.print_laps();
-
-  let info = experiment::Info {
-    time: stopwatch.into_laps(),
-    info: phase_info,
-  };
-
-  info.to_json_file(exp.get_output_path(&exp.outputs.info))?;
 
   Ok(())
 }
