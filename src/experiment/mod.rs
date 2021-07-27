@@ -48,7 +48,6 @@ impl_arg_enum! { CycleHandling;
 
 #[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct AuxParams {
-  // #[structopt(long="no-soln-log", parse(from_flag=std::ops::Not::not))]
   /// Log incumbent solutions which generate a subproblem
   #[structopt(long)]
   pub soln_log: bool,
@@ -97,17 +96,17 @@ pub struct Params {
   #[structopt(long, default_value="dag", possible_values=SpSolverKind::choices())]
   pub sp: SpSolverKind,
 
-  /// Minimum and maximum infeasible chain length at which to add Active Vehicle Fork cuts
+  /// Minimum and maximum infeasible chain length at which to add Active Vehicle Fork cuts.
   /// Set MIN > MAX to disable.
   #[structopt(long, default_value="0,4", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub av_fork_cuts: std::ops::RangeInclusive<u32>,
 
-  /// Minimum and maximum infeasible chain length at which to add Active Vehicle Tournament cuts
+  /// Minimum and maximum infeasible chain length at which to add Active Vehicle Tournament cuts.
   /// Set MIN > MAX to disable.
   #[structopt(long, default_value="3,6", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub av_tournament_cuts: std::ops::RangeInclusive<u32>,
 
-  /// Minimum and maximum infeasible chain length at which to add Passive Vehicle Fork cuts
+  /// Minimum and maximum infeasible chain length at which to add Passive Vehicle Fork cuts.
   /// Set MIN > MAX to disable.
   #[structopt(long, default_value="0,3", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub pv_fork_cuts: std::ops::RangeInclusive<u32>,
