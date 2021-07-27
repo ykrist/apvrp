@@ -248,6 +248,10 @@ pub struct GurobiInfo {
   pub num_vars: u32,
   pub num_cons: u32,
   pub fingerprint: u32,
+  pub node_count: Option<u32>,
+  pub sol_count: u32,
+  pub status: i32,
+  pub runtime: f64,
 }
 
 impl GurobiInfo {
@@ -257,10 +261,19 @@ impl GurobiInfo {
     let fingerprint = unsafe{ std::mem::transmute(fingerprint) };
     let num_vars = model.get_attr(attr::NumVars)? as u32;
     let num_cons = model.get_attr(attr::NumConstrs)? as u32;
+    let status = model.status()? as i32;
+    let sol_count = model.get_attr(attr::SolCount)? as u32;
+    let runtime = model.get_attr(attr::Runtime)?;
+    let node_count = model.get_attr(attr::NodeCount).ok().map(|n| n as u32);
+
     Ok(GurobiInfo {
       fingerprint,
       num_cons,
       num_vars,
+      status,
+      sol_count,
+      runtime,
+      node_count,
     })
   }
 }
