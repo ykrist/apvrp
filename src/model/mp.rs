@@ -6,6 +6,7 @@ use fnv::FnvHashSet;
 use crate::solution::Solution;
 use crate::model::{EdgeConstrKind, edge_constr_kind};
 use crate::utils::CollectExt;
+use crate::experiment::{ApvrpExp, GurobiParamVal};
 
 #[derive(Clone)]
 pub struct MpVars {
@@ -319,42 +320,42 @@ impl MpConstraints {
     //   model.add_constr("", c!(lhs >= 1))?;
     // }
 
-    let whole_route_cuts : Map<_, _> = lu.sets.avs().map(|av|{
-        let _s = trace_span!("whole_route_cuts", av).entered();
-        let mut cut = Expr::default();
+    let whole_route_cuts: Map<_, _> = lu.sets.avs().map(|av| {
+      let _s = trace_span!("whole_route_cuts", av).entered();
+      let mut cut = Expr::default();
 
-        for &t1 in &lu.tasks.compat_with_av[&av] {
-          for &t2 in &lu.tasks.succ[&t1] {
-            if let Some(&y) = vars.y.get(&(av, t1, t2)) {
-              if t1.is_depot() {
-                cut += t2.t_release * y;
-              } else if t2.is_depot() {
-                // handled already
+      for &t1 in &lu.tasks.compat_with_av[&av] {
+        for &t2 in &lu.tasks.succ[&t1] {
+          if let Some(&y) = vars.y.get(&(av, t1, t2)) {
+            if t1.is_depot() {
+              cut += t2.t_release * y;
+            } else if t2.is_depot() {
+              // handled already
+            } else {
+              let travel_time = t1.tt + lu.data.travel_time[&(t1.end, t2.start)];
+              let service_time = if t1.end == t2.start {
+                trace!(?t1, ?t2, s=?lu.data.srv_time.get(&t1.end));
+                debug_assert_eq!(t1.tt, travel_time);
+                lu.data.srv_time.get(&t1.end).copied().unwrap_or(0)
+                // 0
               } else {
-                let travel_time = t1.tt + lu.data.travel_time[&(t1.end, t2.start)];
-                let service_time = if t1.end == t2.start {
-                  trace!(?t1, ?t2, s=?lu.data.srv_time.get(&t1.end));
-                  debug_assert_eq!(t1.tt, travel_time);
-                  lu.data.srv_time.get(&t1.end).copied().unwrap_or(0)
-                  // 0
-                } else {
-                  0
-                };
-                let latest_arrival_at_t2 = t1.t_deadline + travel_time + service_time;
-                let minimum_waiting_time = std::cmp::max(t2.t_release - latest_arrival_at_t2, 0);
-                cut += (travel_time + service_time + minimum_waiting_time) * y;
-              }
+                0
+              };
+              let latest_arrival_at_t2 = t1.t_deadline + travel_time + service_time;
+              let minimum_waiting_time = std::cmp::max(t2.t_release - latest_arrival_at_t2, 0);
+              cut += (travel_time + service_time + minimum_waiting_time) * y;
             }
           }
         }
-        let theta_sum = vars.theta.iter()
-          .filter(|((a, _), _)| a == &av)
-          .map(|(_, &theta)| theta)
-          .grb_sum();
+      }
+      let theta_sum = vars.theta.iter()
+        .filter(|((a, _), _)| a == &av)
+        .map(|(_, &theta)| theta)
+        .grb_sum();
 
-        let c = model.add_constr(&format!("WholeRoute[{}]", av), c!(theta_sum >= cut))?;
-        Ok((av, c))
-      })
+      let c = model.add_constr(&format!("WholeRoute[{}]", av), c!(theta_sum >= cut))?;
+      Ok((av, c))
+    })
       .collect_ok()?;
 
     Ok(MpConstraints {
@@ -482,8 +483,8 @@ impl TaskModelMaster {
       if coeff.abs() > 1e-4 {
         let x = self.model.get_obj_attr(attr::X, var)?;
         if x.abs() > 1e-4 {
-          let name = self.model.get_obj_attr(attr::VarName,var)?;
-          let sgn = if coeff.is_sign_negative() {'-' } else { '+' };
+          let name = self.model.get_obj_attr(attr::VarName, var)?;
+          let sgn = if coeff.is_sign_negative() { '-' } else { '+' };
           write!(s, " {} {} * ({} = {})", sgn, coeff.abs(), name, x)?;
         }
       }
@@ -496,6 +497,22 @@ impl TaskModelMaster {
     }
     write!(s, " {}", self.model.get_obj_attr(attr::RHS, c)?)?;
     println!("{}", s);
+    Ok(())
+  }
+
+
+  pub fn apply_gurobi_parameters(&mut self, exp: &ApvrpExp) -> Result<()> {
+    use grb::parameter::Undocumented;
+
+    for (pname, val) in &exp.parameters.gurobi {
+      let param = Undocumented::new(pname.clone())?;
+      match val {
+        GurobiParamVal::Int(v) =>
+          self.model.set_param(&param, *v)?,
+        GurobiParamVal::Dbl(v) =>
+          self.model.set_param(&param, *v)?,
+      }
+    }
     Ok(())
   }
 }

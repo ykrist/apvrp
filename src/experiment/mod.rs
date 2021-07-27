@@ -122,6 +122,36 @@ pub struct Params {
   /// Solve a preliminary MIP first, which discards the Active Vehicle Travel-Time component of the objective.
   #[structopt(long)]
   pub two_phase: bool,
+
+  #[structopt(long, parse(try_from_str=parse_gurobi_param), require_delimiter=true)]
+  pub gurobi: Vec<(String, GurobiParamVal)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum GurobiParamVal {
+  Int(i32),
+  Dbl(f64),
+}
+
+fn parse_gurobi_param(s: &str) -> Result<(String, GurobiParamVal)> {
+  let error_msg = "format must be ATTR_NAME=VALUE";
+  let mut kv = s.split('=');
+  let key = kv.next().ok_or_else(|| anyhow::Error::msg(error_msg))?;
+  let val = kv.next().ok_or_else(|| anyhow::Error::msg(error_msg))?;
+
+  if kv.next().is_some() {
+    anyhow::bail!("{}", error_msg);
+  }
+
+  if let Ok(val) = val.parse::<i32>() {
+    return Ok((key.to_string(), GurobiParamVal::Int(val)))
+  }
+
+  if let Ok(val) = val.parse::<f64>() {
+    return Ok((key.to_string(), GurobiParamVal::Dbl(val)))
+  }
+
+  anyhow::bail!("value must be integer or double (string attr not supported)")
 }
 
 impl IdStr for Params {
@@ -180,6 +210,7 @@ impl Experiment for ApvrpExp {
   }
 
   fn post_parse(_inputs: &Self::Inputs, params: &mut Self::Parameters) {
+    params.gurobi.sort_by_cached_key(|(s, _)| s.clone());
     if params.param_name.is_none() {
       params.param_name = Some(params.id_str())
     }
@@ -199,10 +230,6 @@ mod instance_groups {
   pub const B_TW200 : Range<usize> = 140..160;
 
   pub const MK : Range<usize> = 160..190;
-
-  // const
-
-
 }
 
 impl ResourcePolicy for ApvrpExp {
@@ -230,7 +257,7 @@ impl ResourcePolicy for ApvrpExp {
       return MemoryAmount::from_gb(4)
     }
 
-    MemoryAmount::from_gb(32)
+    MemoryAmount::from_gb(8)
   }
 
   fn script(&self) -> String {
@@ -239,6 +266,10 @@ impl ResourcePolicy for ApvrpExp {
 
   fn cpus(&self) -> usize {
     self.parameters.cpus as usize
+  }
+
+  fn job_name(&self) -> Option<String> {
+    self.parameters.param_name.clone()
   }
 }
 
@@ -385,4 +416,5 @@ pub struct Info {
   pub info: Vec<PhaseInfo>,
   pub time: Vec<(String, u128)>,
 }
+
 

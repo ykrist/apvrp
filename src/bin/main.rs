@@ -135,10 +135,13 @@ fn main() -> Result<()> {
 
   mp.model.set_obj_attr_batch(attr::BranchPriority, mp.vars.u.values().map(|&u| (u, 100)))?;
   mp.model.set_obj_attr_batch(attr::UB, mp.vars.u.values().map(|&u| (u, 0.0)))?;
+
   mp.model.set_param(&MIN_BP_FORBID, 1)?;
   mp.model.set_param(param::BranchDir, 1)?;
   mp.model.set_param(param::Threads, exp.parameters.cpus as i32)?;
   mp.model.set_param(param::LazyConstraints, 1)?;
+  mp.apply_gurobi_parameters(&exp)?;
+
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
   mp.model.set_obj_attr_batch(attr::Sense, mp.cons.num_av.values().map(|&c| (c, ConstrSense::Equal)))?;
