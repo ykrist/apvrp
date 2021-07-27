@@ -1,5 +1,4 @@
 #!/bin/bash
 
-source ~/.bashrc
+source ~/.profile
 conda activate or
-echo $CONDA_PREFIX
