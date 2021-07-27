@@ -179,19 +179,25 @@ fn main() -> Result<()> {
       status => anyhow::bail!("unexpected master problem status: {:?}", status)
     }
 
+    let solution_found = mp.model.get_attr(attr::SolCount)? > 0;
+
     bounds.record_final_bounds(&mp)?;
 
     println!();
-    print_obj_breakdown(&mp)?;
-    println!();
+    if solution_found {
+      print_obj_breakdown(&mp)?;
+      println!();
+    }
     callback.stats.print_cut_counts();
     println!();
 
-    let sol = Solution::from_mp(&mp)?;
-    if matches!(&callback.phase, Phase::NoAvTTCost) {
-      bounds.record_ub_full_obj(evalutate_full_objective(&lookups, &mp, &obj_weights, &sol)?);
+    if solution_found {
+      let sol = Solution::from_mp(&mp)?;
+      if matches!(&callback.phase, Phase::NoAvTTCost) {
+        bounds.record_ub_full_obj(evalutate_full_objective(&lookups, &mp, &obj_weights, &sol)?);
+      }
+      solution = Some(sol);
     }
-    solution = Some(sol);
 
     phase_info.push(PhaseInfo::new_post_mip(
       callback.phase.name(),
