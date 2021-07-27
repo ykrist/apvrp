@@ -7,7 +7,7 @@ use std::io::Write;
 use instances::dataset::apvrp::LocSetStarts;
 use apvrp::*;
 use apvrp::test::test_data_dir;
-use apvrp::experiment::{PhaseInfo, Bounds};
+use apvrp::experiment::*;
 use apvrp::solution::Solution;
 use std::time::Duration;
 
@@ -108,8 +108,8 @@ fn main() -> Result<()> {
   let _g = logging::init_logging(Some(exp.get_output_path(&exp.outputs.trace_log)), Some("apvrp.logfilter"));
   info!(inputs=?exp.inputs, params=?exp.parameters);
 
-  let mut stopwatch = crate::stopwatch::Stopwatch::new();
-  let time_deadline = crate::stopwatch::Deadline::start(
+  let mut stopwatch = Stopwatch::new();
+  let time_deadline = Deadline::start(
     Duration::from_secs(exp.parameters.timelimit)
   );
   let mut phase_info = Vec::new();

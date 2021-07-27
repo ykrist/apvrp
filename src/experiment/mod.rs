@@ -10,6 +10,9 @@ use crate::{Map, Time, Cost};
 use crate::model::cb::{CutType, CbStats};
 use crate::model::mp::TaskModelMaster;
 
+mod stopwatch;
+pub use stopwatch::{Deadline, Stopwatch};
+
 #[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct Inputs {
   pub index: usize
@@ -184,12 +187,60 @@ impl Experiment for ApvrpExp {
   }
 }
 
+mod instance_groups {
+  use std::ops::Range;
+  pub const A_TW25 : Range<usize> = 0..20;
+  pub const A_TW50 : Range<usize> = 20..40;
+  pub const A_TW100 : Range<usize> = 40..60;
+  pub const A_TW200 : Range<usize> = 60..80;
+
+  pub const B_TW25 : Range<usize> = 80..100;
+  pub const B_TW50 : Range<usize> = 100..120;
+  pub const B_TW100 : Range<usize> = 120..140;
+  pub const B_TW200 : Range<usize> = 140..160;
+
+  pub const MK : Range<usize> = 160..190;
+
+  // const
+
+
+}
 
 impl ResourcePolicy for ApvrpExp {
-  fn time(&self) -> Duration { Duration::from_secs(self.parameters.timelimit) }
-  fn memory(&self) -> MemoryAmount { MemoryAmount::from_gb(4) }
-  fn script(&self) -> String { String::from("#!/bin/bash\nconda activate or") }
-  fn cpus(&self) -> usize { self.parameters.cpus as usize }
+  fn time(&self) -> Duration {
+    use instance_groups::*;
+    let i = self.inputs.index;
+
+    if A_TW25.contains(&i)
+      || A_TW50.contains(&i)
+      || A_TW100.contains(&i) {
+      return Duration::from_secs(300)
+    }
+
+    Duration::from_secs(self.parameters.timelimit + 300)
+  }
+
+  fn memory(&self) -> MemoryAmount {
+    use instance_groups::*;
+    let i = self.inputs.index;
+
+    if A_TW25.contains(&i)
+      || A_TW50.contains(&i)
+      || A_TW100.contains(&i)
+      || A_TW200.contains(&i) {
+      return MemoryAmount::from_gb(4)
+    }
+
+    MemoryAmount::from_gb(32)
+  }
+
+  fn script(&self) -> String {
+    include_str!("slurm_job_template.sh").to_string()
+  }
+
+  fn cpus(&self) -> usize {
+    self.parameters.cpus as usize
+  }
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]

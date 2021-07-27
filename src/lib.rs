@@ -243,14 +243,12 @@ pub use utils::{iter_cycle, Json};
 mod constants;
 pub use constants::*;
 
-pub mod stopwatch;
 
 pub mod model;
 pub mod preprocess;
 pub mod graph;
 pub mod logging;
 pub mod solution;
-// pub mod solution {}
 use fnv::FnvHashSet;
 
 pub mod schedule;
