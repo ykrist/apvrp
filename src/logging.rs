@@ -1,92 +1,67 @@
 use tracing_subscriber::{EnvFilter, fmt, registry, prelude::*};
 use tracing_appender::{non_blocking, non_blocking::WorkerGuard};
-use std::fs::OpenOptions;
+use std::fs::{OpenOptions, File};
 use std::path::Path;
 // use tracing::{info, warn};
 use std::env;
 use std::fmt::Debug;
+use crate::Result;
 
-fn build_and_set_global_subscriber(logfile: Option<impl AsRef<Path>>, logfilter_file: Option<impl AsRef<Path>>, is_test: bool) -> Option<WorkerGuard>
-{
-  let filter_from_file = logfilter_file
-    .as_ref()
-    .map(|filename| -> Option<String> {
-      if let Ok(filter) = std::fs::read_to_string(filename) {
-        let lines: Vec<_> = filter.lines()
-          .map(|s| s.trim())
-          .filter(|s| !s.starts_with('#'))
-          .collect();
-        Some(lines.join(","))
-      } else { None }
-    })
-    .flatten();
+const LOG_BUFFER_LINES: usize = 4_194_304; // 2 ** 22; should be < 2GiB with <= 512 bytes per log entry
 
-  let message = {
-    if filter_from_file.is_some() {
-      let s= logfilter_file.as_ref().unwrap();
-      Some((tracing::Level::INFO, s.as_ref().to_str().unwrap(), "using log-filter file".to_string()))
-    } else if let Some(filename) = &logfilter_file {
-      Some((tracing::Level::WARN, filename.as_ref().to_str().unwrap(), format!("unable to open log-filter file, falling back to RUST_LOG env var.")))
-    } else {
-      None
-    }
+
+pub fn init_logging(logfile: Option<impl AsRef<Path>>, stderr: bool) -> Result<Option<WorkerGuard>> {
+  let env_filter = EnvFilter::from_default_env();
+
+  let stderr_log = if stderr {
+    let layer = fmt::layer()
+      .with_target(false)
+      .without_time();
+    Some(layer)
+  } else {
+    None
   };
 
-  let stderr_log = fmt::layer().with_target(false).without_time();
-  let env_filter = filter_from_file.map(EnvFilter::new).unwrap_or_else(EnvFilter::from_default_env);
-  let r = registry().with(stderr_log).with(env_filter);
+  let (json_log, guard) = if let Some(p) = logfile {
+    let (writer, guard) = non_blocking::NonBlockingBuilder::default()
+      .lossy(false)
+      .buffered_lines_limit(LOG_BUFFER_LINES)
+      .finish(File::create(p)?);
 
-  let flush_guard = match logfile {
-    Some(p) => {
-      let logfile = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(p).unwrap();
-      let (writer, _guard) = non_blocking::NonBlockingBuilder::default()
-        .lossy(false)
-        .finish(logfile);
-      let json = fmt::layer()
-        .json()
-        .with_span_list(true)
-        .with_current_span(false)
-        .with_writer(writer);
-
-      let r = r.with(json);
-      if is_test { r.try_init().ok(); } else { r.init(); }
-      Some(_guard)
-    }
-    None => {
-      if is_test { r.try_init().ok(); } else { r.init(); }
-      None
-    }
+    let layer = fmt::layer()
+      .json()
+      .with_span_list(true)
+      .with_current_span(false)
+      .with_writer(writer);
+    (Some(layer), Some(guard))
+  } else {
+    (None, None)
   };
 
-  if let Some((level, filename, message)) = message {
-    // for reason, I can't provide a non-const value to the `event!` macro
-    if level == tracing::Level::WARN { warn!(filename, "{}", message);  }
-    else {  info!(filename, "{}", message); }
-  }
-  // if using_filter_from_file {
-  //   tracing::info!(filename=?logfilter_file.unwrap(), "using log-filter file");
-  // } else {
-  //   if let Some(filename) = logfilter_file {
-  //     warn!(filename=?filename, "Unable to read from log-filter file. Falling back to RUST_LOG env var.");
-  //   }
-  // }
+  registry()
+    .with(env_filter)
+    .with(stderr_log)
+    .with(json_log)
+    .init();
 
-
-  return flush_guard;
-}
-
-
-pub fn init_logging(logfile: Option<impl AsRef<Path>>, logfilter_file: Option<impl AsRef<Path>>) -> Option<WorkerGuard> {
-  return build_and_set_global_subscriber(logfile, logfilter_file, false);
+  Ok(guard)
 }
 
 #[allow(dead_code)]
-pub(crate) fn init_test_logging(logfile: Option<impl AsRef<Path>>) -> Option<WorkerGuard> {
-  return build_and_set_global_subscriber(logfile, None::<&str>, true);
+pub(crate) fn init_test_logging() {
+  let env_filter = EnvFilter::from_default_env();
+
+  let stderr_log = fmt::layer()
+      .with_target(false)
+      .without_time()
+      .with_test_writer();
+
+  registry()
+    .with(env_filter)
+    .with(stderr_log)
+    .try_init()
+    .ok();
+
 }
 
 #[derive(Copy, Clone)]
@@ -112,3 +87,4 @@ pub use tracing::{
   error_span,
   span::Span,
 };
+use itertools::Itertools;

@@ -105,7 +105,8 @@ fn main() -> Result<()> {
   let exp: experiment::ApvrpExp = handle_slurm_args()?;
   exp.write_index_file()?;
   exp.write_parameter_file()?;
-  let _g = logging::init_logging(Some(exp.get_output_path(&exp.outputs.trace_log)), Some("apvrp.logfilter"));
+  let _g = logging::init_logging(Some(exp.get_output_path(&exp.outputs.trace_log)), !exp.aux_params.quiet)?;
+
   info!(inputs=?exp.inputs, params=?exp.parameters);
 
   let mut stopwatch = Stopwatch::new();

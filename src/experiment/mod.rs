@@ -51,12 +51,17 @@ pub struct AuxParams {
   /// Log incumbent solutions which generate a subproblem
   #[structopt(long)]
   pub soln_log: bool,
+
+  /// Disable trace logging to STDOUT.
+  #[structopt(long, short="q")]
+  pub quiet: bool,
 }
 
 impl Default for AuxParams {
   fn default() -> Self {
     Self {
       soln_log: false,
+      quiet: false,
     }
   }
 }
