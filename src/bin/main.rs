@@ -96,16 +96,9 @@ fn evalutate_full_objective(lookups: &Lookups, mp: &TaskModelMaster, obj_weights
   Ok(true_cost)
 }
 
-
-#[tracing::instrument]
-fn main() -> Result<()> {
+fn run(exp: ApvrpExp) -> Result<()> {
   #[allow(non_snake_case)]
     let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
-
-  let exp: experiment::ApvrpExp = handle_slurm_args()?;
-  exp.write_index_file()?;
-  exp.write_parameter_file()?;
-  let _g = logging::init_logging(Some(exp.get_output_path(&exp.outputs.trace_log)), !exp.aux_params.quiet)?;
 
   info!(inputs=?exp.inputs, params=?exp.parameters);
 
@@ -130,7 +123,7 @@ fn main() -> Result<()> {
     test_data_dir().join(format!("soln/{}.json", exp.inputs.index)),
     &lookups,
     &LocSetStarts::new(lookups.data.n_passive, lookups.data.n_req),
-    )
+  )
     .map_err(|e| error!(error=%e, "unable to load solution"))
     .ok();
 
@@ -263,6 +256,19 @@ fn main() -> Result<()> {
       }
     }
   }
-
   Ok(())
+}
+
+#[tracing::instrument(level="error")]
+fn main() -> Result<()> {
+  let exp: experiment::ApvrpExp = handle_slurm_args()?;
+  exp.write_index_file()?;
+  exp.write_parameter_file()?;
+  let _g = logging::init_logging(Some(exp.get_output_path(&exp.outputs.trace_log)), !exp.aux_params.quiet)?;
+
+  let result = run(exp);
+  if let Err(err) = result.as_ref() {
+    error!("{}", err);
+  }
+  result
 }
