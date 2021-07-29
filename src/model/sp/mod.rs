@@ -11,6 +11,8 @@ use crate::utils::{iter_pairs, VarIterExt, PeekableExt};
 pub mod lp;
 pub mod dag;
 
+
+
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct PathIis {
   lb: PvTask,
@@ -54,6 +56,8 @@ pub trait Subproblem<'a>: Sized {
   fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()>;
 
   fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, estimate: Time) -> Result<()> {
+    // TODO: stop early once the IIS covers start getting too big
+    //  Can use cb.params, will need find the size of the cover before constructing the constraint
     loop {
       match self.solve()? {
         SpStatus::Optimal(sp_obj, o) => {

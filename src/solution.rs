@@ -11,6 +11,42 @@ use grb::prelude::*;
 use std::hash::Hash;
 use crate::graph::DecomposableDigraph;
 use crate::utils::IoContext;
+use std::assert_matches::*;
+
+
+/// A Passive vehicle route, beginning at a PV origin depot and ending at a PV destination depot
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PvRoute(Vec<PvTask>);
+
+impl PvRoute {
+  fn new(path: Vec<PvTask>) -> Self {
+    debug_assert_matches!(path.first().unwrap().ty, TaskType::Start);
+    debug_assert_matches!(path.last().unwrap().ty, TaskType::End);
+    Self(path)
+  }
+
+  fn iter_edges<'a>(&'a self) -> impl Iterator<Item=(&'a PvTask, &'a PvTask)> + 'a {
+    self.0.iter().tuple_windows()
+  }
+
+  fn iter_edges_owned<'a>(&'a self) -> impl Iterator<Item=(PvTask, PvTask)> + 'a {
+    self.0.iter().copied().tuple_windows()
+  }
+}
+
+
+/// A AV vehicle route, beginning at the AV origin depot and ending the AV destination depot
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AvRoute(Vec<Task>);
+
+/// A PV cycle, first task is equal to the last task
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PvCycle(Vec<PvTask>);
+
+/// An AV cycle, first task is equal to the last task
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AvCycle(Vec<Task>);
+
 
 /// A (possibly cyclic) Active Vehicle path.  If the path is a cycle, the first and last Tasks are the same.
 pub(crate) type AvPath = Vec<Task>;
@@ -552,3 +588,4 @@ mod debugging {
 }
 
 pub use debugging::load_michael_soln;
+use std::ops::Deref;

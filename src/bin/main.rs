@@ -97,6 +97,7 @@ fn evalutate_full_objective(lookups: &Lookups, mp: &TaskModelMaster, obj_weights
 }
 
 fn run(exp: ApvrpExp) -> Result<()> {
+  // TODO: PV colgen for Tilk instances
   #[allow(non_snake_case)]
     let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
 
@@ -177,16 +178,25 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
     bounds.record_final_bounds(&mp)?;
 
-    println!();
     if solution_found {
-      print_obj_breakdown(&mp)?;
       println!();
+      print_obj_breakdown(&mp)?;
     }
+
+    println!();
     callback.stats.print_cut_counts();
     println!();
 
     if solution_found {
-      let sol = Solution::from_mp(&mp)?;
+      let sol = match Solution::from_mp(&mp) {
+        Ok(sol) => sol,
+        Err(e) => {
+          callback.flush_cut_cache(&mut mp.model)?;
+          mp.model.write(&exp.get_output_path_prefixed("model_debug.lp").to_str().unwrap())?;
+          return Err(e)
+        }
+      };
+
       if matches!(&callback.phase, Phase::NoAvTTCost) {
         bounds.record_ub_full_obj(evalutate_full_objective(&lookups, &mp, &obj_weights, &sol)?);
       }

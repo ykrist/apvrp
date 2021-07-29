@@ -711,6 +711,9 @@ impl<'a> Cb<'a> {
 
 impl<'a> Callback for Cb<'a> {
   fn callback(&mut self, w: Where) -> CbResult {
+    // TODO - save best global solution in no-AVTT-cost phase
+    //  note: the best solution found wrt to the final phase may not be the
+    //  the same as the best solution found wrt to the initial phase
     match w {
       Where::MIPSol(ctx) => {
         let icu = self.stats.inc_n_mipsol();
@@ -721,17 +724,17 @@ impl<'a> Callback for Cb<'a> {
           self.update_var_values(&ctx)?;
 
 
-        let initial_cut_cache_len = self.added_lazy_constraints.len();
+        let new_lazy_constr_start = self.added_lazy_constraints.len();
         let pv_routes = self.sep_pv_cuts(&ctx)?;
 
 
-        if self.added_lazy_constraints.len() > initial_cut_cache_len {
-          info!(ncuts = self.added_lazy_constraints.len() - initial_cut_cache_len, "heuristic cuts added (PV only)");
+        if self.added_lazy_constraints.len() > new_lazy_constr_start {
+          info!(ncuts = self.added_lazy_constraints.len() - new_lazy_constr_start, "heuristic cuts added (PV only)");
         } else {
           let av_routes = self.sep_av_cuts(&ctx)?;
 
-          if self.added_lazy_constraints.len() > initial_cut_cache_len {
-            info!(ncuts = self.added_lazy_constraints.len() - initial_cut_cache_len, "heuristic cuts added");
+          if self.added_lazy_constraints.len() > new_lazy_constr_start {
+            info!(ncuts = self.added_lazy_constraints.len() - new_lazy_constr_start, "heuristic cuts added");
           } else {
             let sp_idx = self.stats.inc_n_sp();
             let _span = error_span!("sp", sp_idx, estimate=tracing::field::Empty).entered();
@@ -758,7 +761,8 @@ impl<'a> Callback for Cb<'a> {
             }
           }
         }
-        for cut in &self.added_lazy_constraints[initial_cut_cache_len..] {
+        for cut in &self.added_lazy_constraints[new_lazy_constr_start..] {
+          trace!(lazy_cut=?cut.expr.with_names(&self.var_names));
           ctx.add_lazy(cut.expr.clone())?;
         }
       }

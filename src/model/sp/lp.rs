@@ -282,7 +282,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
 
       cons.retain_ok::<_, anyhow::Error>(|(t1, t2), c| {
         if model.get_obj_attr(attr::IISConstr, c)? > 0 {
-          trace!(?t1, ?t2); // FIXME remove constraint from lookup as well ya dos cunt
+          trace!(?t1, ?t2);
           iis_succ.insert(*t1, *t2);
           model.remove(*c)?;
           Ok(false)

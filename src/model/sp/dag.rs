@@ -68,7 +68,7 @@ impl<'a> GraphModel<'a> {
     let mut constraints = map_with_capacity(vars.len() * 2);
     let mut model = model.finish_nodes();
     for (_, pv_route) in &sol.pv_routes {
-      for c in iter_edge_constraints(pv_route) {
+      for c in iter_edge_constraints(pv_route) { // FIXME need to check for cycles here
         let (pt1, pt2) = match c {
           XEdgeConstraint::Unloading(pt1, pt2) => {
             trace!(t1=?pt1, t2=?pt2, "unloading constraint");
