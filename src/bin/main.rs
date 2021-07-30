@@ -225,8 +225,9 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
   stopwatch.stop();
   mp.model.update()?;
-  mp.model.write(exp.get_output_path_prefixed("master_problem.lp").to_str().unwrap())?;
-
+  if exp.aux_params.model_file {
+    mp.model.write(exp.get_output_path_prefixed("master_problem.lp").to_str().unwrap())?;
+  }
 
   println!();
   stopwatch.print_laps();

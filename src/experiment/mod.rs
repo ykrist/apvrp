@@ -55,6 +55,11 @@ pub struct AuxParams {
   /// Disable trace logging to STDOUT.
   #[structopt(long, short="q")]
   pub quiet: bool,
+
+  /// Save the final model of the master problem (with all lazy constraints included) to
+  /// an LP file.
+  #[structopt(long)]
+  pub model_file: bool
 }
 
 impl Default for AuxParams {
@@ -62,6 +67,7 @@ impl Default for AuxParams {
     Self {
       soln_log: false,
       quiet: false,
+      model_file: false,
     }
   }
 }
