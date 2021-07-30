@@ -8,9 +8,10 @@ use crate::logging::*;
 use crate::model::{EdgeConstrKind, edge_constr_kind};
 
 use crate::utils::{iter_pairs, VarIterExt, PeekableExt};
+use daggylp::Weight;
+
 pub mod lp;
 pub mod dag;
-
 
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -70,7 +71,7 @@ pub trait Subproblem<'a>: Sized {
           for iis in self.extract_and_remove_iis(i)?.into_iter() {
             trace!(?iis);
             let cut = match iis {
-              Iis::Path(iis)=> {
+              Iis::Path(iis) => {
                 #[cfg(debug_assertions)] {
                   cb.infeasibilities.path_iis(&iis);
                 }
@@ -82,7 +83,7 @@ pub trait Subproblem<'a>: Sized {
                   cb.infeasibilities.av_cycle(&cycle);
                 }
                 build_cyclic_infeasiblity_cut(cb, &cycle)
-              },
+              }
             };
 
             cb.enqueue_cut(cut, CutType::LpFeas); // FIXME cuttype should be changed
@@ -94,7 +95,7 @@ pub trait Subproblem<'a>: Sized {
   }
 }
 
-#[instrument(level="debug", skip(cb))]
+#[instrument(level = "debug", skip(cb))]
 pub fn build_path_infeasiblity_cut(cb: &cb::Cb, iis: &PathIis) -> IneqExpr {
   let PathIis { lb: lb_task, ub: ub_task, path } = iis;
   let n = path.len() - 1;
@@ -113,7 +114,7 @@ pub fn build_path_infeasiblity_cut(cb: &cb::Cb, iis: &PathIis) -> IneqExpr {
   if matches!(lb_task.ty, TaskType::Transfer) && path[0].end == path[1].start {
     edge_nodes = &edge_nodes[1..];
   }
-  if matches!(ub_task.ty, TaskType::Transfer) && path[n-1].end == path[n].start {
+  if matches!(ub_task.ty, TaskType::Transfer) && path[n - 1].end == path[n].start {
     edge_nodes = &edge_nodes[..edge_nodes.len()];
   }
 
@@ -126,11 +127,11 @@ pub fn build_path_infeasiblity_cut(cb: &cb::Cb, iis: &PathIis) -> IneqExpr {
         rhs += 1;
         cb.mp_vars.y_sum_av(cb.lu, *t1, *t2).sum_into(&mut lhs);
         trace!("AV TT");
-      },
+      }
       EdgeConstrKind::Loading => {
         x_edges.insert(*t1);
         trace!("Loading");
-      },
+      }
       EdgeConstrKind::Unloading => {
         x_edges.insert(*t2);
         trace!("Unloading");
@@ -165,11 +166,11 @@ pub fn build_cyclic_infeasiblity_cut(cb: &cb::Cb, cycle: &[Task]) -> IneqExpr {
         rhs += 1;
         cb.mp_vars.y_sum_av(cb.lu, *t1, *t2).sum_into(&mut lhs);
         trace!("AV TT");
-      },
+      }
       EdgeConstrKind::Loading => {
         x_edges.insert(*t1);
         trace!("Loading");
-      },
+      }
       EdgeConstrKind::Unloading => {
         x_edges.insert(*t2);
         trace!("Unloading");
@@ -207,6 +208,26 @@ fn iter_edge_constraints<'a>(pv_route: &'a [PvTask]) -> impl Iterator<Item=XEdge
   })
 }
 
+impl Solution {
+  fn iter_sp_vars<'a>(&'a self) -> impl Iterator<Item=&'a PvTask> + 'a {
+    self.pv_cycles.iter().flat_map(|c| c.unique_tasks())
+      .chain(self.pv_routes.iter().flat_map(|r| r.iter()))
+  }
+
+  fn iter_sp_x_edges<'a>(&'a self) -> impl Iterator<Item=XEdgeConstraint> + 'a {
+    // Need to pass closures to flat_map for deref coercion to work
+    self.pv_routes.iter()
+      .flat_map(|r| iter_edge_constraints(r))
+      .chain(self.pv_cycles.iter().flat_map(|c| iter_edge_constraints(c)))
+  }
+
+  fn iter_sp_y_edges<'a>(&'a self) -> impl Iterator<Item=(&'a Task, &'a Task)> + 'a {
+    self.av_routes.iter().flat_map(|r| iter_pairs(r.without_depots()))
+      .chain(self.av_cycles.iter().flat_map(|c| c.iter_edges()))
+  }
+}
+
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -227,19 +248,19 @@ mod tests {
     let lp_result = lpmodel.solve()?;
 
     match (dag_result, lp_result) {
-      (SpStatus::Infeasible(_), SpStatus::Infeasible(_)) => {},
-      (SpStatus::Optimal(dag_obj, _), SpStatus::Optimal(lp_obj,_)) => {
+      (SpStatus::Infeasible(_), SpStatus::Infeasible(_)) => {}
+      (SpStatus::Optimal(dag_obj, _), SpStatus::Optimal(lp_obj, _)) => {
         if dag_obj != lp_obj {
           anyhow::bail!("objective mismatch: DAG = {} != {} = LP", dag_obj, lp_obj)
         }
-      },
+      }
       (dag_result, lp_result) => {
         if !lp_result.is_optimal() {
           lpmodel.debug_infeasibility()?;
         }
         let output = test_output_dir().join("LP.txt");
         lpmodel.write_debug_graph(&output)?;
-        dagmodel.model.write_debug( test_output_dir().join("DAG.txt"))?;
+        dagmodel.model.write_debug(test_output_dir().join("DAG.txt"))?;
         anyhow::bail!("status mismatch:\nDAG = {:?}\n LP = {:?}", dag_result, lp_result)
       }
     }
@@ -268,5 +289,4 @@ mod tests {
     }
     Ok(())
   }
-
 }

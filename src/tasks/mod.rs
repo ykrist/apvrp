@@ -468,7 +468,7 @@ impl PvTasks {
 
     let by_shorthand: Map<_, _> = all.iter()
       .copied()
-      .map(|t| (ShorthandPvTask::from(t), t))
+      .map(|t| (t.shorthand(), t))
       .collect();
 
     let av_task_conn = build_av_task_connections(data, &all);
@@ -705,7 +705,7 @@ impl Tasks {
     }
 
     let by_shorthand: Map<_, _> = all.iter()
-      .map(|&t| (ShorthandTask::from(t), t))
+      .map(|&t| (t.shorthand(), t))
       .collect();
 
     Tasks {

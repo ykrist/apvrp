@@ -13,45 +13,147 @@ use crate::graph::DecomposableDigraph;
 use crate::utils::IoContext;
 use std::assert_matches::*;
 
+mod route {
+  use super::*;
 
-/// A Passive vehicle route, beginning at a PV origin depot and ending at a PV destination depot
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct PvRoute(Vec<PvTask>);
+  /// A Passive vehicle route, beginning at a PV origin depot and ending at a PV destination depot
+  #[derive(Debug, Clone, Eq, PartialEq)]
+  pub struct PvRoute(Vec<PvTask>);
 
-impl PvRoute {
-  fn new(path: Vec<PvTask>) -> Self {
-    debug_assert_matches!(path.first().unwrap().ty, TaskType::Start);
-    debug_assert_matches!(path.last().unwrap().ty, TaskType::End);
-    Self(path)
+  impl PvRoute {
+    pub fn new(path: Vec<PvTask>) -> Self {
+      debug_assert!(
+        (path.len() == 1 && path.first().unwrap().ty == TaskType::Direct) ||
+          (path.first().unwrap().ty == TaskType::Start && path.last().unwrap().ty == TaskType::End)
+      );
+
+      Self(path)
+    }
   }
 
-  fn iter_edges<'a>(&'a self) -> impl Iterator<Item=(&'a PvTask, &'a PvTask)> + 'a {
-    self.0.iter().tuple_windows()
+
+  /// A PV cycle, first task is equal to the last task
+  #[derive(Debug, Clone, Eq, PartialEq)]
+  pub struct PvCycle(Vec<PvTask>);
+
+  impl PvCycle {
+    pub fn new(path: Vec<PvTask>) -> Self {
+      debug_assert_eq!(path.first().unwrap(), path.last().unwrap());
+      Self(path)
+    }
+
+    pub fn unique_tasks(&self) -> &[PvTask] {
+      &self.0[..self.len() - 1]
+    }
   }
 
-  fn iter_edges_owned<'a>(&'a self) -> impl Iterator<Item=(PvTask, PvTask)> + 'a {
-    self.0.iter().copied().tuple_windows()
+
+  macro_rules! impl_common_pv {
+    ($ty:path) => {
+      impl Deref for $ty {
+        type Target = [PvTask];
+
+        fn deref(&self) -> &Self::Target {
+          self.0.as_slice()
+        }
+      }
+
+      impl $ty {
+        pub fn pv(&self) -> Pv { self.0[0].p }
+
+        pub fn into_inner(self) -> Vec<PvTask> { self.0 }
+
+        pub fn iter_edges<'a>(&'a self) -> impl Iterator<Item=(&'a PvTask, &'a PvTask)> + 'a {
+          self.0.iter().tuple_windows()
+        }
+
+        pub fn iter_edges_owned<'a>(&'a self) -> impl Iterator<Item=(PvTask, PvTask)> + 'a {
+          self.0.iter().copied().tuple_windows()
+        }
+      }
+
+    };
   }
+
+  impl_common_pv!(PvRoute);
+  impl_common_pv!(PvCycle);
+
+
+  /// A AV vehicle route, beginning at the AV origin depot and ending the AV destination depot
+  #[derive(Debug, Clone, Eq, PartialEq)]
+  pub struct AvRoute {
+    tasks: Vec<Task>,
+    av: Av,
+  }
+
+
+  impl AvRoute {
+    pub fn new(av: Av, tasks: Vec<Task>) -> Self {
+      debug_assert_matches!(tasks.first().unwrap().ty, TaskType::ODepot);
+      debug_assert_matches!(tasks.last().unwrap().ty, TaskType::DDepot);
+      AvRoute { av, tasks }
+    }
+
+    pub fn without_depots(&self) -> &[Task] {
+      &self[1..self.len() - 1]
+    }
+
+    pub fn theta_task(&self) -> &Task {
+      &self[self.len() - 2]
+    }
+  }
+
+
+  /// An AV cycle, first task is equal to the last task
+  #[derive(Debug, Clone, Eq, PartialEq)]
+  pub struct AvCycle {
+    tasks: Vec<Task>,
+    av: Av,
+  }
+
+  impl AvCycle {
+    pub fn new(av: Av, tasks: Vec<Task>) -> Self {
+      debug_assert_eq!(tasks.first().unwrap(), tasks.last().unwrap());
+      AvCycle { av, tasks }
+    }
+  }
+
+  macro_rules! impl_common_av {
+    ($ty:path) => {
+      impl Deref for $ty {
+        type Target = [Task];
+
+        fn deref(&self) -> &Self::Target {
+          self.tasks.as_slice()
+        }
+      }
+
+      impl $ty {
+        pub fn av(&self) -> Av { self.av }
+
+        pub fn into_inner(self) -> Vec<Task> { self.tasks }
+
+        pub fn iter_edges<'a>(&'a self) -> impl Iterator<Item=(&'a Task, &'a Task)> + 'a {
+          self.tasks.iter().tuple_windows()
+        }
+
+        pub fn iter_edges_owned<'a>(&'a self) -> impl Iterator<Item=(Task, Task)> + 'a {
+          self.tasks.iter().copied().tuple_windows()
+        }
+
+        pub fn iter_y_vars<'a>(&'a self) -> impl Iterator<Item=(Av, Task, Task)> + 'a {
+          self.iter_edges_owned().map(move |(t1, t2)| (self.av, t1, t2))
+        }
+      }
+
+    };
+  }
+
+  impl_common_av!(AvCycle);
+  impl_common_av!(AvRoute);
 }
 
-
-/// A AV vehicle route, beginning at the AV origin depot and ending the AV destination depot
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct AvRoute(Vec<Task>);
-
-/// A PV cycle, first task is equal to the last task
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct PvCycle(Vec<PvTask>);
-
-/// An AV cycle, first task is equal to the last task
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct AvCycle(Vec<Task>);
-
-
-/// A (possibly cyclic) Active Vehicle path.  If the path is a cycle, the first and last Tasks are the same.
-pub(crate) type AvPath = Vec<Task>;
-/// A (possibly cyclic) Passive Vehicle path.  If the path is a cycle, the first and last Tasks are the same.
-pub(crate) type PvPath = Vec<PvTask>;
+pub use route::*;
 
 pub fn iter_solution_log(p: impl AsRef<Path>) -> Result<impl Iterator<Item=SerialisableSolution>> {
   let contents = std::io::Cursor::new(std::fs::read(&p).read_context(&p)?);
@@ -61,40 +163,29 @@ pub fn iter_solution_log(p: impl AsRef<Path>) -> Result<impl Iterator<Item=Seria
   Ok(stream)
 }
 
-#[inline]
-fn discard_edge_weights<T, W>(pairs: Vec<(T, W)>) -> Vec<T> {
-  pairs.into_iter().map(|(x, _)| x).collect()
-}
-
-#[inline]
-fn to_path_nodes<N: Copy, W>(pairs: &[(Vec<(N, N)>, W)]) -> Vec<Vec<N>> {
-  pairs.iter()
-    .map(|(arcs, _)| {
-      std::iter::once(arcs[0].0)
-        .chain(arcs.iter().map(|(_, n)| *n))
-        .collect()
-    })
-    .collect()
-}
-
 
 /// Given a list of task pairs (from the Y variables), construct routes for an Active Vehicle class, plus any cycles which occur.
-#[tracing::instrument(level="debug", skip(task_pairs))]
-pub fn construct_av_routes(task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvPath>) {
-  trace!(?task_pairs);
+#[tracing::instrument(level = "debug", skip(task_pairs))]
+pub fn construct_av_routes(task_pairs: impl IntoIterator<Item=(Av, Task, Task)>) -> (Vec<AvRoute>, Vec<AvCycle>) {
   use crate::graph::DecomposableDigraph;
+
+  #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+  struct AvTask {
+    task: Task,
+    av: Av,
+  }
 
   #[derive(Debug)]
   struct AvGraph {
-    pub odepot_arcs: FnvHashSet<(Task, Task)>,
-    pub succ: Map<Task, Task>,
+    pub odepot_arcs: SmallVec<[(AvTask, AvTask); crate::constants::NUM_AV_UB]>,
+    pub succ: Map<AvTask, AvTask>,
   }
 
-  impl DecomposableDigraph<Task, (Task, Task), u8> for AvGraph {
-    fn is_sink(&self, node: &Task) -> bool { node.ty == TaskType::DDepot }
+  impl DecomposableDigraph<AvTask, (AvTask, AvTask), u8> for AvGraph {
+    fn is_sink(&self, node: &AvTask) -> bool { node.task.ty == TaskType::DDepot }
 
     #[tracing::instrument(level = "trace", name = "find_start", fields(succ = ? & self.succ, od_arcs = ? & self.odepot_arcs), skip(self))]
-    fn next_start(&self) -> Option<Task> {
+    fn next_start(&self) -> Option<AvTask> {
       self.odepot_arcs.iter().next()
         .map(|(od, _)| *od)
         .or_else(|| {
@@ -104,96 +195,126 @@ pub fn construct_av_routes(task_pairs: &[(Task, Task)]) -> (Vec<AvPath>, Vec<AvP
     }
 
     #[tracing::instrument(level = "trace", name = "find_succ", fields(succ = ? & self.succ, od_arcs = ? & self.odepot_arcs), skip(self))]
-    fn next_outgoing_arc(&self, task: &Task) -> ((Task, Task), Task, u8) {
-      let arc = if task.ty == TaskType::ODepot {
-        *self.odepot_arcs.iter().next().unwrap()
+    fn next_outgoing_arc(&self, t: &AvTask) -> ((AvTask, AvTask), AvTask, u8) {
+      let arc = if t.task.ty == TaskType::ODepot {
+        *self.odepot_arcs.last().unwrap()
       } else {
-        (*task, self.succ[task])
+        let next_task = self.succ[t];
+        (*t, next_task)
       };
       trace!(next_task=?arc.1);
       (arc, arc.1, 1)
     }
 
     #[tracing::instrument(level = "trace", fields(succ = ? & self.succ, od_arcs = ? & self.odepot_arcs), skip(self))]
-    fn subtract_arc(&mut self, arc: &(Task, Task), _: u8) {
-      let value_removed =
-        if arc.0.ty == TaskType::ODepot {
-          trace!("remove depot arc");
-          self.odepot_arcs.remove(arc)
-        } else {
-          trace!("remove non-depot arc");
-          self.succ.remove(&arc.0).is_some()
-        };
-      debug_assert!(value_removed)
+    fn subtract_arc(&mut self, arc: &(AvTask, AvTask), _: u8) {
+      if arc.0.task.ty == TaskType::ODepot {
+        trace!("remove depot arc");
+        let s = self.odepot_arcs.pop();
+        debug_assert_eq!(s.as_ref(), Some(arc));
+      } else {
+        trace!("remove non-depot arc");
+        let removed = self.succ.remove(&arc.0).is_some();
+        debug_assert!(removed)
+      };
     }
   }
 
   let graph = {
-    let mut odepot_arcs = FnvHashSet::default();
+    let mut odepot_arcs = SmallVec::new();
     let mut succ = Map::default();
-    for (t1, t2) in task_pairs {
-      if t1.ty == TaskType::ODepot {
-        odepot_arcs.insert((*t1, *t2));
+    for (av, t1, t2) in task_pairs {
+      trace!(av, ?t1, ?t2);
+      let t1 = AvTask { task: t1, av };
+      let t2 = AvTask { task: t2, av };
+
+      if t1.task.ty == TaskType::ODepot {
+        odepot_arcs.push((t1, t2));
       } else {
-        succ.insert(*t1, *t2);
+        succ.insert(t1, t2);
       }
     }
+
     AvGraph { odepot_arcs, succ }
   };
 
   let (paths, cycles) = graph.decompose_paths_cycles();
-  (to_path_nodes(&paths), to_path_nodes(&cycles))
+
+  #[inline]
+  fn path_nodes(arcs: Vec<(AvTask, AvTask)>) -> (Av, Vec<Task>) {
+    let first_arc = arcs[0];
+    let AvTask { av, task } = first_arc.0;
+    let path = std::iter::once(task)
+      .chain(arcs.into_iter().map(|a| a.1.task))
+      .collect();
+    (av, path)
+  }
+
+  let paths = paths.into_iter()
+    .map(|(arcs, _)| {
+      let (av, path) = path_nodes(arcs);
+      AvRoute::new(av, path)
+    })
+    .collect();
+
+  let cycles = cycles.into_iter()
+    .map(|(arcs, _)| {
+      let (av, path) = path_nodes(arcs);
+      AvCycle::new(av, path)
+    })
+    .collect();
+
+  (paths, cycles)
 }
 
 /// Given a list of tasks, construct the route for a Passive vehicle, plus any cycles which occur.
-#[tracing::instrument(level="debug", skip(tasks_used))]
-pub fn construct_pv_route(tasks_used: &[PvTask]) -> (PvPath, Vec<PvPath>) {
-  trace!(?tasks_used);
-  debug_assert!(!tasks_used.is_empty());
-  let first_task = *tasks_used.first().unwrap();
-
-  if tasks_used.len() == 1 {
-    trace!(task=?first_task, "single-task route");
-    debug_assert_eq!(first_task.ty, TaskType::Direct);
-    return (vec![first_task], vec![]);
-  }
-
+#[tracing::instrument(level = "debug", skip(tasks_used))]
+pub fn construct_pv_routes(tasks_used: impl IntoIterator<Item=PvTask>) -> (Vec<PvRoute>, Vec<PvCycle>) {
   struct PvGraph {
-    pub pv_origin: Loc,
-    pub pv_dest: Loc,
-    pub task_by_start: Map<Loc, PvTask>,
+    tasks_by_start: Map<Loc, PvTask>,
   }
 
   impl DecomposableDigraph<Loc, PvTask, u8> for PvGraph {
-    fn is_sink(&self, node: &Loc) -> bool { node == &self.pv_dest }
+    fn is_sink(&self, node: &Loc) -> bool { matches!(node, Loc::Pd(_)) }
 
     fn next_start(&self) -> Option<Loc> {
-      if self.task_by_start.contains_key(&self.pv_origin) { Some(self.pv_origin) } else { self.task_by_start.keys().next().copied() }
+      self.tasks_by_start.keys()
+        .find(|l| matches!(l, Loc::Po(_)))
+        .copied()
+        .or_else(|| self.tasks_by_start.keys().next().copied())
     }
 
     fn next_outgoing_arc(&self, node: &Loc) -> (PvTask, Loc, u8) {
-      let task = self.task_by_start[node];
+      let task = self.tasks_by_start[node];
       (task, task.end, 1)
     }
-    // s
+
     fn subtract_arc(&mut self, arc: &PvTask, _: u8) {
-      let removed = self.task_by_start.remove(&arc.start);
+      let removed = self.tasks_by_start.remove(&arc.start);
       debug_assert!(removed.is_some())
     }
   }
 
-  let pv_origin = Loc::Po(first_task.p);
-  let graph = PvGraph {
-    pv_origin,
-    pv_dest: pv_origin.dest(),
-    task_by_start: tasks_used.iter().map(|&t| (t.start, t)).collect(),
-  };
+  let tasks_by_start = tasks_used.into_iter().map(|t| (t.start, t)).collect();
+  trace!(?tasks_by_start);
+  let graph = PvGraph { tasks_by_start: tasks_by_start };
 
   let (pv_paths, pv_cycles) = graph.decompose_paths_cycles();
 
-  debug_assert_eq!(pv_paths.len(), 1);
-  let pv_path = discard_edge_weights(pv_paths).pop().unwrap();
-  (pv_path, discard_edge_weights(pv_cycles))
+  let pv_paths = pv_paths.into_iter()
+    .map(|(path, _)| PvRoute::new(path))
+    .collect();
+
+
+  let pv_cycles = pv_cycles.into_iter()
+    .map(|(mut cycle, _)| {
+      debug!(?cycle);
+      cycle.push(cycle[0]);
+      PvCycle::new(cycle)
+    })
+    .collect();
+
+  (pv_paths, pv_cycles)
 }
 
 pub trait QueryVarValues {
@@ -214,6 +335,7 @@ impl<'a> QueryVarValues for Model {
   }
 }
 
+/// Return an iterator of variable values, discarding any which have 0 value
 #[inline]
 pub fn get_var_values<'a, M: QueryVarValues, K: Hash + Eq + Copy>(ctx: &M, var_dict: &'a Map<K, Var>) -> Result<impl Iterator<Item=(K, f64)> + 'a> {
   let vals = ctx.get(var_dict.values().copied())?;
@@ -233,22 +355,10 @@ pub fn get_var_values_mapped<'a, M, K, V, F>(ctx: &M, var_dict: &'a Map<K, Var>,
     .copied().zip(vals)
     .filter(|(_, v)| v.abs() > 0.01)
     .map(move |(k, v)| (k, map(v))
-  );
+    );
   Ok(var_vals)
 }
 
-
-#[tracing::instrument(level = "trace", skip(ctx, yvars))]
-pub fn get_task_pairs_by_av<M: QueryVarValues>(ctx: &M, yvars: &Map<(Avg, Task, Task), Var>) -> Result<Map<Avg, Vec<(Task, Task)>>> {
-  let mut task_pairs = Map::default();
-
-  for ((av, t1, t2), val) in get_var_values(ctx, yvars)? {
-    trace!(av, ?t1, ?t2, ?val);
-    task_pairs.entry(av).or_insert_with(Vec::new).push((t1, t2));
-  }
-
-  Ok(task_pairs)
-}
 
 #[tracing::instrument(level = "trace", skip(ctx, xvars))]
 pub fn get_tasks_by_pv<M: QueryVarValues>(ctx: &M, xvars: &Map<PvTask, Var>) -> Result<Map<Pv, Vec<PvTask>>> {
@@ -267,50 +377,43 @@ pub fn get_tasks_by_pv<M: QueryVarValues>(ctx: &M, xvars: &Map<PvTask, Var>) -> 
 pub struct Solution {
   /// Total objective cost (optional)
   pub objective: Option<Cost>,
-  pub av_routes: Vec<(Avg, Vec<Task>)>,
-  pub pv_routes: Vec<(Pv, Vec<PvTask>)>,
+  pub av_routes: Vec<AvRoute>,
+  pub av_cycles: Vec<AvCycle>,
+  pub pv_routes: Vec<PvRoute>,
+  pub pv_cycles: Vec<PvCycle>,
 }
 
 impl Solution {
   pub fn to_serialisable(&self) -> SerialisableSolution {
-    let av_routes = self.av_routes.iter()
-      .map(|(avg, tasks)| (*avg, tasks.iter().map(|t| ShorthandTask::from(*t)).collect()))
-      .collect();
-    let pv_routes = self.pv_routes.iter()
-      .map(|(pv, tasks)| (*pv, tasks.iter().map(|t| ShorthandPvTask::from(*t)).collect()))
-      .collect();
-
     SerialisableSolution {
       objective: self.objective,
-      av_routes,
-      pv_routes,
+      av_routes: self.av_routes.iter().map(|r| (r.av(), r.shorthand())).collect(),
+      av_cycles: self.av_cycles.iter().map(|r| (r.av(), r.shorthand())).collect(),
+      pv_routes: self.pv_routes.iter().map(|r| (r.pv(), r.shorthand())).collect(),
+      pv_cycles: self.pv_cycles.iter().map(|r| (r.pv(), r.shorthand())).collect(),
     }
   }
 
   pub fn from_mp(mp: &TaskModelMaster) -> Result<Self> {
-    let mut av_routes = Vec::new();
+    let task_pairs = get_var_values(&mp.model, &mp.vars.y)?.map(|(key, _)| key);
+    let (av_routes, av_cycles) = construct_av_routes(task_pairs);
 
-    for (av, pairs) in get_task_pairs_by_av(&mp.model, &mp.vars.y)? {
-      let (av_paths, av_cycles) = construct_av_routes(&pairs);
-      if av_cycles.len() > 0 {
-        anyhow::bail!("cycles in solution (av = {}, cycles = {:?})", av, &av_cycles)
-      }
-      av_routes.extend(av_paths.into_iter().map(|r| (av, r)));
-    }
+    let pv_tasks = get_var_values(&mp.model, &mp.vars.x)?.map(|(key, _)| key);
+    let (pv_routes, pv_cycles) = construct_pv_routes(pv_tasks);
 
-    let mut pv_routes = Vec::new();
-    for (pv, tasks) in get_tasks_by_pv(&mp.model, &mp.vars.x)? {
-      let (pv_path, pv_cycles) = construct_pv_route(&tasks);
-      if pv_cycles.len() > 0 {
-        anyhow::bail!("cycles in solution (pv = {}, cycles = {:?})", pv, &pv_cycles)
-      }
-      pv_routes.push((pv, pv_path));
-    }
-
-    Ok(Solution { objective: Some(mp.obj_bound()?), av_routes, pv_routes })
+    Ok(Solution {
+      objective: Some(mp.obj_val()?),
+      av_routes,
+      av_cycles,
+      pv_routes,
+      pv_cycles,
+    })
   }
 
   pub fn solve_for_times(&self, lu: &Lookups) -> Result<SpSolution> {
+    if !(self.pv_cycles.is_empty() && self.av_cycles.is_empty()) {
+      anyhow::bail!("Cycles in solution")
+    }
     let mut sp = TimingSubproblem::build(lu, self)?;
     sp.model.optimize()?;
     use grb::Status::*;
@@ -326,33 +429,45 @@ impl Solution {
 pub struct SerialisableSolution {
   pub objective: Option<Cost>,
   pub av_routes: Vec<(Avg, Vec<ShorthandTask>)>,
+  pub av_cycles: Vec<(Avg, Vec<ShorthandTask>)>,
   pub pv_routes: Vec<(Pv, Vec<ShorthandPvTask>)>,
+  pub pv_cycles: Vec<(Pv, Vec<ShorthandPvTask>)>,
 }
 
 impl SerialisableSolution {
   pub fn to_solution(&self, tasks: impl AsRef<Tasks>) -> Solution {
     let tasks = tasks.as_ref();
+
+    let lookup_shorthand = |path: &[ShorthandTask]| -> Vec<Task> {
+      path.iter().map(move |t| tasks.by_shorthand[t]).collect()
+    };
+
     let av_routes = self.av_routes.iter()
-      .map(|(avg, route)| {
-        let route = route.iter()
-          .map(move |t| tasks.by_shorthand[t])
-          .collect();
-        (*avg, route)
-      })
+      .map(|(av, route)| AvRoute::new(*av, lookup_shorthand(route)))
       .collect();
+
+    let av_cycles = self.av_cycles.iter()
+      .map(|(av, cycle)| AvCycle::new(*av, lookup_shorthand(cycle)))
+      .collect();
+
+    let lookup_shorthand = |path: &[ShorthandPvTask]| -> Vec<PvTask> {
+      path.iter().map(move |t| tasks.by_shorthandpv[t]).collect()
+    };
+
     let pv_routes = self.pv_routes.iter()
-      .map(|(pv, route)| {
-        let route = route.iter()
-          .map(move |t| tasks.by_shorthandpv[t])
-          .collect();
-        (*pv, route)
-      })
+      .map(|(_, route)| PvRoute::new( lookup_shorthand(route)))
+      .collect();
+
+    let pv_cycles = self.pv_cycles.iter()
+      .map(|(_, cycle)| PvCycle::new( lookup_shorthand(cycle)))
       .collect();
 
     Solution {
       objective: self.objective,
       av_routes,
+      av_cycles,
       pv_routes,
+      pv_cycles,
     }
   }
 }
@@ -360,10 +475,9 @@ impl SerialisableSolution {
 
 #[derive(Clone, Debug)]
 pub struct SpSolution {
-  pub av_routes: Vec<(Avg, Vec<(Task, Time)>)>,
-  pub pv_routes: Vec<(Pv, Vec<(PvTask, Time)>)>,
+  pub av_routes: Vec<(AvRoute, Vec<Time>)>,
+  pub pv_routes: Vec<(PvRoute, Vec<Time>)>,
 }
-
 
 impl SpSolution {
   pub fn print_objective_breakdown(&self, data: impl AsRef<Data>, obj: &ObjWeights) {
@@ -374,19 +488,22 @@ impl SpSolution {
     let mut y_travel_costs = 0;
     let mut x_travel_costs = 0;
 
-    for (_, route) in &self.pv_routes {
-      for (t, _) in route {
+    for (route, _) in &self.pv_routes {
+      for t in route.iter() {
         x_travel_costs += data.travel_cost[&(t.start, t.end)];
       }
     }
 
-    for (_, route) in &self.av_routes {
-      for ((t1,_), (t2,_)) in route.iter().tuple_windows() {
+    for (route, times) in &self.av_routes {
+      for (t1, t2) in route.iter_edges() {
         y_travel_costs += data.travel_cost[&(t1.end, t2.start)];
       }
-      let (t, time) = route[route.len()-2];
+      let t = route.theta_task();
+      let time = times[times.len() - 2];
       theta_costs += time;
-      theta_y += data.travel_time[&(t.start, t.end)] + data.travel_time[&(t.end, Loc::Ad)];
+      let to_depot = data.travel_time[&(t.start, t.end)] + data.travel_time[&(t.end, Loc::Ad)];
+      theta_y += to_depot;
+      debug_assert_eq!(time + to_depot, *times.last().unwrap())
     }
 
     println!("\nObjective terms:");
@@ -402,48 +519,42 @@ impl SpSolution {
       .map(|(task, time)| (task, time.round() as Time))
       .collect();
 
-    let mut avr: Vec<_> = sp.mp_sol.av_routes.iter()
-      .map(|(av, route)| {
-        let mut sched: Vec<_> = route[..route.len() - 1].iter()
-          .map(|task| (*task, *task_start_times.get(task).unwrap_or(&0)))
+    let av_routes: Vec<_> = sp.mp_sol.av_routes.iter().cloned()
+      .map(|route: AvRoute| {
+        let mut sched: Vec<_> = std::iter::once(0) // ODepot
+          .chain(route.without_depots().iter().map(|t| task_start_times[t]))
           .collect();
-
-        let (second_last_task, t) = sched.last().unwrap().clone();
-        let ddepot_task = route.last().unwrap().clone();
-        debug_assert_eq!(ddepot_task.ty, TaskType::DDepot);
-        sched.push((ddepot_task, t + second_last_task.tt + sp.lu.data.travel_time[&(second_last_task.end, ddepot_task.start)]));
-        (*av, sched)
+        // DDepot
+        sched.push(*sched.last().unwrap() + sp.lu.data.travel_time_to_ddepot(route.theta_task()));
+        (route, sched)
       })
       .collect();
 
-    avr.sort_by_key(|(av, _)| *av);
-
-    let mut pvr: Vec<_> = sp.mp_sol.pv_routes.iter()
-      .map(|(pv, route)| {
+    let pv_routes: Vec<_> = sp.mp_sol.pv_routes.iter().cloned()
+      .map(|route| {
         let sched = route.iter()
-          .map(|t| (*t, task_start_times[&sp.lu.tasks.pvtask_to_task[t]])).collect();
-        (*pv, sched)
+          .map(|t| task_start_times[&sp.lu.tasks.pvtask_to_task[t]]).collect();
+        (route, sched)
       })
       .collect();
 
-    pvr.sort_by_key(|(pv, _)| *pv);
 
-    Ok(SpSolution { av_routes: avr, pv_routes: pvr })
+    Ok(SpSolution { av_routes, pv_routes })
   }
 
   pub fn pretty_print(&self, data: impl AsRef<Data>) {
     let data = data.as_ref();
     use prettytable::*;
 
-    for (av, route) in &self.av_routes {
+    for (route, sched) in &self.av_routes {
       let mut table = Table::new();
       let mut task_row = vec![cell!("Task")];
       let mut release_time = vec![cell!("Rel")];
       let mut st_row = vec![cell!("ST")];
       let mut tt_time = vec![cell!("TT")];
 
-      println!("Active Vehicle Group {}", av);
-      for ((task1, t1), (task2, _)) in route.iter().tuple_windows() {
+      println!("Active Vehicle Group {}", route.av());
+      for ((task1, task2), t1) in route.iter().tuple_windows().zip(sched) {
         task_row.push(cell!(format!("{:?}", task1)));
         task_row.push(cell!(format!("(drive)")));
         st_row.push(cell!(format!("{:?}", t1)));
@@ -454,9 +565,9 @@ impl SpSolution {
         release_time.push(cell!(""));
       }
 
-      if let Some((task, t)) = route.last() {
+      if let Some(task) = route.last() {
         task_row.push(cell!(format!("{:?}", task)));
-        st_row.push(cell!(format!("{:?}", t)));
+        st_row.push(cell!(format!("{:?}", sched.last().unwrap())));
         tt_time.push(cell!(format!("{:?}", task.tt)));
         release_time.push(cell!(format!("{}", task.t_release)));
       }
@@ -469,33 +580,23 @@ impl SpSolution {
       // println!("{:?}", route)
     }
 
-    for (pv, route) in &self.pv_routes {
+    for (route, sched) in &self.pv_routes {
       let mut table = Table::new();
       let mut task_row = vec![cell!("Task")];
       let mut st_row = vec![cell!("ST")];
       let mut tt_row = vec![cell!("TT")];
-      // let mut et_row = vec![cell!("ET")];
-      // let mut lt_row = vec![cell!("LT")];
 
-      for (task, t) in route {
+      for (task, t) in route.iter().zip(sched) {
         task_row.push(cell!(format!("{:?}", task)));
         st_row.push(cell!(format!("{:?}", t)));
         tt_row.push(cell!(format!("{:?}", task.tt)));
-
-        //
-        // et_row.push(
-        //   self.data.start_time.get(&task.start)
-        //     .map(|t| cell!(format!("{}", t)))
-        //     .unwrap_or_else(|| cell!(""))
-        // )
       }
 
       table.add_row(Row::new(task_row));
-      // table.add_row(Row::new(et_row));
       table.add_row(Row::new(st_row));
       table.add_row(Row::new(tt_row));
 
-      println!("Passive Vehicle {}", pv);
+      println!("Passive Vehicle {}", route.pv());
       table.printstd();
     }
   }
@@ -520,7 +621,7 @@ mod debugging {
   }
 
   impl JsonTask {
-    #[tracing::instrument(level = "trace", name="json_task_to_sh_task")]
+    #[tracing::instrument(level = "trace", name = "json_task_to_sh_task")]
     pub fn to_shorthand(&self, lss: &LocSetStarts) -> ShorthandPvTask {
       use ShorthandPvTask::*;
 
@@ -567,25 +668,32 @@ mod debugging {
         let mut r = Vec::with_capacity(route.len() + 2);
         r.push(tasks.odepot);
         r.extend(
-          route.iter() .map(|t| tasks.by_shorthand[&t.to_shorthand(lss).into()])
+          route.iter().map(|t| tasks.by_shorthand[&t.to_shorthand(lss).into()])
         );
         r.push(tasks.ddepot);
-        av_routes.push((av, r));
+        av_routes.push(AvRoute::new(av, r));
       }
     }
 
     let mut pv_routes = Vec::new();
-    for (pv, route) in &soln.pv_routes {
-      let pv: Pv = pv.parse().context("parsing PV")?;
+    for (_, route) in &soln.pv_routes {
       let route = route.iter()
         .map(|t| tasks.by_shorthandpv[&t.to_shorthand(&lss).into()])
         .collect();
-      pv_routes.push((pv, route));
+      pv_routes.push(PvRoute::new(route));
     }
 
-    Ok(Solution { objective:  Some(soln.objective), av_routes, pv_routes })
+    Ok(Solution {
+      objective: Some(soln.objective),
+      av_routes,
+      pv_routes,
+      av_cycles: vec![],
+      pv_cycles: vec![],
+    })
   }
 }
 
 pub use debugging::load_michael_soln;
 use std::ops::Deref;
+use smallvec::SmallVec;
+use crate::Shorthand;

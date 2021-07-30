@@ -423,7 +423,7 @@ impl TaskModelMaster {
       vars.y.iter().map(|((_, t1, t2), &var)| {
         let mut obj = obj_param.tt * lu.data.travel_cost[&(t1.end, t2.start)];
         if t2.is_depot() {
-          obj += obj_param.av_finish_time * lu.travel_time_to_ddepot(t1)
+          obj += obj_param.av_finish_time * lu.data.travel_time_to_ddepot(t1)
         }
         (var, obj)
       })
@@ -439,17 +439,18 @@ impl TaskModelMaster {
 
   #[tracing::instrument(level = "error", skip(self, sol))]
   pub fn fix_solution(&mut self, sol: &Solution) -> Result<()> {
-    for (p, r) in &sol.pv_routes {
-      trace!(p, ?r, "fix PV route");
+    for r in &sol.pv_routes {
+      trace!(?r, "fix PV route");
       self.model.set_obj_attr_batch(attr::LB, r.iter().map(|t| (self.vars.x[t], 1.0)))?;
     }
 
-    for (a, r) in &sol.av_routes {
-      trace!(a, ?r, "fix AV route");
-      for (t1, t2) in r.iter().tuple_windows() {
-        if let Some(y) = self.vars.y.get(&(*a, *t1, *t2)) {
+    for r in &sol.av_routes {
+      trace!(a=r.av(), r=?(&*r), "fix AV route");
+      for key in r.iter_y_vars() {
+        if let Some(y) = self.vars.y.get(&key) {
           self.model.set_obj_attr(attr::LB, y, 1.0)?;
         } else {
+          let (a, t1, t2) = key;
           error!(?a, ?t1, ?t2, "missing task-task connection");
           panic!("bugalug")
         }

@@ -51,7 +51,7 @@ impl std::error::Error for CbError {}
 
 #[derive(VariantCount, Copy, Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 #[repr(usize)]
-#[serde(rename_all="snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum CutType {
   // Optimality cuts
   LpOpt = 0,
@@ -107,7 +107,7 @@ mod cb_stats_serde {
     let map = Map::<CutType, u64>::deserialize(d)?;
     let mut arr = CutCountArray::default();
     for (ty, n) in map {
-      let idx : usize = unsafe { std::mem::transmute(ty) };
+      let idx: usize = unsafe { std::mem::transmute(ty) };
       arr[idx] = n;
     }
     Ok(arr)
@@ -116,7 +116,7 @@ mod cb_stats_serde {
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct CbStats {
-  #[serde(with="cb_stats_serde")]
+  #[serde(with = "cb_stats_serde")]
   n_cuts: CutCountArray,
   n_cuts_total: u64,
   n_mipsol: u64,
@@ -319,7 +319,7 @@ impl<'a> Cb<'a> {
 
 
   #[tracing::instrument(level = "trace", skip(self))]
-  fn av_cycle_cut(&mut self, cycle: &AvPath) {
+  fn av_cycle_cut(&mut self, cycle: &AvCycle) {
     // TODO: might be able to use the IIS stronger cut?
     #[cfg(debug_assertions)] {
       self.infeasibilities.av_cycle(cycle);
@@ -526,10 +526,9 @@ impl<'a> Cb<'a> {
   }
 
   #[tracing::instrument(level = "trace", skip(self))]
-  fn pv_cycle_cut(&mut self, cycle: &PvPath) {
-    debug_assert!(cycle.first() != cycle.last());
+  fn pv_cycle_cut(&mut self, cycle: &PvCycle) {
     // TODO tournament?
-    let xsum = cycle.iter()
+    let xsum = cycle.unique_tasks().iter()
       .flat_map(|t| &self.lu.tasks.task_to_pvtasks[&self.lu.tasks.pvtask_to_task[t]])
       .map(|t| self.mp_vars.x[t])
       .grb_sum();
@@ -569,33 +568,27 @@ impl<'a> Cb<'a> {
   }
 
 
-  fn sep_pv_cuts(&mut self, ctx: &MIPSolCtx) -> Result<Vec<(Pv, PvPath)>> {
-    let pv_tasks = get_tasks_by_pv(ctx, &self.mp_vars.x)?;
-    let mut pv_routes = Vec::with_capacity(pv_tasks.len());
-
-    let skip_pv_route_check = self.params.pv_fork_cuts.is_empty();
-
-    for (&pv, tasks) in &pv_tasks {
-      let (pv_path, pv_cycles) = construct_pv_route(tasks);
-
-      for cycle in pv_cycles {
-        if self.params.cycle_cuts {
-          self.pv_cycle_cut(&cycle);
-        }
-        pv_routes.push((pv, cycle));
+  fn separate_pv_cuts(&mut self, routes: &[PvRoute], cycles: &[PvCycle]) -> Result<()> {
+    if self.params.cycle_cuts {
+      for cycle in cycles {
+        self.pv_cycle_cut(cycle);
       }
-
-      if !skip_pv_route_check && !schedule::check_pv_route(self.lu, &pv_path) {
-        let chain = self.shorten_illegal_pv_chain(&pv_path);
-        let n = chain.len() as u32;
-        if self.params.pv_fork_cuts.contains(&n) {
-          self.pv_chain_infork_cut(chain);
-          self.pv_chain_outfork_cut(chain);
-        }
-      }
-      pv_routes.push((pv, pv_path));
     }
-    Ok(pv_routes)
+
+    if !self.params.pv_fork_cuts.is_empty() {
+      for route in routes {
+        if !schedule::check_pv_route(self.lu, route) {
+          let chain = self.shorten_illegal_pv_chain(route);
+          let n = chain.len() as u32;
+          if self.params.pv_fork_cuts.contains(&n) {
+            self.pv_chain_infork_cut(chain);
+            self.pv_chain_outfork_cut(chain);
+          }
+        }
+      }
+    }
+
+    Ok(())
   }
 
   fn av_chain_cuts(&mut self, chain: &[Task]) {
@@ -610,12 +603,12 @@ impl<'a> Cb<'a> {
     }
   }
 
-  /// `av_route_nd` should not have AV depots
+
   #[instrument(level = "trace", skip(self))]
-  fn endtime_cut(&mut self, finish_time: Time, av: Av, av_route_nd: &[Task]) {
+  fn endtime_cut(&mut self, finish_time: Time, route: &AvRoute) {
+    let av_route_nd = route.without_depots();
+    let av = route.av();
     let n = av_route_nd.len() - 1;
-    debug_assert!(!av_route_nd[0].is_depot());
-    debug_assert!(!av_route_nd[n].is_depot());
 
     let mut lhs = finish_time * self.mp_vars.y[&(av, av_route_nd[n], self.lu.tasks.ddepot)];
 
@@ -629,66 +622,49 @@ impl<'a> Cb<'a> {
     self.enqueue_cut(c!( lhs <= self.mp_vars.theta[&(av, av_route_nd[n])] ), CutType::EndTime);
   }
 
-  fn sep_av_cuts(&mut self, ctx: &MIPSolCtx) -> Result<Vec<(Av, AvPath)>> {
-    let task_pairs = get_task_pairs_by_av(ctx, &self.mp_vars.y)?;
-    let mut av_routes = Vec::<(Avg, AvPath)>::with_capacity(task_pairs.len());
 
-    let skip_av_route_check = self.params.av_fork_cuts.is_empty()
-      && self.params.av_tournament_cuts.is_empty()
-      && !self.params.endtime_cuts;
-
-    for (&av, av_task_pairs) in &task_pairs {
-      let (av_paths, av_cycles) = construct_av_routes(av_task_pairs);
-
-      if av_cycles.len() > 0 {
-        info!(num_cycles = av_cycles.len(), "AV cycles found");
-        debug!(?av_cycles);
-
-        for cycle in av_cycles {
-          if self.params.cycle_cuts {
-            if let Some(chain) = self.illegal_av_chain_in_cycle(&cycle) {
-              if chain.len() <= 3 {
-                self.av_chain_infork_cut(&chain);
-                self.av_chain_outfork_cut(&chain);
-              } else {
-                self.av_chain_tournament_cut(&chain);
-              }
-            } else {
-              self.av_cycle_cut(&cycle);
-            }
+  fn separate_av_cuts(&mut self, theta: &Map<(Av, Task), Time>, routes: &[AvRoute], cycles: &[AvCycle]) -> Result<()> {
+    if self.params.cycle_cuts {
+      for cycle in cycles {
+        if let Some(chain) = self.illegal_av_chain_in_cycle(&cycle) {
+          if chain.len() <= 3 {
+            self.av_chain_infork_cut(&chain);
+            self.av_chain_outfork_cut(&chain);
+          } else {
+            self.av_chain_tournament_cut(&chain);
           }
-          av_routes.push((av, cycle));
+        } else {
+          self.av_cycle_cut(&cycle);
         }
       }
+    };
 
-      for av_path in av_paths {
-        let av_path_without_depots = &av_path[1..av_path.len() - 1];
-        if !skip_av_route_check {
-          if !schedule::check_av_route(self.lu, &av_path) {
-            let chain = self.shorten_illegal_av_chain(&av_path_without_depots);
-            let n = chain.len() as u32;
-            if self.params.av_fork_cuts.contains(&n) {
-              self.av_chain_infork_cut(&chain);
-              self.av_chain_outfork_cut(&chain);
-            }
+    if !self.params.av_fork_cuts.is_empty()
+      || !self.params.av_tournament_cuts.is_empty()
+      || self.params.endtime_cuts {
 
-            if self.params.av_tournament_cuts.contains(&n) {
-              self.av_chain_tournament_cut(&chain);
-            }
-          } else if self.params.endtime_cuts {
-            let finish_time = schedule::av_route_finish_time(self.lu, &av_path_without_depots);
-            let n = av_path.len() - 2;
-            let theta_val = ctx.get_solution(std::iter::once(self.mp_vars.theta[&(av, av_path[n])]))?[0];
-
-            if (theta_val.round() as Time) < finish_time {
-              self.endtime_cut(finish_time, av, &av_path_without_depots);
-            }
+      for route in routes {
+        if !schedule::check_av_route(self.lu, &route) {
+          let chain = self.shorten_illegal_av_chain(route.without_depots());
+          let n = chain.len() as u32;
+          if self.params.av_fork_cuts.contains(&n) {
+            self.av_chain_infork_cut(&chain);
+            self.av_chain_outfork_cut(&chain);
+          }
+          if self.params.av_tournament_cuts.contains(&n) {
+            self.av_chain_tournament_cut(&chain);
+          }
+        } else if self.params.endtime_cuts {
+          let finish_time = schedule::av_route_finish_time(self.lu, route.without_depots());
+          let estimate= theta[&(route.av(), *route.theta_task())];
+          if estimate < finish_time {
+            self.endtime_cut(finish_time, route);
           }
         }
-        av_routes.push((av, av_path));
       }
     }
-    Ok(av_routes)
+
+    Ok(())
   }
 
   #[allow(unused_variables)]
@@ -705,6 +681,17 @@ impl<'a> Cb<'a> {
       }
 
     Ok(())
+  }
+
+
+  fn get_av_routes(&self, ctx: &MIPSolCtx) -> Result<(Vec<AvRoute>, Vec<AvCycle>)> {
+    let task_pairs = get_var_values(ctx, &self.mp_vars.y)?.map(|(key, _)| key);
+    Ok(construct_av_routes(task_pairs))
+  }
+
+  fn get_pv_routes(&self, ctx: &MIPSolCtx) -> Result<(Vec<PvRoute>, Vec<PvCycle>)> {
+    let task_pairs = get_var_values(ctx, &self.mp_vars.x)?.map(|(key, _)| key);
+    Ok(construct_pv_routes(task_pairs))
   }
 }
 
@@ -723,15 +710,17 @@ impl<'a> Callback for Cb<'a> {
         #[cfg(debug_assertions)]
           self.update_var_values(&ctx)?;
 
-
         let new_lazy_constr_start = self.added_lazy_constraints.len();
-        let pv_routes = self.sep_pv_cuts(&ctx)?;
 
+        let (pv_routes, pv_cycles) = self.get_pv_routes(&ctx)?;
+        self.separate_pv_cuts(&pv_routes, &pv_cycles)?;
 
         if self.added_lazy_constraints.len() > new_lazy_constr_start {
           info!(ncuts = self.added_lazy_constraints.len() - new_lazy_constr_start, "heuristic cuts added (PV only)");
         } else {
-          let av_routes = self.sep_av_cuts(&ctx)?;
+          let (av_routes, av_cycles) = self.get_av_routes(&ctx)?;
+          let theta: Map<_, _> = get_var_values_mapped(&ctx, &self.mp_vars.theta, |t| t.round() as Time)?.collect();
+          self.separate_av_cuts(&theta, &av_routes, &av_cycles)?;
 
           if self.added_lazy_constraints.len() > new_lazy_constr_start {
             info!(ncuts = self.added_lazy_constraints.len() - new_lazy_constr_start, "heuristic cuts added");
@@ -739,13 +728,12 @@ impl<'a> Callback for Cb<'a> {
             let sp_idx = self.stats.inc_n_sp();
             let _span = error_span!("sp", sp_idx, estimate=tracing::field::Empty).entered();
             info!("no heuristic cuts found, solving LP subproblem");
-            let sol = Solution { objective: None, av_routes, pv_routes };
+            let sol = Solution { objective: None, av_cycles, av_routes, pv_routes, pv_cycles };
             if let Some(sol_log) = self.sol_log.as_mut() {
               serde_json::to_writer(&mut *sol_log, &sol.to_serialisable())?; // need to re-borrow here
               write!(sol_log, "\n")?;
             }
 
-            let theta: Map<_, _> = get_var_values_mapped(&ctx, &self.mp_vars.theta, |t| t.round() as Time)?.collect();
             trace!(?theta);
             let estimate: Time = theta.values().sum();
             tracing::span::Span::current().record("estimate", &estimate);

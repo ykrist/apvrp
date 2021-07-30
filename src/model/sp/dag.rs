@@ -2,7 +2,7 @@ use daggylp::{Var, Graph, SolveStatus, edge_storage::{AdjacencyList, ArrayVec}, 
 use smallvec::SmallVec;
 
 use crate::*;
-use crate::model::sp::{Iis, Subproblem, SpStatus, iter_edge_constraints, XEdgeConstraint, PathIis};
+use super::*;
 use crate::solution::Solution;
 use crate::model::cb;
 use crate::utils::{iter_pairs, VarIterExt};
@@ -15,7 +15,7 @@ use crate::model::cb::CutType;
 pub struct GraphModel<'a> {
   pub second_last_tasks: SmallVec<[Task; NUM_AV_UB]>,
   pub lu: &'a Lookups,
-  pub theta_val: &'a Map<(Avg, Task), Time>,
+  pub theta_val: &'a Map<(Avg, Task), Time>, // FIXME make this an argument to add_optimality_cuts()
   pub vars: Map<Task, Var>,
   /// ODepot var is *not* in this lookup.
   pub var_to_task: Map<Var, PvTask>,
@@ -37,6 +37,7 @@ impl<'a> GraphModel<'a> {
   }
 }
 
+
 impl<'a> GraphModel<'a> {
   #[tracing::instrument(level = "trace", skip(lu, sol, theta_val))]
   pub fn build(lu: &'a Lookups, sol: &'a Solution, theta_val: &'a Map<(Avg, Task), Time>) -> Result<Self> {
@@ -45,73 +46,62 @@ impl<'a> GraphModel<'a> {
     let mut var_to_task = map_with_capacity(lu.data.n_req as usize * 2);
 
     let second_last_tasks: SmallVec<_> = sol.av_routes.iter()
-      .filter(|(_, av_route)| av_route.last().unwrap().is_depot())
-      .map(|(_, av_route)| av_route[av_route.len()-2])
+      .map(|r| *r.theta_task())
       .collect();
 
-    for (_, pv_route) in &sol.pv_routes {
-      for &pt in pv_route {
-        let t = lu.tasks.pvtask_to_task[&pt];
-        if vars.contains_key(&t) {
-          // cycle
-          debug_assert_eq!(pv_route.first(), pv_route.last());
-          continue;
-        }
+    let task_objective = {
+      let obj_tasks = second_last_tasks.as_slice();
+      move |t: &Task| -> Weight {
         // loop over all AVs here, probably better than allocating on the heap.
-        let obj = if second_last_tasks.as_slice().contains(&t) { 1 } else { 0 };
-        let var = model.add_var(obj, pt.t_release as Weight, (pt.t_deadline - pt.tt) as Weight);
-        vars.insert(t, var);
-        var_to_task.insert(var, pt);
+        if obj_tasks.contains(t) { 1 } else { 0 }
       }
+    };
+
+    for &pt in sol.iter_sp_vars() {
+      let t = lu.tasks.pvtask_to_task[&pt];
+      let var = model.add_var(task_objective(&t), pt.t_release as Weight, (pt.t_deadline - pt.tt) as Weight);
+      let prev = var_to_task.insert(var, pt);
+      debug_assert_eq!(prev, None, "Duplicate variable in subproblem");
+      let prev = vars.insert(t, var);
+      debug_assert_eq!(prev, None);
     }
 
     let mut constraints = map_with_capacity(vars.len() * 2);
     let mut model = model.finish_nodes();
-    for (_, pv_route) in &sol.pv_routes {
-      for c in iter_edge_constraints(pv_route) { // FIXME need to check for cycles here
-        let (pt1, pt2) = match c {
-          XEdgeConstraint::Unloading(pt1, pt2) => {
-            trace!(t1=?pt1, t2=?pt2, "unloading constraint");
-            (pt1, pt2)
-          }
-          XEdgeConstraint::Loading(pt1, pt2) => {
-            trace!(t1=?pt1, t2=?pt2, "loading constraint");
-            (pt1, pt2)
-          }
-        };
-        let t1 = lu.tasks.pvtask_to_task[pt1];
-        let t2 = lu.tasks.pvtask_to_task[pt2];
-        let d = t1.tt + lu.data.srv_time[&t1.end];
-        let v1 = vars[&t1];
-        let v2 = vars[&t2];
-        model.add_constr(v1, d as Weight, v2);
-        constraints.insert((v1, v2), (t1, t2));
-      }
-    }
 
-    for (_, av_route) in &sol.av_routes {
-      let av_route = if av_route[0].is_depot() {
-        // acyclic route - Skip the ODepot and DDepot
-        &av_route[1..av_route.len() - 1]
-      } else {
-        // cycle
-        av_route.as_slice()
+    for c in sol.iter_sp_x_edges() {
+      let (pt1, pt2) = match c {
+        XEdgeConstraint::Unloading(pt1, pt2) => {
+          trace!(t1=?pt1, t2=?pt2, "unloading constraint");
+          (pt1, pt2)
+        }
+        XEdgeConstraint::Loading(pt1, pt2) => {
+          trace!(t1=?pt1, t2=?pt2, "loading constraint");
+          (pt1, pt2)
+        }
       };
-
-      for (t1, t2) in iter_pairs(av_route) {
-        trace!(?t1, ?t2);
-        let v1 = vars[&t1];
-        let v2 = vars[&t2];
-
-        constraints.entry((v1, v2))
-          .or_insert_with(|| {
-            trace!(?t1, ?t2, "AV travel time constraint");
-            let d = t1.tt + lu.data.travel_time[&(t1.end, t2.start)];
-            model.add_constr(v1, d as Weight, v2);
-            (*t1, *t2)
-          });
-      }
+      let t1 = lu.tasks.pvtask_to_task[pt1];
+      let t2 = lu.tasks.pvtask_to_task[pt2];
+      let d = t1.tt + lu.data.srv_time[&t1.end];
+      let v1 = vars[&t1];
+      let v2 = vars[&t2];
+      model.add_constr(v1, d as Weight, v2);
+      constraints.insert((v1, v2), (t1, t2));
     }
+
+    for (&t1, &t2) in sol.iter_sp_y_edges() {
+      trace!(?t1, ?t2);
+      let v1 = vars[&t1];
+      let v2 = vars[&t2];
+
+      constraints.entry((v1, v2)).or_insert_with(|| {
+        trace!(?t1, ?t2, "AV travel  time constraint");
+        let d = t1.tt + lu.data.travel_time[&(t1.end, t2.start)];
+        model.add_constr(v1, d as Weight, v2);
+        (t1, t2)
+      });
+    }
+
     Ok(GraphModel {
       second_last_tasks,
       lu,
@@ -149,7 +139,7 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
   }
   // Find and remove one or more IIS when infeasible
   fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Self::IisConstraintSets> {
-    let graph_iis= self.model.compute_iis(true);
+    let graph_iis = self.model.compute_iis(true);
     let iis = match i {
       InfKind::Path => {
         let (lb_var, ub_var) = graph_iis.bounds().unwrap();
@@ -180,7 +170,7 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
   fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, _o: Self::Optimal) -> Result<()> {
     for mrs in self.model.compute_mrs() {
       if !self.optimality_cut_required(&mrs) {
-        continue
+        continue;
       }
 
       let (obj, edges) = self.model.edge_sensitivity_analysis(&mrs);

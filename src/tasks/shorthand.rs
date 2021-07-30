@@ -1,6 +1,7 @@
 use crate::*;
 use std::str::FromStr;
 use serde::{Deserialize, Serialize};
+use std::ops::Deref;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum ShorthandPvTask {
@@ -23,20 +24,6 @@ pub enum ShorthandTask {
 }
 
 
-impl From<PvTask> for ShorthandPvTask {
-  fn from(t: PvTask) -> Self {
-    match t.ty {
-      TaskType::Request => ShorthandPvTask::Request(t.p, t.start.req()),
-      TaskType::Transfer => ShorthandPvTask::Transfer(t.p, t.start.req(), t.end.req()),
-      TaskType::Start => ShorthandPvTask::Start(t.p, t.end.req()),
-      TaskType::End => ShorthandPvTask::End(t.p, t.start.req()),
-      TaskType::Direct => ShorthandPvTask::Direct(t.p),
-      _ => unreachable!(),
-    }
-  }
-}
-
-
 impl From<ShorthandPvTask> for ShorthandTask {
   fn from(t: ShorthandPvTask) -> Self {
     match t {
@@ -49,19 +36,54 @@ impl From<ShorthandPvTask> for ShorthandTask {
   }
 }
 
-impl From<Task> for ShorthandTask {
-  fn from(t: Task) -> Self {
-    match t.ty {
+pub trait Shorthand {
+  type Ty;
+
+  fn shorthand(&self) -> Self::Ty;
+}
+
+impl Shorthand for Task {
+  type Ty = ShorthandTask;
+
+  fn shorthand(&self) -> Self::Ty {
+    match self.ty {
       TaskType::ODepot => ShorthandTask::ODepot,
       TaskType::DDepot => ShorthandTask::DDepot,
-      TaskType::Request => ShorthandTask::Request(t.start.req()),
-      TaskType::Transfer => ShorthandTask::Transfer(t.start.req(), t.end.req()),
-      TaskType::Start => ShorthandTask::Start(t.start().pv(), t.end.req()),
-      TaskType::End => ShorthandTask::End(t.end.pv(), t.start.req()),
-      TaskType::Direct => ShorthandTask::Direct(t.start.pv()),
+      TaskType::Request => ShorthandTask::Request(self.start.req()),
+      TaskType::Transfer => ShorthandTask::Transfer(self.start.req(), self.end.req()),
+      TaskType::Start => ShorthandTask::Start(self.start.pv(), self.end.req()),
+      TaskType::End => ShorthandTask::End(self.end.pv(), self.start.req()),
+      TaskType::Direct => ShorthandTask::Direct(self.start.pv()),
     }
   }
 }
+
+impl Shorthand for PvTask {
+  type Ty = ShorthandPvTask;
+
+  fn shorthand(&self) -> Self::Ty {
+    match self.ty {
+      TaskType::Request => ShorthandPvTask::Request(self.p, self.start.req()),
+      TaskType::Transfer => ShorthandPvTask::Transfer(self.p, self.start.req(), self.end.req()),
+      TaskType::Start => ShorthandPvTask::Start(self.p, self.end.req()),
+      TaskType::End => ShorthandPvTask::End(self.p, self.start.req()),
+      TaskType::Direct => ShorthandPvTask::Direct(self.p),
+      _ => unreachable!(),
+    }
+  }
+}
+
+impl<T> Shorthand for [T]
+  where
+    T: Shorthand,
+{
+  type Ty = Vec<T::Ty>;
+
+  fn shorthand(&self) -> Self::Ty {
+    self.iter().map(|t| t.shorthand()).collect()
+  }
+}
+
 
 mod parsers {
   use super::*;

@@ -7,6 +7,10 @@ use std::collections::{HashSet, HashMap};
 use std::hash::{Hash, BuildHasher};
 use smallvec::SmallVec;
 use anyhow::Context;
+use std::path::Path;
+use std::io::BufWriter;
+use std::fs::File;
+use daggylp::Weight;
 
 use crate::*;
 use crate::tasks::TaskId;
@@ -16,11 +20,6 @@ use crate::model::cb::{CutType, Cb, CbError};
 use crate::utils::{HashMapExt, IoContext};
 
 use super::*;
-use std::path::Path;
-use std::io::BufWriter;
-use std::fs::File;
-use daggylp::Weight;
-
 
 thread_local! {
   static ENV: grb::Env = {
@@ -41,18 +40,14 @@ pub struct TimingConstraints {
 
 impl TimingConstraints {
   pub fn build(lu: &Lookups, sol: &Solution, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
-    // TODO: we don't actually need the routes here, can just use var values
     let _span = error_span!("constraints").entered();
 
     let mut edge_constraints = map_with_capacity(2 * vars.len());
     let mut lb = map_with_capacity(vars.len());
     let mut ub = map_with_capacity(vars.len());
 
-    let mut add_bounds = |pvt: PvTask, t: &Task, model: &mut Model| -> Result<()> {
-      if lb.contains_key(&pvt) {
-        return Ok(())
-      }
-      // Constraints (3e)
+    for &pvt in sol.iter_sp_vars() {
+      let t = &lu.tasks.pvtask_to_task[&pvt];
       trace!(
         p_lb=pvt.t_release,
         p_ub=(pvt.t_deadline - pvt.tt),
@@ -60,51 +55,37 @@ impl TimingConstraints {
         ub=(t.t_deadline - t.tt),
         ?t, ?pvt, "bounds"
       );
+
       lb.insert(pvt, model.add_constr("", c!(vars[t] >= pvt.t_release))?);
       ub.insert(pvt, model.add_constr("", c!(vars[t] <= pvt.t_deadline - pvt.tt))?);
-      Ok(())
-    };
-
-    for (_, pv_route) in &sol.pv_routes {
-      let mut pv_route = pv_route.iter();
-      let mut pt1 = *pv_route.next().unwrap();
-      let mut t1 = lu.tasks.pvtask_to_task[&pt1];
-      add_bounds(pt1, &t1, model)?;
-
-
-      for &pt2 in pv_route {
-        let t2 = lu.tasks.pvtask_to_task[&pt2];
-        debug_assert_ne!((pt1.ty, pt2.ty), (TaskType::Request, TaskType::Request));
-
-        if pt2.ty == TaskType::Request {
-          // Constraints (3c) (loading time)
-          trace!(?pt1, ?pt2, "loading");
-          let c = c!(vars[&t1] + t1.tt + lu.data.srv_time[&t1.end] <= vars[&t2]);
-          edge_constraints.insert((t1, t2), model.add_constr("", c)?);
-        } else if pt1.ty == TaskType::Request {
-          // Constraints (3d) (unloading time)
-          trace!(?pt1, ?pt2, "unloading");
-          let c = c!(vars[&t1] + t1.tt + lu.data.srv_time[&t1.end] <= vars[&t2]);
-          edge_constraints.insert((t1, t2), model.add_constr("", c)?);
-        }
-        add_bounds(pt2, &t2, model)?;
-        pt1 = pt2;
-        t1 = t2;
-      }
     }
 
-    // Constraints (3b)
-    for (_, route) in &sol.av_routes {
-      for (&t1, &t2) in route.iter().tuple_windows() {
-        if t1 != lu.tasks.odepot && t2 != lu.tasks.ddepot {
-          if edge_constraints.contains_key(&(t1, t2)) {
-            trace!(?t1, ?t2, "AV TT constraint dominated by loading/unloading constraint")
-          } else {
-            trace!(?t1, ?t2, "av_sync");
-            let c = c!(vars[&t1] + t1.tt + lu.data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
-            edge_constraints.insert((t1, t2), model.add_constr("", c)?);
-          }
+    for c in sol.iter_sp_x_edges() {
+      let (pt1, pt2) = match c {
+        XEdgeConstraint::Unloading(pt1, pt2) => {
+          trace!(t1=?pt1, t2=?pt2, "unloading constraint");
+          (pt1, pt2)
         }
+        XEdgeConstraint::Loading(pt1, pt2) => {
+          trace!(t1=?pt1, t2=?pt2, "loading constraint");
+          (pt1, pt2)
+        }
+      };
+      let t1 = lu.tasks.pvtask_to_task[pt1];
+      let t2 = lu.tasks.pvtask_to_task[pt2];
+
+      let d = t1.tt + lu.data.srv_time[&t1.end];
+      let c=  model.add_constr("", c!(vars[&t1] + d <= vars[&t2] ))?;
+      edge_constraints.insert((t1, t2), c);
+    }
+
+    for (&t1, &t2) in sol.iter_sp_y_edges() {
+      if edge_constraints.contains_key(&(t1, t2)) {
+        trace!(?t1, ?t2, "AV TT constraint dominated by loading/unloading constraint")
+      } else {
+        trace!(?t1, ?t2, "av_sync");
+        let c = c!(vars[&t1] + t1.tt + lu.data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
+        edge_constraints.insert((t1, t2), model.add_constr("", c)?);
       }
     }
     Ok(TimingConstraints { edge_constraints, ub, lb })
@@ -128,39 +109,21 @@ impl<'a> TimingSubproblem<'a> {
 
     let mut model = ENV.with(|env| Model::with_env("subproblem", env))?;
     let vars: Map<_, _> = {
-      let mut v = map_with_capacity(sol.pv_routes.iter().map(|(_, tasks)| tasks.len()).sum());
-      for (_, pv_route) in &sol.pv_routes {
-        for t in pv_route {
+      let mut v = map_with_capacity(100);
+      for t in sol.iter_sp_vars() {
           let t = lu.tasks.pvtask_to_task[t];
-          if v.contains_key(&t) {
-            debug_assert_eq!(pv_route.first(), pv_route.last());
-            continue;
-          };
           #[cfg(debug_assertions)]
             v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
           #[cfg(not(debug_assertions))]
             v.insert(t, add_ctsvar!(model)?);
         }
-      }
       v
     };
 
     let cons = TimingConstraints::build(lu, sol, &mut model, &vars)?;
 
-    let mut second_last_tasks = SmallVec::new();
-
-    let obj = sol.av_routes.iter()
-      .filter_map(|(_, route)| {
-        if route.last().unwrap().is_depot() {
-          let second_last_task = &route[route.len() - 2];
-          second_last_tasks.push(*second_last_task);
-          trace!(?second_last_task);
-          Some(vars[second_last_task])
-        } else {
-          None
-        }
-      })
-      .grb_sum();
+    let second_last_tasks : SmallVec<_> = sol.av_routes.iter().map(|r| *r.theta_task()).collect();
+    let obj = second_last_tasks.iter().map(|t| vars[t]).grb_sum();
 
     model.update()?;
     trace!(obj=?obj.with_names(&model));

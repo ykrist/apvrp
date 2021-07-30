@@ -89,7 +89,7 @@ fn evalutate_full_objective(lookups: &Lookups, mp: &TaskModelMaster, obj_weights
   let sp_obj: Time = subproblem.solve_for_obj()?;
   let y_obj_tt : Time = subproblem.second_last_tasks
     .iter()
-    .map(|t| lookups.travel_time_to_ddepot(t))
+    .map(|t| lookups.data.travel_time_to_ddepot(t))
     .sum();
 
   let true_cost = mp.obj_val()? + (sp_obj + y_obj_tt ) as Cost * obj_weights.av_finish_time;

@@ -57,6 +57,13 @@ pub struct Data {
   pub av_groups: Map<Avg, Vec<Av>>,
 }
 
+impl Data {
+  pub fn travel_time_to_ddepot(&self, t: &Task) -> Time {
+    debug_assert!(!t.is_depot());
+    t.tt + self.travel_time[&(t.end, Loc::Ad)]
+  }
+}
+
 
 pub fn map_with_capacity<K,V>(capacity: usize) -> Map<K,V> {
   Map::with_capacity_and_hasher(capacity, fnv::FnvBuildHasher::default())
@@ -196,12 +203,6 @@ impl Lookups {
 
     info!(num_tasks = tasks.all.len(), "task generation finished");
     Ok(Lookups { data, sets, tasks })
-  }
-
-
-  pub fn travel_time_to_ddepot(&self, t: &Task) -> Time {
-    debug_assert!(!t.is_depot());
-    t.tt + self.data.travel_time[&(t.end, Loc::Ad)]
   }
 }
 
