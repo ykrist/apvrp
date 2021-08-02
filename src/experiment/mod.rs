@@ -282,6 +282,10 @@ impl ResourcePolicy for ApvrpExp {
   fn job_name(&self) -> Option<String> {
     self.parameters.param_name.clone()
   }
+
+  fn constraint(&self) -> Option<String> {
+    Some("RC640".to_string())
+  }
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
