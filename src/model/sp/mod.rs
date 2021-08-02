@@ -70,23 +70,21 @@ pub trait Subproblem<'a>: Sized {
         SpStatus::Infeasible(i) => {
           for iis in self.extract_and_remove_iis(i)?.into_iter() {
             trace!(?iis);
-            let cut = match iis {
+            match iis {
               Iis::Path(iis) => {
                 #[cfg(debug_assertions)] {
                   cb.infeasibilities.path_iis(&iis);
                 }
-                build_path_infeasiblity_cut(cb, &iis)
+                cb.enqueue_cut(build_path_infeasiblity_cut(cb, &iis), CutType::LpPath);
               }
               Iis::Cycle(cycle) => {
                 #[cfg(debug_assertions)] {
                   assert_ne!(cycle.first(), cycle.last());
                   cb.infeasibilities.av_cycle(&cycle);
                 }
-                build_cyclic_infeasiblity_cut(cb, &cycle)
+                cb.enqueue_cut(build_cyclic_infeasiblity_cut(cb, &cycle), CutType::LpCycle);
               }
-            };
-
-            cb.enqueue_cut(cut, CutType::LpFeas); // FIXME cuttype should be changed
+            }
           }
         }
       }
@@ -113,9 +111,12 @@ pub fn build_path_infeasiblity_cut(cb: &cb::Cb, iis: &PathIis) -> IneqExpr {
 
   if matches!(lb_task.ty, TaskType::Transfer) && path[0].end == path[1].start {
     edge_nodes = &edge_nodes[1..];
+    trace!(?edge_nodes, "LB task responsible for first edge");
   }
+
   if matches!(ub_task.ty, TaskType::Transfer) && path[n - 1].end == path[n].start {
-    edge_nodes = &edge_nodes[..edge_nodes.len()];
+    edge_nodes = &edge_nodes[..edge_nodes.len()-1];
+    trace!(?edge_nodes, "UB task responsible for last edge");
   }
 
   let mut x_edges = Set::default();
@@ -146,8 +147,7 @@ pub fn build_path_infeasiblity_cut(cb: &cb::Cb, iis: &PathIis) -> IneqExpr {
     .sum_into(&mut lhs);
 
 
-  trace!(lhs=?lhs.with_names(&cb.var_names), iis_size=path.len()-1, "generate cut");
-  debug_assert!(rhs > 1);
+  trace!(lhs=?lhs.with_names(&cb.var_names), iis_size=path.len()+1, "generate cut");
   c!( lhs <= rhs)
 }
 

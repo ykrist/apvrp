@@ -57,7 +57,8 @@ pub enum CutType {
   LpOpt = 0,
   EndTime,
   // Feasibility cuts
-  LpFeas,
+  LpCycle,
+  LpPath,
   AvCycle,
   AvChainForwardTourn,
   AvChainFullTourn,
@@ -274,13 +275,35 @@ impl<'a> Cb<'a> {
 
 
   #[cfg(debug_assertions)]
-  fn cut_check(&self, cut: &IneqExpr) {
+  fn cut_check(&self, cut: &IneqExpr, ty: &CutType) {
     let (lhs, rhs) = cut.evaluate(&self.var_vals);
     let _s = trace_span!("cut_check", ?lhs, ?rhs, cut=?cut.with_names(&self.var_names)).entered();
     if lhs <= rhs + 1e-6 {
       error!("cut is not violated!");
       panic!("bugalug");
     }
+
+
+    if !ty.is_opt_cut() {
+      let coeff_error = || {
+        error!("feasiblity cut has a coefficient != 1");
+        panic!("bugalug");
+      };
+      match &cut.lhs {
+        Expr::Linear(l) =>
+          if !l.iter_terms().all(|(_, &coeff)| (coeff -1.0).abs() < 1e-6) {
+            coeff_error()
+          }
+        Expr::Term(coeff, _) => {
+          if (coeff - 1.0).abs() > 1e-6 {
+            coeff_error()
+          }
+        }
+        _ => {}
+      }
+    }
+
+
     trace!("ok")
   }
 
@@ -290,7 +313,7 @@ impl<'a> Cb<'a> {
     tracing::Span::current().record("idx", &idx);
 
     #[cfg(debug_assertions)] {
-      self.cut_check(&cut);
+      self.cut_check(&cut, &ty);
     }
 
 
@@ -532,8 +555,8 @@ impl<'a> Cb<'a> {
       .flat_map(|t| &self.lu.tasks.task_to_pvtasks[&self.lu.tasks.pvtask_to_task[t]])
       .map(|t| self.mp_vars.x[t])
       .grb_sum();
-    // cycle is a list of n nodes (start != end), which form n-1 arcs
-    self.enqueue_cut(c!(xsum <= cycle.len() - 1), CutType::PvCycle);
+    // cycle is a list of n+1 nodes (start == end), which form n arcs
+    self.enqueue_cut(c!(xsum <= cycle.len() - 2), CutType::PvCycle);
   }
 
   #[tracing::instrument(level = "trace", skip(self))]
