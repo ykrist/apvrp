@@ -109,12 +109,12 @@ pub fn build_path_infeasiblity_cut(cb: &cb::Cb, iis: &PathIis) -> IneqExpr {
 
   let mut edge_nodes = path.as_slice();
 
-  if matches!(lb_task.ty, TaskType::Transfer) && path[0].end == path[1].start {
+  if matches!(lb_task.ty, TaskType::Transfer| TaskType::Start) && path[0].end == path[1].start {
     edge_nodes = &edge_nodes[1..];
     trace!(?edge_nodes, "LB task responsible for first edge");
   }
 
-  if matches!(ub_task.ty, TaskType::Transfer) && path[n - 1].end == path[n].start {
+  if matches!(ub_task.ty, TaskType::Transfer | TaskType::End) && path[n - 1].end == path[n].start {
     edge_nodes = &edge_nodes[..edge_nodes.len()-1];
     trace!(?edge_nodes, "UB task responsible for last edge");
   }
