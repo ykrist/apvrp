@@ -284,7 +284,7 @@ impl ResourcePolicy for ApvrpExp {
   }
 
   fn constraint(&self) -> Option<String> {
-    Some("RC640".to_string())
+    Some("R640".to_string())
   }
 }
 
