@@ -56,17 +56,23 @@ pub trait Subproblem<'a>: Sized {
   // Find and remove one or more MRS when optimal
   fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()>;
 
-  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, estimate: Time) -> Result<()> {
+  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, estimate: Time) -> Result<Option<Time>> {
     // TODO: stop early once the IIS covers start getting too big
     //  Can use cb.params, will need find the size of the cover before constructing the constraint
-    loop {
+
+    for solve in 0.. {
       match self.solve()? {
         SpStatus::Optimal(sp_obj, o) => {
           if estimate < sp_obj {
             self.add_optimality_cuts(cb, o)?;
           }
-          break;
+          if solve == 0 {
+            return Ok(Some(sp_obj))
+          } else {
+            return Ok(None)
+          }
         }
+
         SpStatus::Infeasible(i) => {
           for iis in self.extract_and_remove_iis(i)?.into_iter() {
             trace!(?iis);
@@ -89,7 +95,8 @@ pub trait Subproblem<'a>: Sized {
         }
       }
     }
-    Ok(())
+
+    unreachable!()
   }
 }
 

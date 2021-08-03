@@ -2,7 +2,7 @@ use crate::*;
 use crate::tasks::{TaskId, chain::{ChainExt}};
 use crate::solution::*;
 use grb::prelude::*;
-use grb::callback::{Callback, Where, CbResult, MIPSolCtx};
+use grb::callback::{Callback, Where, CbResult, MIPSolCtx, MIPNodeCtx};
 use fnv::FnvHashSet;
 use super::{sp::*, Phase};
 use crate::model::sp::PathIis;
@@ -21,6 +21,7 @@ use experiment::{Params, SpSolverKind, CycleHandling};
 use slurm_harray::{Experiment};
 use serde::{Serialize, Deserialize};
 use smallvec::SmallVec;
+use crate::model::mp::ObjWeights;
 
 
 #[derive(Debug, Clone)]
@@ -210,6 +211,7 @@ pub struct CachedCut {
 
 
 pub struct Cb<'a> {
+  pub mp_obj: ObjWeights,
   pub lu: &'a Lookups,
   pub params: &'a Params,
   pub var_names: Map<Var, String>,
@@ -230,10 +232,12 @@ pub struct Cb<'a> {
   pub var_vals: Map<Var, f64>,
   #[cfg(debug_assertions)]
   pub error: Option<CbError>,
+
+  pub cached_solution: Option<Solution>,
 }
 
 impl<'a> Cb<'a> {
-  pub fn new(lu: &'a Lookups, exp: &'a experiment::ApvrpExp, mp: &super::mp::TaskModelMaster, initial_phase: Phase) -> Result<Self> {
+  pub fn new(lu: &'a Lookups, exp: &'a experiment::ApvrpExp, mp: &super::mp::TaskModelMaster, initial_phase: Phase, obj: ObjWeights) -> Result<Self> {
     let stats = CbStats::default();
     let var_names: Map<_, _> = {
       let vars = mp.model.get_vars()?;
@@ -254,6 +258,7 @@ impl<'a> Cb<'a> {
       lu,
       phase: initial_phase,
       mp_vars: mp.vars.clone(),
+      mp_obj: obj,
       stats,
       added_lazy_constraints: Vec::new(),
       stored_lazy_constraints: Vec::new(),
@@ -266,6 +271,7 @@ impl<'a> Cb<'a> {
       var_vals: Map::default(),
       #[cfg(debug_assertions)]
       error: None,
+      cached_solution: None,
     })
   }
 
@@ -291,7 +297,7 @@ impl<'a> Cb<'a> {
       };
       match &cut.lhs {
         Expr::Linear(l) =>
-          if !l.iter_terms().all(|(_, &coeff)| (coeff -1.0).abs() < 1e-6) {
+          if !l.iter_terms().all(|(_, &coeff)| (coeff - 1.0).abs() < 1e-6) {
             coeff_error()
           }
         Expr::Term(coeff, _) => {
@@ -669,7 +675,6 @@ impl<'a> Cb<'a> {
     if !self.params.av_fork_cuts.is_empty()
       || !self.params.av_tournament_cuts.is_empty()
       || self.params.endtime_cuts {
-
       for route in routes {
         if !schedule::check_av_route(self.lu, &route) {
           let chain = self.shorten_illegal_av_chain(route.without_depots());
@@ -683,7 +688,7 @@ impl<'a> Cb<'a> {
           }
         } else if self.params.endtime_cuts {
           let finish_time = schedule::av_route_finish_time(self.lu, route.without_depots());
-          let estimate= theta[&(route.av(), *route.theta_task())];
+          let estimate = theta[&(route.av(), *route.theta_task())];
           if estimate < finish_time {
             self.endtime_cut(finish_time, route);
           }
@@ -719,6 +724,59 @@ impl<'a> Cb<'a> {
   fn get_pv_routes(&self, ctx: &MIPSolCtx) -> Result<(Vec<PvRoute>, Vec<PvCycle>)> {
     let task_pairs = get_var_values(ctx, &self.mp_vars.x)?.map(|(key, _)| key);
     Ok(construct_pv_routes(task_pairs))
+  }
+
+  fn av_travel_time_obj_component(&self, sol: &Solution, sp_obj: Time) -> Cost {
+    debug_assert!(sol.pv_cycles.is_empty());
+    debug_assert!(sol.av_cycles.is_empty());
+    let av_tt = sp_obj + sol.av_routes.iter()
+      .map(|r| self.lu.data.travel_time_to_ddepot(r.theta_task()))
+      .sum::<Time>();
+    av_tt * self.mp_obj.av_finish_time
+  }
+
+  #[instrument(level="info", name="save_sol", skip(self, sol))]
+  fn update_cached_solution(&mut self, mut sol: Solution, obj: Cost) -> bool {
+    match self.cached_solution.as_ref() {
+      Some(sp) => {
+        let saved_obj = sp.objective.unwrap();
+        if saved_obj < obj {
+          info!(saved_obj, "solution discarded: previously cached solution is better");
+          return false
+        }
+      }
+      None => {}
+    }
+    sol.objective = Some(obj);
+    self.cached_solution = Some(sol);
+    info!("saved new solution for final phase");
+    true
+  }
+
+  fn suggest_solution(&self, ctx: &MIPNodeCtx, sol: &Solution) -> Result<()> {
+    debug_assert!(sol.av_cycles.is_empty());
+    debug_assert!(sol.pv_cycles.is_empty());
+    let xvars = sol.pv_routes.iter().flat_map(|r| r.iter().map(|t| self.mp_vars.x[t]));
+    let yvars = sol.av_routes.iter().flat_map(|r| r.iter_y_vars().map(|key| self.mp_vars.y[&key]));
+    let grb_soln = xvars.chain(yvars).map(|var| (var, 1.0));
+    #[allow(unused_variables)]
+    let obj = ctx.set_solution(grb_soln)?;
+
+    #[cfg(debug_assertions)]
+    match obj.map(|o| o.round() as Cost) {
+      None => {
+        error!("cached solution was infeasible");
+        panic!("bugalug");
+      }
+      Some(obj) => {
+        if obj > sol.objective.unwrap() {
+          error!(gurobi_obj = obj, "Gurobi-computed objective implies dodgy optimality cuts");
+          panic!("bugalug");
+        }
+      }
+    }
+    info!("posted solution");
+    Ok(())
   }
 }
 
@@ -764,21 +822,43 @@ impl<'a> Callback for Cb<'a> {
             trace!(?theta);
             let estimate: Time = theta.values().sum();
             tracing::span::Span::current().record("estimate", &estimate);
-            match self.params.sp {
+            let sp_obj = match self.params.sp {
               SpSolverKind::Dag => {
-                dag::GraphModel::build(self.lu, &sol, &theta)?
-                  .solve_subproblem_and_add_cuts(self, estimate)?;
+                let mut sp = dag::GraphModel::build(self.lu, &sol, &theta)?;
+                sp.solve_subproblem_and_add_cuts(self, estimate)?
               }
               SpSolverKind::Lp => {
-                lp::TimingSubproblem::build(self.lu, &sol)?
-                  .solve_subproblem_and_add_cuts(self, estimate)?;
+                let mut sp = lp::TimingSubproblem::build(self.lu, &sol)?;
+                sp.solve_subproblem_and_add_cuts(self, estimate)?
+              }
+            };
+
+            if matches!(self.phase, Phase::NoAvTTCost) {
+              if let Some(sp_obj) = sp_obj {
+                let obj = ctx.obj()?.round() as Cost + self.av_travel_time_obj_component(&sol, sp_obj);
+                self.update_cached_solution(sol, obj);
               }
             }
           }
         }
+
         for cut in &self.added_lazy_constraints[new_lazy_constr_start..] {
-          trace!(lazy_cut=?cut.expr.with_names(&self.var_names));
           ctx.add_lazy(cut.expr.clone())?;
+        }
+      }
+
+      Where::MIPNode(ctx) if self.phase.is_final() => {
+        if let Some(sol) = &self.cached_solution {
+          let inc_obj = ctx.obj_best()?.round() as Time;
+          let saved_obj = sol.objective.unwrap();
+          let _s = error_span!("post_sol", inc_obj, saved_obj).entered();
+
+          if saved_obj < inc_obj {
+            self.suggest_solution(&ctx, sol)?;
+          } else {
+            info!("ditching saved solution: incumbent is better or equal");
+            self.cached_solution = None;
+          }
         }
       }
 

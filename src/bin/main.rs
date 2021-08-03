@@ -152,34 +152,34 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
   let mut callback = {
     let initial_phase = if exp.parameters.two_phase { Phase::NoAvTTCost } else { Phase::Final };
-    model::cb::Cb::new(&lookups, &exp, &mp, initial_phase)?
+    model::cb::Cb::new(&lookups, &exp, &mp, initial_phase, obj_weights)?
   };
 
 
   let mut solution = None;
-  loop {
-    if time_deadline.reached() {
-      break;
-    }
+  while !time_deadline.reached() {
     stopwatch.lap(callback.phase.name());
-    mp.model.set_param(param::TimeLimit, time_deadline.sec_remaining())?;
+    mp.model.set_param(param::TimeLimit, time_deadline.sec_remaining().max(0.0))?;
     let mut bounds = Bounds::new();
     mp.relax_integrality()?;
+    mp.model.update()?;
+    debug_assert_eq!(mp.model.get_attr(attr::IsMIP)?, 0);
     mp.model.optimize()?;
     bounds.record_root_lb(&mp)?;
     mp.enforce_integrality()?;
 
     mp.model.optimize_with_callback(&mut callback)?;
 
-    match mp.model.status()? {
+    let optimal = match mp.model.status()? {
       Status::Infeasible => {
         callback.flush_cut_cache(&mut mp.model)?;
         infeasibility_analysis(&mut mp)?;
         anyhow::bail!("bugalug")
       }
-      Status::Optimal | Status::TimeLimit => {}
+      Status::Optimal => true,
+      Status::TimeLimit => false,
       status => anyhow::bail!("unexpected master problem status: {:?}", status)
-    }
+    };
 
     let solution_found = mp.model.get_attr(attr::SolCount)? > 0;
 
@@ -218,23 +218,32 @@ fn run(exp: ApvrpExp) -> Result<()> {
     )?);
 
     callback.flush_cut_cache(&mut mp.model)?;
+    mp.model.update()?;
+    if exp.aux_params.model_file {
+      mp.model.write(exp.get_output_path_prefixed("master_problem.lp").to_str().unwrap())?;
+    }
 
     match callback.phase {
       Phase::Final => {
         break;
       },
       Phase::NoAvTTCost => {
-        callback.phase.set_next();
+        if optimal {
+          println!("-------------------------------------------------------------------------------------------------egg");
+          #[cfg(debug_assertions)] {
+            if callback.cached_solution.is_none() {
+              error!("solved to optimality but no solution has been saved");
+              panic!("bugalug")
+            }
+          }
+        }
         mp.set_objective(&lookups, obj_weights)?;
+        callback.phase.set_next();
       }
     }
   };
 
   stopwatch.stop();
-  mp.model.update()?;
-  if exp.aux_params.model_file {
-    mp.model.write(exp.get_output_path_prefixed("master_problem.lp").to_str().unwrap())?;
-  }
 
   println!();
   stopwatch.print_laps();

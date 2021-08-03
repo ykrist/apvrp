@@ -42,8 +42,10 @@ impl PvRoutes {
 type RequestList = SmallVec<[Req; constants::NUM_REQ_UB]>;
 
 struct RouteGenerator<'a> {
-  odepot: Loc,
+  // The dest depot for this passive vehicle
   ddepot: Loc,
+  // The lastest time the PV can arrive at the dest depot
+  ddepot_deadline: Time,
   pv: Pv,
   all_requests: &'a [Req],
   routes: Vec<PvRoute>,
@@ -57,12 +59,13 @@ impl<'a> RouteGenerator<'a> {
     tasks: &'a Tasks,
     pv: Pv,
   ) -> Self {
+    let ddepot = Loc::Pd(pv);
     Self {
       data,
       tasks,
       pv,
-      odepot: Loc::Po(pv),
-      ddepot: Loc::Pd(pv),
+      ddepot,
+      ddepot_deadline: data.tmax - data.travel_time[&(ddepot, Loc::Ad)],
       all_requests: data.compat_passive_req[&pv].as_slice(),
       routes: Vec::new(),
     }
@@ -105,6 +108,10 @@ impl<'a> RouteGenerator<'a> {
   #[instrument(level="trace", skip(self, requests))]
   fn extend_routes(&mut self, loc: Loc, time: Time, requests: RequestList) {
     // extend to depot
+    if time + self.data.travel_time[&(loc, self.ddepot)] > self.ddepot_deadline {
+      return
+    }
+
     self.add_new_route(&requests);
 
     for next_req in self.all_requests {

@@ -89,6 +89,7 @@ impl MpVars {
     self.x.values()
       .chain(self.y.values())
       .chain(self.u.values())
+      .chain(self.z.values())
   }
 
   /// For task pair `(t1, t2)`, return a sum of variables which is 1 if the `(t1, t2)` edge constraint appears in the
@@ -303,7 +304,6 @@ impl MpConstraints {
     };
 
     let obj = model.add_constr("Obj", c!(-vars.obj == 0))?;
-
 
     // initial Benders Cuts
     // let initial_cuts : Map<_, _> = vars.theta.iter()

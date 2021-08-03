@@ -30,7 +30,7 @@ pub fn check_pv_route(data: impl AsRef<Data>, tasks: &[PvTask]) -> bool {
   for (t1, t2) in tasks.iter().tuple_windows() {
     pv_forward_step(&mut t, data, t1, t2);
     if t + t2.tt > t2.t_deadline {
-      trace!(t, "{:#?} to {:#?}", t1, t2);
+      trace!(?t1, ?t2, t, t2.tt, t2.t_deadline, "illegal");
       return false;
     }
     trace!(t, t2.end.srv_time=?data.srv_time.get(&t2.end), t2.t_release, t2.tt, t2.t_deadline);
