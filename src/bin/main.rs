@@ -110,7 +110,14 @@ fn run(exp: ApvrpExp) -> Result<()> {
   let mut phase_info = Vec::new();
 
   stopwatch.start(String::from("task_generation"));
-  let lookups = Lookups::load_data_and_build(exp.inputs.index)?;
+
+  let lookups = {
+    let mut lu = Lookups::load_data_and_build(exp.inputs.index)?;
+    if exp.parameters.pvcg {
+      lu.generate_pv_routes()
+    }
+    lu
+  };
 
   stopwatch.lap(String::from("mp_build"));
   let obj_weights = ObjWeights::default();

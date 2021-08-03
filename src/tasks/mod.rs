@@ -329,7 +329,7 @@ struct PvTasks {
 
 
 impl PvTasks {
-  pub fn generate(data: &Data, sets: &Sets, pv_req_t_start: &Map<(Pv, Req), Time>) -> Self {
+  pub fn generate(data: &Data, sets: &Sets) -> Self {
     let _span = error_span!("task_gen").entered();
 
     let mut all = Vec::with_capacity(500); // TODO improve this estimate
@@ -375,7 +375,7 @@ impl PvTasks {
       for rp in data.compat_passive_req[&po.pv()].iter().copied().map(Loc::ReqP) {
         let rd = rp.dest();
         let pd = po.dest();
-        let t_release = pv_req_t_start[&(po.pv(), rp.req())] + data.travel_time[&(rp, rd)] + data.srv_time[&rd];
+        let t_release = data.pv_req_start_time[&(po.pv(), rp.req())] + data.travel_time[&(rp, rd)] + data.srv_time[&rd];
         // let t_deadline = 2*data.tmax; //  FIXME doesn't seems like Michael is taking this tmax into account
         let t_deadline = data.tmax - data.travel_time[&(pd, Loc::Ad)];
         let tt = data.travel_time[&(rd, pd)];
@@ -397,7 +397,7 @@ impl PvTasks {
     for pv in sets.pvs() {
       for rp in data.compat_passive_req[&pv].iter().copied().map(Loc::ReqP) {
         let rd = rp.dest();
-        let t_release = pv_req_t_start[&(pv, rp.req())];
+        let t_release = data.pv_req_start_time[&(pv, rp.req())];
         let tt = data.travel_time[&(rp, rd)];
         let t_deadline = data.end_time[&rd] - data.srv_time[&rd];
         trace!(pv, ?rp, t_release, tt, t_deadline);
@@ -429,7 +429,7 @@ impl PvTasks {
           let r2d = r2p.dest();
           let tt = data.travel_time[&(r1d, r2p)];
           let t_deadline = data.end_time[&r2d] - data.srv_time[&r2d] - data.travel_time[&(r2p, r2d)] - data.srv_time[&r2p];
-          let t_release = pv_req_t_start[&(pv, r1p.req())] + data.travel_time[&(r1p, r1d)] + data.srv_time[&r1d];
+          let t_release = data.pv_req_start_time[&(pv, r1p.req())] + data.travel_time[&(r1p, r1d)] + data.srv_time[&r1d];
 
           if t_release + tt <= t_deadline {
             all.push(PvTask::new(
@@ -612,8 +612,8 @@ fn av_succ_and_pred(pvtask_to_task: &Map<PvTask, Task>, av_conn: &[(PvTask, PvTa
 
 
 impl Tasks {
-  pub fn generate(data: &Data, sets: &Sets, pv_req_t_start: &Map<(Pv, Req), Time>) -> Self {
-    let pvtasks = PvTasks::generate(data, sets, pv_req_t_start);
+  pub fn generate(data: &Data, sets: &Sets) -> Self {
+    let pvtasks = PvTasks::generate(data, sets);
     Self::build(data, sets, pvtasks)
   }
 

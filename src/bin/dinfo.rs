@@ -2,8 +2,8 @@ use structopt::StructOpt;
 use apvrp::experiment::Inputs;
 use apvrp::*;
 use serde::{Serialize};
-use std::fmt::{self, Display};
-use prettytable::{Table, Row, Cell, row, table, cell, format};
+use std::fmt::Display;
+use prettytable::*;
 
 #[derive(StructOpt)]
 struct Args {

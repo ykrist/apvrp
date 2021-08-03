@@ -136,6 +136,11 @@ pub struct Params {
 
   #[structopt(long, parse(try_from_str=parse_gurobi_param), require_delimiter=true)]
   pub gurobi: Vec<(String, GurobiParamVal)>,
+
+  /// Enable Passive Vehicle Column Generation: generate all Passive Vehicle routes a-priori and use route-based variables
+  /// to eliminate the need for Passive Vehicle feasibility cuts.
+  #[structopt(long)]
+  pub pvcg: bool
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

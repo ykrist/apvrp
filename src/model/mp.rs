@@ -7,6 +7,7 @@ use crate::solution::Solution;
 use crate::model::{EdgeConstrKind, edge_constr_kind};
 use crate::utils::CollectExt;
 use crate::experiment::{ApvrpExp, GurobiParamVal};
+use crate::colgen::RouteId;
 
 #[derive(Clone)]
 pub struct MpVars {
@@ -14,6 +15,7 @@ pub struct MpVars {
   pub x: Map<PvTask, Var>,
   pub y: Map<(Av, Task, Task), Var>,
   pub u: Map<Req, Var>,
+  pub z: Map<RouteId, Var>,
   pub theta: Map<(Av, Task), Var>,
 }
 
@@ -71,8 +73,16 @@ impl MpVars {
       }
     }
 
+    let mut z = Map::default();
+    if let Some(pv_routes) = &l.pv_routes {
+      z.reserve(pv_routes.by_id.len());
+      for i in 0..pv_routes.by_id.len() {
+        z.insert(i, add_binvar!(model, name: &format!("PVR[{}]", i))?);
+      }
+    }
+
     let obj = add_ctsvar!(model, name: "Obj", obj: 1)?;
-    Ok(MpVars { obj, x, y, theta, u })
+    Ok(MpVars { obj, x, y, theta, u, z })
   }
 
   pub fn binary_vars<'a>(&'a self) -> impl Iterator<Item=&'a Var> + 'a {
@@ -140,6 +150,7 @@ pub struct MpConstraints {
   pub av_flow: Map<(Av, Task), Constr>,
   pub xy_link: Map<Task, Constr>,
   pub av_pv_compat: Map<PvTask, Constr>,
+  pub zx_link: Map<PvTask, Constr>,
   pub initial_cuts: Map<(Av, Task), Constr>,
   pub initial_lifted_cuts: Map<(Av, Task), Constr>,
   pub whole_route_cuts: Map<Av, Constr>,
@@ -173,7 +184,22 @@ impl MpConstraints {
       cmap
     };
 
-    let pv_flow = {
+    let pv_flow;
+    let zx_link;
+
+    if let Some(pv_routes) = &lu.pv_routes {
+      pv_flow = Map::default();
+      zx_link = {
+        let mut cmap = map_with_capacity(lu.tasks.pvtask_to_task.len());
+        for (t, routes) in &pv_routes.by_pvtask {
+          let c = c!(vars.x[t] == routes.iter().map(|i| vars.z[i]).grb_sum());
+          let c = model.add_constr(&format!("zx_link[{:?}]", t), c)?;
+          cmap.insert(*t, c);
+        }
+        cmap
+      }
+    } else {
+      pv_flow = {
       let mut cmap = map_with_capacity((lu.data.n_loc as usize - 2) * lu.data.n_passive as usize);
       for (&r, pvs) in &lu.data.compat_req_passive {
         let rp = Loc::ReqP(r);
@@ -197,6 +223,9 @@ impl MpConstraints {
       }
       cmap
     };
+    zx_link = Map::default();
+    }
+
 
     let num_av = {
       let mut cmap = map_with_capacity(lu.data.n_active as usize);
@@ -366,6 +395,7 @@ impl MpConstraints {
       num_av,
       av_flow,
       xy_link,
+      zx_link,
       av_pv_compat,
       initial_cuts,
       initial_lifted_cuts,

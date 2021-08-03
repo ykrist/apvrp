@@ -52,12 +52,16 @@ pub struct Data {
   pub n_loc: RawLoc,
   pub tmax: Time,
   pub srv_time: Map<Loc, Time>,
+  /// Earliest time we can leave Loc
   pub start_time: Map<Loc, Time>,
+  /// Latest time we can finish service at Loc
   pub end_time: Map<Loc, Time>,
   pub compat_req_passive: Map<Req, Vec<Pv>>,
   pub compat_passive_req: Map<Pv, Vec<Req>>,
   pub compat_passive_active: Map<Pv, Vec<Avg>>,
   pub compat_active_passive: Map<Avg, Vec<Pv>>,
+  /// The earliest time a PV may *leave* the Pickup of request
+  pub pv_req_start_time: Map<(Pv, Req), Time>,
   pub travel_cost: Map<(Loc, Loc), Cost>,
   pub travel_time: Map<(Loc, Loc), Time>,
   pub av_groups: Map<Avg, Vec<Av>>,
@@ -193,6 +197,7 @@ pub struct Lookups {
   pub data: Data,
   pub sets: Sets,
   pub tasks: Tasks,
+  pub pv_routes: Option<PvRoutes>
 }
 
 impl Lookups {
@@ -202,14 +207,19 @@ impl Lookups {
       .map(preprocess::full_pipeline)?;
 
     let sets = Sets::new(&data);
-
-    // `pv_req_t_start` is the earliest time we can *depart* from request r's pickup with passive vehicle p
-    let pv_req_t_start = schedule::earliest_departures(&data);
-    let tasks = Tasks::generate(&data, &sets, &pv_req_t_start);
+    let tasks = Tasks::generate(&data, &sets);
 
     info!(num_tasks = tasks.all.len(), "task generation finished");
-    Ok(Lookups { data, sets, tasks })
+    Ok(Lookups { data, sets, tasks, pv_routes: None })
   }
+
+  pub fn generate_pv_routes(&mut self) {
+    if self.pv_routes.is_some() {
+      panic!("Routes have already been generated.")
+    }
+    self.pv_routes = Some(PvRoutes::new(&self.sets, &self.data, &self.tasks))
+  }
+
 }
 
 impl AsRef<Data> for Lookups {
@@ -257,8 +267,10 @@ pub mod graph;
 pub mod logging;
 pub mod solution;
 use fnv::FnvHashSet;
+use crate::colgen::PvRoutes;
 
 pub mod schedule;
 pub mod experiment;
 pub mod test;
+pub mod colgen;
 // TODO tests for encode and decode.

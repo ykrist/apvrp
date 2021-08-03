@@ -179,7 +179,7 @@ impl CbStats {
 #[derive(Debug, Clone, Default)]
 pub struct InfeasibilityTracker {
   av_cycles: HashMap<Vec<Task>, usize>,
-  path_iis: Set<PathIis>,
+  path_iis: HashMap<PathIis, usize>,
 }
 
 impl InfeasibilityTracker {
@@ -192,11 +192,11 @@ impl InfeasibilityTracker {
   }
 
   pub fn path_iis(&mut self, iis: &PathIis) {
-    if self.path_iis.contains(iis) {
-      error!(?iis, "IIS has been seen before");
-      panic!("bugalug")
+    if let Some(count) = self.path_iis.get_mut(&iis) {
+      warn!(?iis, count=*count, "IIS has been seen before");
+      *count += 1;
     } else {
-      self.path_iis.insert(iis.clone());
+      self.path_iis.insert(iis.clone(), 1);
     }
   }
 }
@@ -303,6 +303,10 @@ impl<'a> Cb<'a> {
       }
     }
 
+    if self.params.pvcg && matches!(ty, CutType::PvCycle | CutType::PvChainInfork | CutType::PvChainOutfork) {
+      error!("shouldn't need to add PV-cuts with PVCG");
+      panic!("bugalug")
+    }
 
     trace!("ok")
   }

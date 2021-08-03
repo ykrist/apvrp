@@ -15,5 +15,6 @@ function trace_on_fail {
 }
 
 export -f trace_on_fail
-parallel -j 6 --halt now,fail=1 trace_on_fail --sp dag --two-phase :::: <( python ../../src/apvrp/data_indices.py test )
+rm -f logs/test/parameters.json
+parallel -j 6 --halt now,fail=1 trace_on_fail --two-phase --pvcg :::: <( python ../../src/apvrp/data_indices.py test )
 # parallel -j 6 --halt now,fail=1 target/debug/apvrp --param-name test-dag --cpus 1 --sp dag --two-phase :::: <( python ../../src/apvrp/data_indices.py test )

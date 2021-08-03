@@ -96,23 +96,3 @@ pub fn check_av_route(data: impl AsRef<Data>, tasks: &[Task]) -> bool {
   true
 }
 
-/// For each Passive Vehicle-Request pair, computes the earliest time we can *leave* the pickup of the request.
-#[tracing::instrument(level = "trace", skip(data))]
-pub fn earliest_departures(data: impl AsRef<Data>) -> Map<(Pv, Req), Time> {
-  let data = data.as_ref();
-  data.compat_req_passive.iter()
-    .flat_map(|(&r, pvs)| {
-      pvs.iter()
-        .map(move |&p| {
-          let rp = Loc::ReqP(r);
-          let po = Loc::Po(p);
-          trace!(?rp, ?po);
-          let t = std::cmp::max(
-            data.start_time[&rp],
-            data.travel_time[&(Loc::Ao, po)] + data.travel_time[&(po, rp)] + data.srv_time[&rp],
-          );
-          ((p, r), t)
-        })
-    })
-    .collect()
-}

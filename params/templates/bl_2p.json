@@ -18,5 +18,6 @@
   "endtime_cuts": false,
   "cycle_cuts": false,
   "two_phase": true,
-  "gurobi": []
+  "gurobi": [],
+  "pvcg": false
 }
