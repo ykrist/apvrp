@@ -17,5 +17,5 @@ function trace_on_fail {
 
 export -f trace_on_fail
 rm -f logs/test/parameters.json
-parallel -j 6 --halt now,fail=1 trace_on_fail --two-phase --pvcg --av-fork-cuts 1,0 --av-tournament-cuts 1,0 --pv-fork-cuts 1,0 :::: <( python ../../src/apvrp/data_indices.py test )
+parallel -j 6 --halt now,fail=1 trace_on_fail --two-phase --pvcg --av-tournament-cuts 1,0 --pv-fork-cuts 1,0 :::: <( python ../../src/apvrp/data_indices.py test )
 

@@ -2,13 +2,11 @@ use tracing_subscriber::{EnvFilter, fmt, registry, prelude::*};
 use tracing_appender::{non_blocking, non_blocking::WorkerGuard};
 use std::fs::{OpenOptions, File};
 use std::path::Path;
-// use tracing::{info, warn};
 use std::env;
 use std::fmt::Debug;
 use crate::Result;
 
 const LOG_BUFFER_LINES: usize = 4_194_304; // 2 ** 22; should be < 2GiB with <= 512 bytes per log entry
-
 
 pub fn init_logging(logfile: Option<impl AsRef<Path>>, stderr: bool) -> Result<Option<WorkerGuard>> {
   let env_filter = EnvFilter::from_default_env();

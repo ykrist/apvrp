@@ -152,9 +152,7 @@ pub struct MpConstraints {
   pub xy_link: Map<Task, Constr>,
   pub av_pv_compat: Map<PvTask, Constr>,
   pub zx_link: Map<PvTask, Constr>,
-  pub initial_cuts: Map<(Av, Task), Constr>,
-  pub initial_lifted_cuts: Map<(Av, Task), Constr>,
-  pub whole_route_cuts: Map<Av, Constr>,
+  pub initial_cuts: Map<Av, Constr>,
 }
 
 impl MpConstraints {
@@ -305,52 +303,8 @@ impl MpConstraints {
 
     let obj = model.add_constr("Obj", c!(-vars.obj == 0))?;
 
-    // initial Benders Cuts
-    // let initial_cuts : Map<_, _> = vars.theta.iter()
-    //   .map(|(&(av, t), &theta)| {
-    //     let y = vars.y[&(av, t, lu.tasks.ddepot)];
-    //     let c = model.add_constr(&format!("initial_bc[{:?}|{}]", &t, av), c!(theta >= t.t_release * y))?;
-    //     Ok(((av, t), c))
-    //   })
-    //   .collect_ok()?;
-    let initial_cuts = Default::default();
-    // // initial Benders Cuts
-    // let initial_lifted_cuts : Map<_, _> = vars.theta.iter()
-    //   .map(|(&(av, t2), &theta)| {
-    //     let y_t2_depot = vars.y[&(av, t2, lu.tasks.ddepot)];
-    //     let finish_t2_dd = t2.t_release;
-    //
-    //     let mut rhs = y_t2_depot * finish_t2_dd;
-    //
-    //     for (t1, y_t1_t2) in lu.tasks.pred[&t2].iter().filter_map(|&t1| vars.y.get(&(av, t1, t2)).map(|&y| (t1, y))) {
-    //       if t1.is_depot() {
-    //         continue
-    //       }
-    //       let route = [t1, t2];
-    //       trace!(?route);
-    //       let finish_t1_t2_dd = schedule::av_route_finish_time(lu, &route);
-    //       let coeff = finish_t1_t2_dd - finish_t2_dd;
-    //       // (y_t1_t2 + y_t2_depot - 1) * coeff
-    //       rhs += coeff*y_t2_depot;
-    //       rhs += coeff*y_t1_t2;
-    //       rhs += -coeff;
-    //     }
-    //
-    //     let c = model.add_constr(&format!("initial_lifted[{:?}|{}]", &t2, av), c!(theta >= rhs))?;
-    //     Ok(((av, t2), c))
-    //   })
-    //   .collect_ok()?;
-    let initial_lifted_cuts = Default::default();
-    // { // At least one av route must finish on a Direct or End task
-    //   let lhs = vars.y.iter()
-    //     .filter(|((av, t1, t2), _) | t2.is_depot() && matches!(&t1.ty, TaskType::Direct | TaskType::End))
-    //     .map(|(_, &y)| y)
-    //     .grb_sum();
-    //   model.add_constr("", c!(lhs >= 1))?;
-    // }
-
-    let whole_route_cuts: Map<_, _> = lu.sets.avs().map(|av| {
-      let _s = trace_span!("whole_route_cuts", av).entered();
+    let initial_cuts: Map<_, _> = lu.sets.avs().map(|av| {
+      let _s = trace_span!("initial_cuts", av).entered();
       let mut cut = Expr::default();
 
       for &t1 in &lu.tasks.compat_with_av[&av] {
@@ -382,7 +336,7 @@ impl MpConstraints {
         .map(|(_, &theta)| theta)
         .grb_sum();
 
-      let c = model.add_constr(&format!("WholeRoute[{}]", av), c!(theta_sum >= cut))?;
+      let c = model.add_constr(&format!("InitOpt[{}]", av), c!(theta_sum >= cut))?;
       Ok((av, c))
     })
       .collect_ok()?;
@@ -398,8 +352,6 @@ impl MpConstraints {
       zx_link,
       av_pv_compat,
       initial_cuts,
-      initial_lifted_cuts,
-      whole_route_cuts,
     })
   }
 }
