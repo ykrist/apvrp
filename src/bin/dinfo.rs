@@ -53,7 +53,7 @@ impl Output {
 
 fn main() -> anyhow::Result<()> {
   let args: Args = Args::from_args();
-  let data = default_dataset().load_instance(args.input.index)?;
+  let data = instances::dataset::apvrp::DSET.load_instance(args.input.index)?;
   let output = Output {
     index: args.input.index,
     n_req: data.n_req,

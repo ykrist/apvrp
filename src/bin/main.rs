@@ -97,6 +97,8 @@ fn evalutate_full_objective(lookups: &Lookups, mp: &TaskModelMaster, obj_weights
 }
 
 fn run(exp: ApvrpExp) -> Result<()> {
+  apvrp::check_commit_hash()?;
+
   // TODO: PV colgen for Tilk instances
   #[allow(non_snake_case)]
     let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
@@ -248,11 +250,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
   println!();
   stopwatch.print_laps();
 
-  let info = experiment::Info {
-    time: stopwatch.into_laps(),
-    info: phase_info,
-  };
-
+  let info = experiment::Info::new(phase_info, stopwatch.into_laps());
   info.to_json_file(exp.get_output_path(&exp.outputs.info))?;
 
 

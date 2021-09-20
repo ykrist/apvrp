@@ -435,6 +435,16 @@ impl PhaseInfo {
 pub struct Info {
   pub info: Vec<PhaseInfo>,
   pub time: Vec<(String, u128)>,
+  pub commit_hash: String,
 }
 
+impl Info {
+  pub fn new(info: Vec<PhaseInfo>, time: Vec<(String, u128)>) -> Self {
+    Info {
+      info,
+      time,
+      commit_hash: crate::COMMIT_HASH.to_string(),
+    }
+  }
+}
 

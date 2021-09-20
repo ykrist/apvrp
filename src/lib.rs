@@ -252,9 +252,29 @@ pub mod logging;
 pub mod solution;
 use fnv::FnvHashSet;
 use crate::colgen::PvRoutes;
+use anyhow::Context;
 
 pub mod schedule;
 pub mod experiment;
 pub mod test;
 pub mod colgen;
 // TODO tests for encode and decode.
+
+pub const COMMIT_HASH : &'static str = env!("COMMIT_HASH");
+
+
+fn commit_hash() -> Result<String> {
+  let output = std::process::Command::new("git").args(["rev-parse", "HEAD"]).output()?;
+  assert!(output.status.success());
+  Ok(std::str::from_utf8(&output.stdout)?.trim().to_string())
+}
+
+pub fn check_commit_hash() -> Result<()> {
+  let hash = commit_hash().context("Unable to retrieve commit hash")?;
+  if hash != COMMIT_HASH {
+    let msg = "build is out of date";
+    tracing::error!(build_commit=?COMMIT_HASH, current_commit=?hash, "{}", msg);
+    anyhow::bail!("{}", msg);
+  }
+  Ok(())
+}
