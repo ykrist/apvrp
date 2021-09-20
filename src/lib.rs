@@ -24,22 +24,6 @@ pub use instances::dataset::apvrp::{
 };
 pub use instances::dataset::Dataset;
 
-pub fn dataset(tilk_scale: f64) -> impl Dataset<Instance=ApvrpInstance> {
-  use instances::{
-    dataset::{self, apvrp::rescale_distances},
-    modify::DSetModify,
-  };
-  dataset::DSetCollection::new()
-    .push_owned(TILK_AB.map(move |data| rescale_distances(data, tilk_scale)))
-    .push_ref(&*MEISEL_A)
-    .finish()
-}
-
-pub fn default_dataset() -> impl Dataset<Instance=ApvrpInstance> {
-  dataset(0.5)
-}
-
-
 /// Active Vehicle Group.
 pub type Avg = Av;
 
@@ -202,7 +186,7 @@ pub struct Lookups {
 
 impl Lookups {
   pub fn load_data_and_build(data_index: usize) -> Result<Self> {
-    let data = dataset(0.5)
+    let data = DSET
       .load_instance(data_index)
       .map(preprocess::full_pipeline)?;
 

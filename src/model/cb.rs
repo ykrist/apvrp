@@ -509,7 +509,7 @@ impl<'a> Cb<'a> {
         }
       }
     }
-    error!(?chain, "chain must be illegal");
+    error!(?chain, "chain must be illegal"); // FIXME 2-phase min-VI fails here for seed 92821, instances 147, 159
     unreachable!()
   }
 
