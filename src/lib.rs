@@ -273,8 +273,9 @@ pub fn check_commit_hash() -> Result<()> {
   let hash = commit_hash().context("Unable to retrieve commit hash")?;
   if hash != COMMIT_HASH {
     let msg = "build is out of date";
-    tracing::error!(build_commit=?COMMIT_HASH, current_commit=?hash, "{}", msg);
+    tracing::error!(build_commit=%COMMIT_HASH, current_commit=%hash, "{}", msg);
     anyhow::bail!("{}", msg);
   }
+  tracing::info!(git_commit=%hash);
   Ok(())
 }
