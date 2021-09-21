@@ -40,40 +40,54 @@ fn main() -> anyhow::Result<()> {
   for (k, sol) in iter_solution_log(&sol_log)?.enumerate() {
     let sol = sol.to_solution(&lookups);
     let mut graph = apvrp::model::sp::dag::GraphModel::build(&lookups, &sol, &dummy_theta)?;
-    graph.model.write_debug(output_dir.join(format!("{}.txt", k)))?;
-    let status = match graph.model.solve() {
-      SolveStatus::Optimal => {
-        graph.model.compute_mrs();
-        Status::Optimal
-      },
-      SolveStatus::Infeasible(infkind) => {
-        graph.model.compute_iis(true);
-        match infkind {
-          InfKind::Path => Status::PathIis,
-          InfKind::Cycle => Status::Cycle,
+
+
+    for j in 0.. {
+      graph.model.write_debug(output_dir.join(format!("{}-it{}.txt", k, j)))?;
+
+      let (status, iis) = match graph.model.solve() {
+        SolveStatus::Optimal => {
+          graph.model.compute_mrs();
+          (Status::Optimal, None)
+        },
+        SolveStatus::Infeasible(infkind) => {
+          let iis = graph.model.compute_iis(true);
+          let status = match infkind {
+            InfKind::Path => Status::PathIis,
+            InfKind::Cycle => Status::Cycle,
+          };
+          (status, Some(iis))
+        },
+      };
+
+      let info = SolutionInformation{
+        dag_status : status
+      };
+
+      std::fs::write(
+        output_dir.join(format!("{}-it{}.json", k, j)),
+        serde_json::to_string_pretty(&info)?
+      )?;
+
+      let var_names = |var: daggylp::Var| {
+        match graph.var_to_task.get(&var) {
+          Some(t) => format!("{:?}", t),
+          None => "ODepot".to_string()
         }
-      },
-    };
+      };
 
-    let info = SolutionInformation{
-      dag_status : status
-    };
+      let filename = format!("{}-it{}.svg", k, j);
+      graph.model.viz()
+        .fmt_vars(&var_names)
+        .save_svg(output_dir.join(&filename));
+      println!("wrote {}", filename);
 
-    std::fs::write(
-      output_dir.join(format!("{}.json", k)),
-      serde_json::to_string_pretty(&info)?
-    )?;
-
-    let var_names = |var: daggylp::Var| {
-      match graph.var_to_task.get(&var) {
-        Some(t) => format!("{:?}", t),
-        None => "ODepot".to_string()
+      match iis {
+        Some(iis) => graph.model.remove_iis(&iis),
+        None => break,
       }
-    };
+    }
 
-    graph.model.viz()
-      .fmt_vars(&var_names)
-      .save_svg(output_dir.join(format!("{}.svg", k)));
   }
 
   Ok(())

@@ -15,7 +15,7 @@ use crate::model::cb::CutType;
 pub struct GraphModel<'a> {
   pub second_last_tasks: SmallVec<[Task; NUM_AV_UB]>,
   pub lu: &'a Lookups,
-  pub theta_val: &'a Map<(Avg, Task), Time>, // FIXME make this an argument to add_optimality_cuts()
+  pub theta_val: &'a Map<(Avg, Task), Time>, // TODO make this an argument to add_optimality_cuts()
   pub vars: Map<Task, Var>,
   /// ODepot var is *not* in this lookup.
   pub var_to_task: Map<Var, PvTask>,
@@ -193,7 +193,7 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
       }
 
       // Now need to add the conditional-objective terms
-      for &t in &self.second_last_tasks {
+      for &t in &self.second_last_tasks { // FIXME - only add the second last tasks in THIS MRS, not in all MRS
         // I(x,y) = sum(Y[a, t, ddepot] for a in A)
 
         // each term is - (1 - I(x, y) ) * c(t) * optimal_time(t) where c(t) = 1

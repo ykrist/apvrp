@@ -27,6 +27,32 @@ fn earliest_departures(
     .collect()
 }
 
+/// For each Passive Vehicle-Request pair, computes the arrive time we can *arrive* at the delivery of the request.
+#[tracing::instrument(level = "trace", skip(compat_req_passive, travel_time, srv_time, end_time))]
+fn latest_arrivals(
+  compat_req_passive: &Map<Req, Vec<Pv>>,
+  travel_time: &Map<(Loc, Loc), Time>,
+  srv_time: &Map<Loc, Time>,
+  end_time: &Map<Loc, Time>,
+  tmax: Time,
+) -> Map<(Pv, Req), Time> {
+  compat_req_passive.iter()
+    .flat_map(|(&r, pvs)| {
+      pvs.iter()
+        .map(move |&p| {
+          let rd = Loc::ReqD(r);
+          let pd = Loc::Pd(p);
+          trace!(?rd, ?pd);
+          let t = std::cmp::max(
+            end_time[&rd],
+            tmax - travel_time[&(rd, pd)] -  travel_time[&(pd, Loc::Ad)]
+          ) - srv_time[&rd];
+          ((p, r), t)
+        })
+    })
+    .collect()
+} //  data.end_time[&rd] - data.srv_time[&rd]
+
 fn decode_loc_keys<V: Copy>(lss: &LocSetStarts, map: &Map<RawLoc, V>) -> Map<Loc, V> {
   map.iter()
     .map(|(key, val)| (lss.decode(*key), *val))
@@ -95,7 +121,7 @@ pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
     &travel_time,
     &srv_time,
     &start_time
-  ) ;
+  );
 
   Data {
     id: data.id,

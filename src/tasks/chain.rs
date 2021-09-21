@@ -82,7 +82,7 @@ pub fn pv_chain_full(data: &Data, chain: &[PvTask]) -> bool {
 fn cover_check_impl<T: LocPair>(chain: &[T]) -> Option<Set<Loc>> {
   let mut locs_visited_by_chain = set_with_capacity(chain.len() * 2);
   for t in chain {
-    // if !t.is_depot() { // FIXME dont think this is needed
+    // if !t.is_depot() { // TODO dont think this is needed
     //   // chain[k].end may be equal to chain[k+1].start.  For AV depot tasks, t.start = t.end
     //   locs_visited_by_chain.insert(t.start());
     // }

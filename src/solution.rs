@@ -169,10 +169,19 @@ pub fn iter_solution_log(p: impl AsRef<Path>) -> Result<impl Iterator<Item=Seria
 pub fn construct_av_routes(task_pairs: impl IntoIterator<Item=(Av, Task, Task)>) -> (Vec<AvRoute>, Vec<AvCycle>) {
   use crate::graph::DecomposableDigraph;
 
-  #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+  #[derive(Copy, Clone, Hash, Eq, PartialEq)]
   struct AvTask {
     task: Task,
     av: Av,
+  }
+
+  impl Debug for AvTask {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+      f.debug_tuple("AvTask")
+        .field(&self.av)
+        .field(&self.task)
+        .finish()
+    }
   }
 
   #[derive(Debug)]
@@ -697,3 +706,4 @@ pub use debugging::load_michael_soln;
 use std::ops::Deref;
 use smallvec::SmallVec;
 use crate::Shorthand;
+use std::fmt::Debug;

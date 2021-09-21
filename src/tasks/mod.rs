@@ -353,7 +353,7 @@ impl PvTasks {
       for &r in &data.compat_passive_req[&po.pv()] {
         let rp = Loc::ReqP(r);
         let t_release = data.travel_time[&(Loc::Ao, po)];
-        let t_deadline = data.end_time[&rp.dest()] - data.srv_time[&rp] - data.srv_time[&rp.dest()] - data.travel_time[&(rp, rp.dest())];
+        let t_deadline = data.end_time[&rp.dest()] - data.srv_time[&rp] - data.srv_time[&rp.dest()] - data.travel_time[&(rp, rp.dest())];  // FIXME: use latest_arrivals here
         let tt = data.travel_time[&(po, rp)];
 
         // Assumption: if po and rp are marked as compatible, they are time-compatible.
@@ -376,7 +376,8 @@ impl PvTasks {
         let rd = rp.dest();
         let pd = po.dest();
         let t_release = data.pv_req_start_time[&(po.pv(), rp.req())] + data.travel_time[&(rp, rd)] + data.srv_time[&rd];
-        // let t_deadline = 2*data.tmax; //  FIXME doesn't seems like Michael is taking this tmax into account
+        //  Michael doesn't take tmax into account
+        // let t_deadline = 2*data.tmax;
         let t_deadline = data.tmax - data.travel_time[&(pd, Loc::Ad)];
         let tt = data.travel_time[&(rd, pd)];
         if t_release + tt <= t_deadline {
@@ -399,7 +400,7 @@ impl PvTasks {
         let rd = rp.dest();
         let t_release = data.pv_req_start_time[&(pv, rp.req())];
         let tt = data.travel_time[&(rp, rd)];
-        let t_deadline = data.end_time[&rd] - data.srv_time[&rd];
+        let t_deadline = data.end_time[&rd] - data.srv_time[&rd]; // FIXME: use latest_arrivals here
         trace!(pv, ?rp, t_release, tt, t_deadline);
         if t_release + tt <= t_deadline {
           let task = PvTask::new(
@@ -428,7 +429,7 @@ impl PvTasks {
           }
           let r2d = r2p.dest();
           let tt = data.travel_time[&(r1d, r2p)];
-          let t_deadline = data.end_time[&r2d] - data.srv_time[&r2d] - data.travel_time[&(r2p, r2d)] - data.srv_time[&r2p];
+          let t_deadline = data.end_time[&r2d] - data.srv_time[&r2d] - data.travel_time[&(r2p, r2d)] - data.srv_time[&r2p];  // FIXME: use latest_arrivals here
           let t_release = data.pv_req_start_time[&(pv, r1p.req())] + data.travel_time[&(r1p, r1d)] + data.srv_time[&r1d];
 
           if t_release + tt <= t_deadline {
@@ -449,10 +450,21 @@ impl PvTasks {
     #[cfg(debug_assertions)]
       {
         for t in &all {
+          let _s = trace_span!("task_check", task=?t, t.t_release, t.tt, t.t_deadline).entered();
           if t.t_release + t.tt > t.t_deadline {
-            error!(task=?t, t_release=t.t_release, tt=t.tt, t_deadline=t.t_deadline,
-              "BUG: time-impossible task: {} + {} > {}", t.t_release, t.tt, t.t_deadline);
+            error!("BUG: time-impossible task: {} + {} > {}", t.t_release, t.tt, t.t_deadline);
             panic!("critical bug")
+          }
+          match &t.ty {
+            TaskType::Request => {
+              let srv_time = data.srv_time[&t.end];
+              let tt_pvdepot = data.travel_time[&(t.end, Loc::Pd(t.p))];
+              let tt_avdepot = data.travel_time[&(Loc::Pd(t.p), Loc::Ad)];
+              if t.t_deadline + srv_time + tt_pvdepot + tt_avdepot > data.tmax {
+                error!(srv_time, tt_pvdepot, tt_avdepot,"BUG: t_deadline is too big, arriving then would violate time horizon")
+              }
+            }
+            _ => {},
           }
         }
       }

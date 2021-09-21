@@ -99,7 +99,6 @@ fn evalutate_full_objective(lookups: &Lookups, mp: &TaskModelMaster, obj_weights
 fn run(exp: ApvrpExp) -> Result<()> {
   apvrp::check_commit_hash()?;
 
-  // TODO: PV colgen for Tilk instances
   #[allow(non_snake_case)]
     let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
 
