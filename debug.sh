@@ -16,4 +16,4 @@ PARAMS=`sed -n "${SLURM_ARRAY_TASK_ID}p" $FAIL_LIST | cut -d / -f 1`
 DATA_INDEX=`sed -n "${SLURM_ARRAY_TASK_ID}p" $FAIL_LIST | cut -d / -f 2 | cut -d . -f 1`
 
 export RUST_LOG=trace
-echo target/debug/apvrp -l params/run-dbg/${PARAMS}.json -q $DATA_INDEX
+target/debug/apvrp -l params/run-dbg/${PARAMS}.json -q $DATA_INDEX
