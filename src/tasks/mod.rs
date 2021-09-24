@@ -6,7 +6,7 @@ use itertools::max;
 use fnv::{FnvHashSet, FnvBuildHasher};
 use std::fmt;
 use grb::constr::IneqExpr;
-use tracing::{error_span, trace, error, warn};
+use tracing::{error_span, debug, trace, error, warn, instrument};
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::cmp::Ordering;
@@ -19,6 +19,7 @@ pub mod chain;
 mod shorthand;
 
 pub use shorthand::*;
+use arrayvec::ArrayVec;
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub struct RawPvTask {
@@ -273,7 +274,7 @@ impl Task {
 pub enum VistedReq {
   None,
   One(Req),
-  Transfer(Req, Req)
+  Transfer(Req, Req),
 }
 
 pub trait LocPair {
@@ -289,7 +290,6 @@ pub trait LocPair {
       TaskType::Transfer => VistedReq::Transfer(self.start().req(), self.end().req())
     }
   }
-
 }
 
 #[derive(Debug, Clone)]
@@ -447,28 +447,6 @@ impl PvTasks {
       }
     }
 
-    #[cfg(debug_assertions)]
-      {
-        for t in &all {
-          let _s = trace_span!("task_check", task=?t, t.t_release, t.tt, t.t_deadline).entered();
-          if t.t_release + t.tt > t.t_deadline {
-            error!("BUG: time-impossible task: {} + {} > {}", t.t_release, t.tt, t.t_deadline);
-            panic!("critical bug")
-          }
-          match &t.ty {
-            TaskType::Request => {
-              let srv_time = data.srv_time[&t.end];
-              let tt_pvdepot = data.travel_time[&(t.end, Loc::Pd(t.p))];
-              let tt_avdepot = data.travel_time[&(Loc::Pd(t.p), Loc::Ad)];
-              if t.t_deadline + srv_time + tt_pvdepot + tt_avdepot > data.tmax {
-                error!(srv_time, tt_pvdepot, tt_avdepot,"BUG: t_deadline is too big, arriving then would violate time horizon")
-              }
-            }
-            _ => {},
-          }
-        }
-      }
-
     // Lookups
     let mut by_start: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc as usize);
     let mut by_end: Map<Loc, Vec<_>> = map_with_capacity(data.n_loc as usize);
@@ -604,15 +582,14 @@ fn aggregate_similar_pvtasks(pvtasks: &[PvTask]) -> Map<PvTask, Vec<PvTask>> {
 
 
 fn av_succ_and_pred(pvtask_to_task: &Map<PvTask, Task>, av_conn: &[(PvTask, PvTask)])
-  -> (Map<Task, Vec<Task>>, Map<Task, Vec<Task>>)
+                    -> (Map<Task, Vec<Task>>, Map<Task, Vec<Task>>)
 {
-
   let av_conn: Set<_> = av_conn.iter()
-    .map(|(pt1, pt2)| (pvtask_to_task[pt1], pvtask_to_task[pt2]) )
+    .map(|(pt1, pt2)| (pvtask_to_task[pt1], pvtask_to_task[pt2]))
     .collect();
 
-  let mut succ : Map<_, Vec<_>> = map_with_capacity(pvtask_to_task.len());
-  let mut pred : Map<_, Vec<_>> = map_with_capacity(pvtask_to_task.len());
+  let mut succ: Map<_, Vec<_>> = map_with_capacity(pvtask_to_task.len());
+  let mut pred: Map<_, Vec<_>> = map_with_capacity(pvtask_to_task.len());
 
   for (t1, t2) in av_conn {
     succ.entry(t1).or_default().push(t2);
@@ -651,26 +628,26 @@ impl Tasks {
     let depots = &[odepot, ddepot];
 
     let task_to_pvtasks = aggregate_pvtasks(&pvtasks.all);
-    let pvtask_to_task : Map<_, _> = task_to_pvtasks.iter()
+    let pvtask_to_task: Map<_, _> = task_to_pvtasks.iter()
       .flat_map(|(&t, pts)| pts.iter().map(move |&pt| (pt, t)))
       .collect();
-    let pvtask : Map<_, _> = pvtask_to_task.iter()
+    let pvtask: Map<_, _> = pvtask_to_task.iter()
       .map(|(&pt, &t)| ((pt.p, t), pt))
       .collect();
     let all: Vec<_> = task_to_pvtasks.keys().chain(depots).copied().collect();
-    let all_non_depot = &all[..all.len()-2];
+    let all_non_depot = &all[..all.len() - 2];
     let pvtask_to_similar_pvtask = aggregate_similar_pvtasks(&pvtasks.all);
 
     let compat_with_av: Map<_, _> = sets.avs()
       .map(|av| {
         let pvs = &data.compat_active_passive[&av];
-        let compat_passive_vehicles : Set<_> = pvs.iter().copied().collect();
+        let compat_passive_vehicles: Set<_> = pvs.iter().copied().collect();
 
-        let compat_tasks : Vec<_> = task_to_pvtasks.iter()
+        let compat_tasks: Vec<_> = task_to_pvtasks.iter()
           .filter_map(|(t, pvs)|
             if pvs.iter().any(|pt| compat_passive_vehicles.contains(&pt.p)) {
               Some(*t)
-            }  else {
+            } else {
               None
             })
           .chain(depots.iter().copied())
@@ -694,8 +671,8 @@ impl Tasks {
     }
 
     let (mut succ, mut pred) = av_succ_and_pred(&pvtask_to_task, &pvtasks.av_task_conn);
-    debug_assert_eq!(all[all.len()-2], odepot);
-    debug_assert_eq!(all[all.len()-1], ddepot);
+    debug_assert_eq!(all[all.len() - 2], odepot);
+    debug_assert_eq!(all[all.len() - 1], ddepot);
     {
       for &t in all_non_depot {
         succ.entry(t).or_default().push(ddepot);
@@ -709,8 +686,8 @@ impl Tasks {
       pred.insert(ddepot, all_non_depot.to_vec());
     }
 
-    let mut pv_succ : Map<_, Vec<_>> = map_with_capacity(pvtasks.all.len());
-    let mut pv_pred : Map<_, Vec<_>> = map_with_capacity(pvtasks.all.len());
+    let mut pv_succ: Map<_, Vec<_>> = map_with_capacity(pvtasks.all.len());
+    let mut pv_pred: Map<_, Vec<_>> = map_with_capacity(pvtasks.all.len());
     for &(t1, t2) in &pvtasks.pv_task_conn {
       pv_succ.entry(t1).or_default().push(t2);
       pv_pred.entry(t2).or_default().push(t1);
@@ -737,7 +714,7 @@ impl Tasks {
       odepot,
       ddepot,
       by_shorthand,
-      by_shorthandpv: pvtasks.by_shorthand
+      by_shorthandpv: pvtasks.by_shorthand,
     }
   }
 }
@@ -795,3 +772,83 @@ pub fn task_incompat(t1: &PvTask, t2: &PvTask, data: &Data) -> Option<Incompatib
   None
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use instances::dataset::IdxNameMap;
+
+  #[instrument(level = "debug", skip(data))]
+  fn check_path(data: &Data, locs: &[Loc], srv_start_time: Time) -> bool {
+    // `t` is the departure time, `srv_start_time` is the time service starts at the first loc
+    let st = data.srv_time.get(&locs[0]).copied().unwrap_or(0);
+    let tw_start = data.start_time.get(&locs[0]).copied().unwrap_or(0);
+    let mut t = std::cmp::max(
+      srv_start_time + st,
+      tw_start
+    );
+    let tw_end = data.end_time.get(&locs[0]).copied().unwrap_or(data.tmax);
+    trace!(loc=?locs[0], st, tw_start, tw_end, t);
+    if t > tw_end {
+      error!(t, tw_end, "tw violation");
+      return false;
+    }
+
+    for (&i, &j) in locs.iter().tuple_windows() {
+      let tt = data.travel_time[&(i,j)];
+      let st = data.srv_time.get(&j).copied().unwrap_or(0);
+      let tw_start = data.start_time.get(&j).copied().unwrap_or(0);
+      t = std::cmp::max(t + tt + st, tw_start);
+      let tw_end = data.end_time.get(&j).copied().unwrap_or(data.tmax);
+      trace!(loc=?j, tt, st, tw_start, tw_end, t);
+      if t > tw_end {
+        error!(t, tw_end, loc=?j, "tw violation");
+        return false;
+      }
+    }
+    true
+  }
+
+  #[instrument(level = "debug", skip(data))]
+  fn check_task_deadline(data: &Data, task: &PvTask) -> bool {
+    use itertools::Itertools;
+
+    match &task.ty {
+      TaskType::Request => {
+        check_path(data, &[task.end, Loc::Pd(task.p), Loc::Ad], task.t_deadline)
+      }
+      TaskType::End | TaskType::Direct => {
+        check_path(data, &[task.end, Loc::Ad], task.t_deadline)
+      }
+      TaskType::Start | TaskType::Transfer => {
+        check_path(data, &[task.end, Loc::ReqD(task.end.req()), Loc::Pd(task.p), Loc::Ad], task.t_deadline)
+      }
+      TaskType::ODepot | TaskType::DDepot => {
+        true
+      }
+    }
+  }
+
+
+  #[test]
+  fn task_deadlines() -> anyhow::Result<()> {
+    crate::logging::init_test_logging();
+
+    for idx in 0..DSET.len() {
+      let data = DSET.load_instance(idx).map(preprocess::full_pipeline)?;
+      let _s = error_span!("task_deadline", idx, instance=%data.id).entered();
+      let sets = Sets::new(&data);
+      let tasks = PvTasks::generate(&data, &sets);
+
+      for t in tasks.all {
+        if t.t_release + t.tt > t.t_deadline {
+          error!("time-impossible task: {} + {} > {}", t.t_release, t.tt, t.t_deadline);
+          panic!()
+        }
+        _s.record("deadline", &t.t_deadline);
+        assert!(check_task_deadline(&data, &t))
+      }
+    }
+
+    Ok(())
+  }
+}
