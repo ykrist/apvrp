@@ -192,19 +192,17 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
         cut += -old_obj;
       }
 
-      // Now need to add the conditional-objective terms
-      for &t in &self.second_last_tasks { // FIXME - only add the second last tasks in THIS MRS, not in all MRS
+      for t in mrs.obj_vars().map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]]) {
+        // Conditional objective terms
         // I(x,y) = sum(Y[a, t, ddepot] for a in A)
-
         // each term is - (1 - I(x, y) ) * c(t) * optimal_time(t) where c(t) = 1
         // = I(x, y) * optimal_time(t) - optimal_time(t)
         let time = self.model.get_solution(&self.vars[&t])?;
         cb.mp_vars.y_sum_av(self.lu, t, self.lu.tasks.ddepot).map(|y| time * y).sum_into(&mut cut);
         cut += -time;
-      }
 
-      // Theta-terms
-      for t in mrs.obj_vars().map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]]) {
+
+        // Theta-terms for this task
         for a in self.lu.sets.avs() {
           if let Some(&theta) = cb.mp_vars.theta.get(&(a, t)) {
             cut += -1 * theta;
