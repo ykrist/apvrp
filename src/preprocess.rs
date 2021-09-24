@@ -43,7 +43,7 @@ fn latest_arrivals(
           let rd = Loc::ReqD(r);
           let pd = Loc::Pd(p);
           trace!(?rd, ?pd);
-          let t = std::cmp::max(
+          let t = std::cmp::min(
             end_time[&rd],
             tmax - travel_time[&(rd, pd)] -  travel_time[&(pd, Loc::Ad)]
           ) - srv_time[&rd];
@@ -51,7 +51,7 @@ fn latest_arrivals(
         })
     })
     .collect()
-} //  data.end_time[&rd] - data.srv_time[&rd]
+}
 
 fn decode_loc_keys<V: Copy>(lss: &LocSetStarts, map: &Map<RawLoc, V>) -> Map<Loc, V> {
   map.iter()
@@ -115,12 +115,21 @@ pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
   let travel_time = decode_locpair_keys(&lss, &data.travel_time);
   let srv_time = decode_loc_keys(&lss, &data.srv_time);
   let start_time = decode_loc_keys(&lss, &data.start_time);
+  let end_time = decode_loc_keys(&lss, &data.end_time);
 
   let pv_req_start_time = earliest_departures(
     &compat_req_passive,
     &travel_time,
     &srv_time,
     &start_time
+  );
+
+  let pv_req_end_time = latest_arrivals(
+    &compat_req_passive,
+    &travel_time,
+    &srv_time,
+    &end_time,
+    data.tmax
   );
 
   Data {
@@ -132,12 +141,13 @@ pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
     tmax: data.tmax,
     srv_time,
     start_time,
-    end_time: decode_loc_keys(&lss, &data.end_time),
+    end_time,
     compat_req_passive,
     compat_passive_req,
     compat_passive_active,
     compat_active_passive,
     pv_req_start_time,
+    pv_req_end_time,
     travel_cost: decode_locpair_keys(&lss, &data.travel_cost),
     travel_time,
     av_groups

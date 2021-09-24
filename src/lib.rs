@@ -44,8 +44,10 @@ pub struct Data {
   pub compat_passive_req: Map<Pv, Vec<Req>>,
   pub compat_passive_active: Map<Pv, Vec<Avg>>,
   pub compat_active_passive: Map<Avg, Vec<Pv>>,
-  /// The earliest time a PV may *leave* the Pickup of request
+  /// The earliest time a PV may *leave* at the pickup location of a request
   pub pv_req_start_time: Map<(Pv, Req), Time>,
+  /// The lates time a PV may *arrive* at the delivery location of a request
+  pub pv_req_end_time: Map<(Pv, Req), Time>,
   pub travel_cost: Map<(Loc, Loc), Cost>,
   pub travel_time: Map<(Loc, Loc), Time>,
   pub av_groups: Map<Avg, Vec<Av>>,

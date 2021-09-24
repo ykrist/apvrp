@@ -353,7 +353,7 @@ impl PvTasks {
       for &r in &data.compat_passive_req[&po.pv()] {
         let rp = Loc::ReqP(r);
         let t_release = data.travel_time[&(Loc::Ao, po)];
-        let t_deadline = data.end_time[&rp.dest()] - data.srv_time[&rp] - data.srv_time[&rp.dest()] - data.travel_time[&(rp, rp.dest())];  // FIXME: use latest_arrivals here
+        let t_deadline = data.pv_req_end_time[&(po.pv(), r)] - data.srv_time[&rp] - data.travel_time[&(rp, rp.dest())];  // FIXME: use latest_arrivals here
         let tt = data.travel_time[&(po, rp)];
 
         // Assumption: if po and rp are marked as compatible, they are time-compatible.
@@ -400,7 +400,7 @@ impl PvTasks {
         let rd = rp.dest();
         let t_release = data.pv_req_start_time[&(pv, rp.req())];
         let tt = data.travel_time[&(rp, rd)];
-        let t_deadline = data.end_time[&rd] - data.srv_time[&rd]; // FIXME: use latest_arrivals here
+        let t_deadline = data.pv_req_end_time[&(pv, rp.req())]; // FIXME: use latest_arrivals here
         trace!(pv, ?rp, t_release, tt, t_deadline);
         if t_release + tt <= t_deadline {
           let task = PvTask::new(
@@ -429,7 +429,7 @@ impl PvTasks {
           }
           let r2d = r2p.dest();
           let tt = data.travel_time[&(r1d, r2p)];
-          let t_deadline = data.end_time[&r2d] - data.srv_time[&r2d] - data.travel_time[&(r2p, r2d)] - data.srv_time[&r2p];  // FIXME: use latest_arrivals here
+          let t_deadline = data.pv_req_end_time[&(pv, r2p.req())] - data.travel_time[&(r2p, r2d)] - data.srv_time[&r2p];  // FIXME: use latest_arrivals here
           let t_release = data.pv_req_start_time[&(pv, r1p.req())] + data.travel_time[&(r1p, r1d)] + data.srv_time[&r1d];
 
           if t_release + tt <= t_deadline {
