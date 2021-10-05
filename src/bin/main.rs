@@ -87,12 +87,12 @@ fn evalutate_full_objective(lookups: &Lookups, mp: &TaskModelMaster, obj_weights
   let dummy_theta = Default::default();
   let mut subproblem = sp::dag::GraphModel::build(&lookups, sol, &dummy_theta)?;
   let sp_obj: Time = subproblem.solve_for_obj()?;
-  let y_obj_tt : Time = subproblem.second_last_tasks
+  let y_obj_tt: Time = subproblem.second_last_tasks
     .iter()
     .map(|t| lookups.data.travel_time_to_ddepot(t))
     .sum();
 
-  let true_cost = mp.obj_val()? + (sp_obj + y_obj_tt ) as Cost * obj_weights.av_finish_time;
+  let true_cost = mp.obj_val()? + (sp_obj + y_obj_tt) as Cost * obj_weights.av_finish_time;
   Ok(true_cost)
 }
 
@@ -119,7 +119,6 @@ fn run(exp: ApvrpExp) -> Result<()> {
     }
     lu
   };
-
   stopwatch.lap(String::from("mp_build"));
   let obj_weights = ObjWeights::default();
   let mut mp = model::mp::TaskModelMaster::build(&lookups)?;
@@ -201,7 +200,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
         Err(e) => {
           callback.flush_cut_cache(&mut mp.model)?;
           mp.model.write(&exp.get_output_path_prefixed("model_debug.lp").to_str().unwrap())?;
-          return Err(e)
+          return Err(e);
         }
       };
 
@@ -227,7 +226,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
     match callback.phase {
       Phase::Final => {
         break;
-      },
+      }
       Phase::NoAvTTCost => {
         if optimal {
           println!("-------------------------------------------------------------------------------------------------egg");
@@ -283,7 +282,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
   Ok(())
 }
 
-#[tracing::instrument(level="error")]
+#[tracing::instrument(level = "error")]
 fn main() -> Result<()> {
   let exp: experiment::ApvrpExp = handle_slurm_args()?;
   exp.write_index_file()?;

@@ -28,6 +28,7 @@ daggylp = { path = "./daggylp", features = ["arrayvec", "viz-extra"] }
 arrayvec = "^0.7"
 structopt = "^0.3"
 glob = "^0.3"
+sawmill = { path = "./sawmill" }
 
 [build-dependencies]
 anyhow = { version = "^1.0", features = ["backtrace"] }

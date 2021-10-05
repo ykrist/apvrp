@@ -234,6 +234,128 @@ impl Solution {
   }
 }
 
+use ShorthandTask::*;
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub enum Constraint {
+  Lb(ShorthandTask, Time),
+  Ub(ShorthandTask, Time),
+  Delta(ShorthandTask, ShorthandTask, Time),
+}
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub enum MpVar {
+  X(Pv, ShorthandTask),
+  Y(Av, ShorthandTask, ShorthandTask),
+}
+
+pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, Constraint> {
+  let mut model = sawmill::InferenceModel::<MpVar, Constraint>::build();
+  let mut included_tasks = Set::default();
+
+  for (pt, t) in lu.tasks.pvtask_to_task.iter() {
+    let s = t.shorthand();
+    let p = pt.p;
+    let x = MpVar::X(p, s);
+
+    match s {
+      Transfer(r1, r2) => {
+        model.add_domain_implication(x, MpVar::X(p, Request(r1)));
+        model.add_domain_implication(x, MpVar::X(p, Request(r2)));
+      }
+      Direct(_) | Request(_) => {}
+      End(p, r) | Start(p, r) => {
+        model.add_domain_implication(x, MpVar::X(p, Request(r)))
+      }
+      ODepot | DDepot => unreachable!(),
+    }
+
+    model.add_implication(x, Constraint::Lb(s, t.t_release));
+    model.add_implication(x, Constraint::Ub(s, t.t_deadline));
+
+    match s {
+      Transfer(r, _) | End(_, r) => {
+        model.add_implication(x, Constraint::Delta(
+          Request(r),
+          s,
+          lu.data.travel_time[&(Loc::ReqP(r), Loc::ReqD(r))] + lu.data.srv_time[&Loc::ReqD(r)],
+        ));
+      }
+      _ => {}
+    }
+
+    match s {
+      Transfer(_, r) | Start(_, r) => {
+        model.add_implication(x, Constraint::Delta(
+          s,
+          Request(r),
+          t.tt + lu.data.srv_time[&Loc::ReqP(r)],
+        ));
+      }
+      _ => {}
+    }
+    included_tasks.insert(s);
+  }
+
+  for (&av, av_tasks) in &lu.tasks.compat_with_av {
+    for &task1 in av_tasks {
+      let t1 = task1.shorthand();
+      for &task2 in &lu.tasks.succ[&task1] {
+        let t2 = task2.shorthand();
+        if av_tasks.contains(&task2) && included_tasks.contains(&t1) && included_tasks.contains(&t2) {
+          let y = MpVar::Y(av, t1, t2);
+          model.add_implication(y, Constraint::Delta(
+            t1,
+            t2,
+            lu.data.travel_time[&(task1.end, task2.start)],
+          ));
+
+          let mut p1 = task1.infer_pv();
+          let mut p2 = task2.infer_pv();
+
+          if task1.end == task2.start {
+            p1 = p1.or(p2);
+            p2 = p2.or(p1);
+            assert_eq!(p1, p2)
+          }
+
+          if let Some(p1) = p1 {
+            model.add_domain_implication(y, MpVar::X(p1, t1))
+          }
+          if let Some(p2) = p2 {
+            model.add_domain_implication(y, MpVar::X(p2, t2))
+          }
+        }
+      }
+    }
+  }
+
+  let constraints = model.constraints().clone();
+  for &c1 in &constraints {
+    for &c2 in &constraints {
+      if c1 != c2 {
+        match (c1, c2) {
+          (Constraint::Lb(t1, lb1), Constraint::Lb(t2, lb2))
+          if t1 == t2 && lb1 > lb2 => {
+            model.add_constraint_domination(c1, c2);
+          },
+          (Constraint::Ub(t1, ub1), Constraint::Ub(t2, ub2))
+          if t1 == t2 && ub1 < ub2 => {
+            model.add_constraint_domination(c1, c2);
+          },
+          (Constraint::Delta(t1, s1, d1), Constraint::Delta(t2, s2, d2))
+          if t1 == t2 && s1 == s2 && d1 > d2 => {
+            model.add_constraint_domination(c1, c2)
+          }
+          _ => {},
+        }
+      }
+    }
+  }
+
+  model.finish()
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -297,3 +419,4 @@ mod tests {
     Ok(())
   }
 }
+
