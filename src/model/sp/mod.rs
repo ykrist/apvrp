@@ -336,15 +336,15 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, Con
       if c1 != c2 {
         match (c1, c2) {
           (Constraint::Lb(t1, lb1), Constraint::Lb(t2, lb2))
-          if t1 == t2 && lb1 > lb2 => {
+          if t1 == t2 && lb1 >= lb2 => {
             model.add_constraint_domination(c1, c2);
           },
           (Constraint::Ub(t1, ub1), Constraint::Ub(t2, ub2))
-          if t1 == t2 && ub1 < ub2 => {
+          if t1 == t2 && ub1 <= ub2 => {
             model.add_constraint_domination(c1, c2);
           },
           (Constraint::Delta(t1, s1, d1), Constraint::Delta(t2, s2, d2))
-          if t1 == t2 && s1 == s2 && d1 > d2 => {
+          if t1 == t2 && s1 == s2 && d1 >= d2 => {
             model.add_constraint_domination(c1, c2)
           }
           _ => {},

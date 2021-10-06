@@ -54,7 +54,7 @@ impl<A: Clause, C: Constraint> CoverAlgorithm<A, C> for Greedy {
         scores.entry(a).and_modify(|x| *x += 1).or_insert(1u32);
       }
     }
-
+    println!("{:?}", scores);
     let mut uncovered_constr = active_constraints.clone();
     let mut cover = Map::default();
 

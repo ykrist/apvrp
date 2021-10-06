@@ -4,10 +4,10 @@ use std::fmt::{self, Write as FmtWrite};
 pub struct InferenceModelViz<'a, A, C: Constraint> {
   model: &'a InferenceModel<A, C>,
   nodes: Map<Node<A, C>, usize>,
-  cover_ctx: Option<cover::Ctx<'a, A, C>>,
   flat: bool,
-  show_active_clauses: bool,
-  show_active_constraints: bool,
+  active_clauses: Option<&'a Set<A>>,
+  active_constraints: Option<&'a Set<C>>,
+  cover: Option<cover::Cover<A, C>>,
   fmt_constraint: fn(&mut String, &C),
   fmt_clause: fn(&mut String, &A),
 }
@@ -31,17 +31,27 @@ impl<'a, A: Clause, C: Constraint> InferenceModelViz<'a, A, C> {
     InferenceModelViz {
       model,
       nodes,
-      cover_ctx: None,
       fmt_clause: fmt_with_debug,
       fmt_constraint: fmt_with_debug,
       flat: false,
-      show_active_clauses: false,
-      show_active_constraints: false,
+      active_clauses: None,
+      active_constraints: None,
+      cover: None,
     }
   }
 
-  pub fn show_active_clauses(mut self, on: bool) -> Self {
-    self.show_active_clauses = on;
+  pub fn active_clauses(mut self, clauses: &'a Set<A>) -> Self {
+    self.active_clauses = Some(clauses);
+    self
+  }
+
+  pub fn active_constraints(mut self, constraints: &'a Set<C>) -> Self {
+    self.active_constraints = Some(constraints);
+    self
+  }
+
+  pub fn cover(mut self, cover: cover::Cover<A, C>) -> Self {
+    self.cover = Some(cover);
     self
   }
 
@@ -55,23 +65,8 @@ impl<'a, A: Clause, C: Constraint> InferenceModelViz<'a, A, C> {
     self
   }
 
-  pub fn cover<'b>(mut self, active_clauses: &'b Set<A>, active_constraints: &'b Set<C>) -> InferenceModelViz<'b, A, C>
-    where
-      'a: 'b
-  {
-    InferenceModelViz {
-      cover_ctx: Some(self.model.cover_ctx(active_clauses, active_constraints)),
-      ..self
-    }
-  }
-
   pub fn fmt_constraint(mut self, f: fn(&mut String, &C)) -> Self {
     self.fmt_constraint;
-    self
-  }
-
-  pub fn show_active_constraints(mut self, on: bool) -> Self {
-    self.show_active_constraints = on;
     self
   }
 
@@ -82,11 +77,26 @@ impl<'a, A: Clause, C: Constraint> InferenceModelViz<'a, A, C> {
   fn node_is_active(&self, n: &Node<A, C>) -> bool {
     match n {
       Node::Constr(c) => {
-        !self.show_active_constraints || self.cover_ctx.as_ref().map(|ctx| ctx.active_constraints.contains(c)).unwrap_or(true)
+        self.active_constraints.map(|s| s.contains(c)).unwrap_or(true)
       }
       Node::Clause(c) => {
-        !self.show_active_clauses || self.cover_ctx.as_ref().map(|ctx| ctx.active_clauses.contains(c)).unwrap_or(true)
+        self.active_clauses.map(|s| s.contains(c)).unwrap_or(true)
       }
+    }
+  }
+
+  fn node_is_in_cover(&self, n: &Node<A, C>) -> bool {
+    if let Some(cover) = self.cover.as_ref() {
+      match n {
+        Node::Constr(c) => {
+          cover.values().any(|s| s.contains(c))
+        }
+        Node::Clause(c) => {
+          cover.contains_key(c)
+        }
+      }
+    } else {
+      false
     }
   }
 }
@@ -163,13 +173,19 @@ impl<'a, A: Clause, C: Constraint> dot::Labeller<'a, Node<A, C>, (Node<A, C>, No
       Node::Clause(_) => "/pastel28/2",
     };
 
+    let (border_color, border_weight) = if self.node_is_in_cover(n) {
+      ("red", "3")
+    } else {
+      ("black", "0")
+    };
+
     let mut html = format!(
       concat!(
       r#"<FONT FACE="fantasque sans mono">"#,
-      r#"<TABLE BORDER="0" CELLSPACING="0" CELLBORDER="1" BGCOLOR="{}">"#,
+      r#"<TABLE CELLSPACING="0" CELLBORDER="1" BGCOLOR="{}" COLOR="{}" BORDER="{}">"#,
       r#"<TR><TD>"#,
       ),
-      color
+      color, border_color, border_weight
     );
 
     match n {

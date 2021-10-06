@@ -198,9 +198,6 @@ pub struct InferenceModel<A, C> {
 }
 
 
-#[derive(Debug, Copy, Clone)]
-pub struct Cover;
-
 impl<A: Clause, C: Constraint> InferenceModel<A, C> {
   pub fn constraints<'a>(&'a self) -> impl Iterator<Item=&'a C> + 'a {
     self.impliers.keys()
