@@ -1,11 +1,14 @@
 use crate::*;
-use crate::solution::Solution;
+use crate::solution::MpSolution;
 use super::{cb, cb::CutType};
 use smallvec::SmallVec;
 use grb::constr::IneqExpr;
 use grb::prelude::*;
 use crate::logging::*;
 use crate::model::{EdgeConstrKind, edge_constr_kind};
+use super::mp::MpVar;
+
+use IdxTask::*;
 
 use crate::utils::{iter_pairs, VarIterExt, PeekableExt};
 use daggylp::Weight;
@@ -28,6 +31,21 @@ pub enum Iis {
   /// Tasks should be ordered according to the cycle.  First task should NOT be the same as the last task.
   Cycle(SmallVec<[Task; 10]>),
 }
+
+impl Iis {
+  // pub fn constraints<'a>(&'a self) -> impl Iterator<Item=&'a SpConstr> + 'a {
+  //   todo!()
+  // }
+}
+
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub enum SpConstr {
+  Lb(IdxTask, Time),
+  Ub(IdxTask, Time),
+  Delta(IdxTask, IdxTask, Time),
+}
+
 
 #[derive(Debug)]
 pub enum SpStatus<O, I> {
@@ -54,9 +72,9 @@ pub trait Subproblem<'a>: Sized {
   // Find and remove one or more IIS when infeasible
   fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Self::IisConstraintSets>;
   // Find and remove one or more MRS when optimal
-  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, o: Self::Optimal) -> Result<()>;
+  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>,  o: Self::Optimal) -> Result<()>;
 
-  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, estimate: Time) -> Result<Option<Time>> {
+  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>, estimate: Time) -> Result<Option<Time>> {
     // TODO: stop early once the IIS covers start getting too big
     //  Can use cb.params, will need find the size of the cover before constructing the constraint
 
@@ -64,7 +82,7 @@ pub trait Subproblem<'a>: Sized {
       match self.solve()? {
         SpStatus::Optimal(sp_obj, o) => {
           if estimate < sp_obj {
-            self.add_optimality_cuts(cb, o)?;
+            self.add_optimality_cuts(cb, theta, o)?;
           }
           if solve == 0 {
             return Ok(Some(sp_obj))
@@ -215,7 +233,7 @@ fn iter_edge_constraints<'a>(pv_route: &'a [PvTask]) -> impl Iterator<Item=XEdge
   })
 }
 
-impl Solution {
+impl MpSolution {
   fn iter_sp_vars<'a>(&'a self) -> impl Iterator<Item=&'a PvTask> + 'a {
     self.pv_cycles.iter().flat_map(|c| c.unique_tasks())
       .chain(self.pv_routes.iter().flat_map(|r| r.iter()))
@@ -234,27 +252,15 @@ impl Solution {
   }
 }
 
-use ShorthandTask::*;
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
-pub enum Constraint {
-  Lb(ShorthandTask, Time),
-  Ub(ShorthandTask, Time),
-  Delta(ShorthandTask, ShorthandTask, Time),
-}
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
-pub enum MpVar {
-  X(Pv, ShorthandTask),
-  Y(Av, ShorthandTask, ShorthandTask),
-}
 
-pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, Constraint> {
-  let mut model = sawmill::InferenceModel::<MpVar, Constraint>::build();
+pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpConstr> {
+  let mut model = sawmill::InferenceModel::<MpVar, SpConstr>::build();
   let mut included_tasks = Set::default();
 
   for (pt, t) in lu.tasks.pvtask_to_task.iter() {
-    let s = t.shorthand();
+    let s = t.index();
     let p = pt.p;
     let x = MpVar::X(p, s);
 
@@ -270,12 +276,12 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, Con
       ODepot | DDepot => unreachable!(),
     }
 
-    model.add_implication(x, Constraint::Lb(s, t.t_release));
-    model.add_implication(x, Constraint::Ub(s, t.t_deadline));
+    model.add_implication(x, SpConstr::Lb(s, t.t_release));
+    model.add_implication(x, SpConstr::Ub(s, t.t_deadline));
 
     match s {
       Transfer(r, _) | End(_, r) => {
-        model.add_implication(x, Constraint::Delta(
+        model.add_implication(x, SpConstr::Delta(
           Request(r),
           s,
           lu.data.travel_time[&(Loc::ReqP(r), Loc::ReqD(r))] + lu.data.srv_time[&Loc::ReqD(r)],
@@ -286,7 +292,7 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, Con
 
     match s {
       Transfer(_, r) | Start(_, r) => {
-        model.add_implication(x, Constraint::Delta(
+        model.add_implication(x, SpConstr::Delta(
           s,
           Request(r),
           t.tt + lu.data.srv_time[&Loc::ReqP(r)],
@@ -299,12 +305,12 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, Con
 
   for (&av, av_tasks) in &lu.tasks.compat_with_av {
     for &task1 in av_tasks {
-      let t1 = task1.shorthand();
+      let t1 = task1.index();
       for &task2 in &lu.tasks.succ[&task1] {
-        let t2 = task2.shorthand();
+        let t2 = task2.index();
         if av_tasks.contains(&task2) && included_tasks.contains(&t1) && included_tasks.contains(&t2) {
           let y = MpVar::Y(av, t1, t2);
-          model.add_implication(y, Constraint::Delta(
+          model.add_implication(y, SpConstr::Delta(
             t1,
             t2,
             lu.data.travel_time[&(task1.end, task2.start)],
@@ -335,15 +341,15 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, Con
     for &c2 in &constraints {
       if c1 != c2 {
         match (c1, c2) {
-          (Constraint::Lb(t1, lb1), Constraint::Lb(t2, lb2))
+          (SpConstr::Lb(t1, lb1), SpConstr::Lb(t2, lb2))
           if t1 == t2 && lb1 >= lb2 => {
             model.add_constraint_domination(c1, c2);
           },
-          (Constraint::Ub(t1, ub1), Constraint::Ub(t2, ub2))
+          (SpConstr::Ub(t1, ub1), SpConstr::Ub(t2, ub2))
           if t1 == t2 && ub1 <= ub2 => {
             model.add_constraint_domination(c1, c2);
           },
-          (Constraint::Delta(t1, s1, d1), Constraint::Delta(t2, s2, d2))
+          (SpConstr::Delta(t1, s1, d1), SpConstr::Delta(t2, s2, d2))
           if t1 == t2 && s1 == s2 && d1 >= d2 => {
             model.add_constraint_domination(c1, c2)
           }
@@ -357,6 +363,38 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, Con
 }
 
 
+pub struct CoverLift<'a> {
+  lookups: &'a Lookups,
+}
+
+impl<'a> CoverLift<'a> {
+  pub fn new(lookups: &'a Lookups) -> Self {
+    CoverLift{ lookups }
+  }
+}
+
+impl sawmill::lift::Lift<MpVar, SpConstr> for CoverLift<'_> {
+  /// Given a clause, this method should call a `ctx.add_*()` method for each clause which is mutually exclusive with `a`.
+  fn visit_candidate_siblings(&mut self, ctx: &mut sawmill::lift::Ctx<MpVar, SpConstr>, var: &MpVar, _cons: &Set<SpConstr>) {
+    match var {
+      &MpVar::X(p, t) => {
+        for q in self.lookups.sets.pvs() {
+          if p != q {
+            ctx.add_checked(MpVar::X(q, t));
+          }
+        }
+      }
+      &MpVar::Y(a, t1, t2) => {
+        for b in self.lookups.sets.avs() {
+          if a != b {
+            ctx.add_checked(MpVar::Y(b, t1, t2));
+          }
+        }
+      },
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -368,9 +406,9 @@ mod tests {
   use anyhow::Context;
   use crate::test::*;
 
-  fn compare_one(lu: &Lookups, sol: &Solution) -> Result<()> {
+  fn compare_one(lu: &Lookups, sol: &MpSolution) -> Result<()> {
     let dummy_theta = Default::default();
-    let mut dagmodel = dag::GraphModel::build(lu, sol, &dummy_theta)?;
+    let mut dagmodel = dag::GraphModel::build(lu, sol)?;
     let mut lpmodel = lp::TimingSubproblem::build(lu, sol)?;
 
     let dag_result = dagmodel.solve()?;

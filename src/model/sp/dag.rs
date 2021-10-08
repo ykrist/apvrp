@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 
 use crate::*;
 use super::*;
-use crate::solution::Solution;
+use crate::solution::MpSolution;
 use crate::model::cb;
 use crate::utils::{iter_pairs, VarIterExt};
 
@@ -15,7 +15,6 @@ use crate::model::cb::CutType;
 pub struct GraphModel<'a> {
   pub second_last_tasks: SmallVec<[Task; NUM_AV_UB]>,
   pub lu: &'a Lookups,
-  pub theta_val: &'a Map<(Avg, Task), Time>, // TODO make this an argument to add_optimality_cuts()
   pub vars: Map<Task, Var>,
   /// ODepot var is *not* in this lookup.
   pub var_to_task: Map<Var, PvTask>,
@@ -24,11 +23,11 @@ pub struct GraphModel<'a> {
 }
 
 impl<'a> GraphModel<'a> {
-  fn optimality_cut_required(&self, mrs: &MrsTree) -> bool {
+  fn optimality_cut_required(&self, theta: &Map<(Avg, Task), Time>, mrs: &MrsTree) -> bool {
     let mut theta_sum = 0;
     for t in mrs.obj_vars().map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]]) {
       for a in self.lu.sets.avs() {
-        if let Some(&theta_v) = self.theta_val.get(&(a, t)) {
+        if let Some(&theta_v) = theta.get(&(a, t)) {
           theta_sum += theta_v;
         }
       }
@@ -39,8 +38,8 @@ impl<'a> GraphModel<'a> {
 
 
 impl<'a> GraphModel<'a> {
-  #[tracing::instrument(level = "trace", skip(lu, sol, theta_val))]
-  pub fn build(lu: &'a Lookups, sol: &'a Solution, theta_val: &'a Map<(Avg, Task), Time>) -> Result<Self> {
+  #[tracing::instrument(level = "trace", skip(lu, sol))]
+  pub fn build(lu: &'a Lookups, sol: &'a MpSolution) -> Result<Self> {
     let mut model = Graph::new();
     let mut vars = map_with_capacity(lu.data.n_req as usize * 2);
     let mut var_to_task = map_with_capacity(lu.data.n_req as usize * 2);
@@ -105,7 +104,6 @@ impl<'a> GraphModel<'a> {
     Ok(GraphModel {
       second_last_tasks,
       lu,
-      theta_val,
       vars,
       var_to_task,
       edges: constraints,
@@ -167,9 +165,9 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
     Ok(std::iter::once(iis))
   }
 
-  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, _o: Self::Optimal) -> Result<()> {
+  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>, _o: Self::Optimal) -> Result<()> {
     for mrs in self.model.compute_mrs() {
-      if !self.optimality_cut_required(&mrs) {
+      if !self.optimality_cut_required(theta, &mrs) {
         continue;
       }
 

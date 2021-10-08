@@ -233,7 +233,7 @@ pub struct Cb<'a> {
   #[cfg(debug_assertions)]
   pub error: Option<CbError>,
 
-  pub cached_solution: Option<Solution>,
+  pub cached_solution: Option<MpSolution>,
 }
 
 impl<'a> Cb<'a> {
@@ -726,7 +726,7 @@ impl<'a> Cb<'a> {
     Ok(construct_pv_routes(task_pairs))
   }
 
-  fn av_travel_time_obj_component(&self, sol: &Solution, sp_obj: Time) -> Cost {
+  fn av_travel_time_obj_component(&self, sol: &MpSolution, sp_obj: Time) -> Cost {
     debug_assert!(sol.pv_cycles.is_empty());
     debug_assert!(sol.av_cycles.is_empty());
     let av_tt = sp_obj + sol.av_routes.iter()
@@ -736,7 +736,7 @@ impl<'a> Cb<'a> {
   }
 
   #[instrument(level="info", name="save_sol", skip(self, sol))]
-  fn update_cached_solution(&mut self, mut sol: Solution, obj: Cost) -> bool {
+  fn update_cached_solution(&mut self, mut sol: MpSolution, obj: Cost) -> bool {
     match self.cached_solution.as_ref() {
       Some(sp) => {
         let saved_obj = sp.objective.unwrap();
@@ -753,7 +753,7 @@ impl<'a> Cb<'a> {
     true
   }
 
-  fn suggest_solution(&self, ctx: &MIPNodeCtx, sol: &Solution) -> Result<()> {
+  fn suggest_solution(&self, ctx: &MIPNodeCtx, sol: &MpSolution) -> Result<()> {
     debug_assert!(sol.av_cycles.is_empty());
     debug_assert!(sol.pv_cycles.is_empty());
     let xvars = sol.pv_routes.iter().flat_map(|r| r.iter().map(|t| self.mp_vars.x[t]));
@@ -813,7 +813,7 @@ impl<'a> Callback for Cb<'a> {
             let sp_idx = self.stats.inc_n_sp();
             let _span = error_span!("sp", sp_idx, estimate=tracing::field::Empty).entered();
             info!("no heuristic cuts found, solving LP subproblem");
-            let sol = Solution { objective: None, av_cycles, av_routes, pv_routes, pv_cycles };
+            let sol = MpSolution { objective: None, av_cycles, av_routes, pv_routes, pv_cycles };
             if let Some(sol_log) = self.sol_log.as_mut() {
               serde_json::to_writer(&mut *sol_log, &sol.to_serialisable())?; // need to re-borrow here
               write!(sol_log, "\n")?;
@@ -824,12 +824,12 @@ impl<'a> Callback for Cb<'a> {
             tracing::span::Span::current().record("estimate", &estimate);
             let sp_obj = match self.params.sp {
               SpSolverKind::Dag => {
-                let mut sp = dag::GraphModel::build(self.lu, &sol, &theta)?;
-                sp.solve_subproblem_and_add_cuts(self, estimate)?
+                let mut sp = dag::GraphModel::build(self.lu, &sol)?;
+                sp.solve_subproblem_and_add_cuts(self, &theta, estimate)?
               }
               SpSolverKind::Lp => {
                 let mut sp = lp::TimingSubproblem::build(self.lu, &sol)?;
-                sp.solve_subproblem_and_add_cuts(self, estimate)?
+                sp.solve_subproblem_and_add_cuts(self, &theta, estimate)?
               }
             };
 

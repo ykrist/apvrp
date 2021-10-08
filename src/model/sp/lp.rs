@@ -39,7 +39,7 @@ pub struct TimingConstraints {
 }
 
 impl TimingConstraints {
-  pub fn build(lu: &Lookups, sol: &Solution, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
+  pub fn build(lu: &Lookups, sol: &MpSolution, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
     let _span = error_span!("constraints").entered();
 
     let mut edge_constraints = map_with_capacity(2 * vars.len());
@@ -99,12 +99,12 @@ pub struct TimingSubproblem<'a> {
   pub second_last_tasks: SmallVec<[Task; NUM_AV_UB]>,
   pub cons: TimingConstraints,
   pub model: Model,
-  pub mp_sol: &'a Solution,
+  pub mp_sol: &'a MpSolution,
   pub lu: &'a Lookups,
 }
 
 impl<'a> TimingSubproblem<'a> {
-  pub fn build(lu: &'a Lookups, sol: &'a Solution) -> Result<TimingSubproblem<'a>> {
+  pub fn build(lu: &'a Lookups, sol: &'a MpSolution) -> Result<TimingSubproblem<'a>> {
     let _span = error_span!("sp_build").entered();
 
     let mut model = ENV.with(|env| Model::with_env("subproblem", env))?;
@@ -288,7 +288,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     Ok(std::iter::once(iis))
   }
 
-  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, _: ()) -> Result<()> {
+  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, _theta: &Map<(Avg, Task), Time> , _: ()) -> Result<()> {
     let sp_obj = self.model.get_attr(attr::ObjVal)?;
     let _s = trace_span!("optimality_cut", obj=%sp_obj).entered();
     let mut lhs = Expr::default();

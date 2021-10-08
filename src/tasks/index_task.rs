@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub enum ShorthandPvTask {
+pub enum IdxPvTask {
   Transfer(Pv, Req, Req),
   Start(Pv, Req),
   Request(Pv, Req),
@@ -13,7 +13,7 @@ pub enum ShorthandPvTask {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub enum ShorthandTask {
+pub enum IdxTask {
   Transfer(Req, Req),
   Start(Pv, Req),
   Request(Req),
@@ -24,63 +24,63 @@ pub enum ShorthandTask {
 }
 
 
-impl From<ShorthandPvTask> for ShorthandTask {
-  fn from(t: ShorthandPvTask) -> Self {
+impl From<IdxPvTask> for IdxTask {
+  fn from(t: IdxPvTask) -> Self {
     match t {
-      ShorthandPvTask::Request(_, r) => ShorthandTask::Request(r),
-      ShorthandPvTask::Transfer(_, r1, r2) => ShorthandTask::Transfer(r1, r2),
-      ShorthandPvTask::Start(p, r) => ShorthandTask::Start(p, r),
-      ShorthandPvTask::End(p, r) => ShorthandTask::End(p, r),
-      ShorthandPvTask::Direct(p) => ShorthandTask::Direct(p),
+      IdxPvTask::Request(_, r) => IdxTask::Request(r),
+      IdxPvTask::Transfer(_, r1, r2) => IdxTask::Transfer(r1, r2),
+      IdxPvTask::Start(p, r) => IdxTask::Start(p, r),
+      IdxPvTask::End(p, r) => IdxTask::End(p, r),
+      IdxPvTask::Direct(p) => IdxTask::Direct(p),
     }
   }
 }
 
-pub trait Shorthand {
-  type Ty;
+pub trait TaskIndex {
+  type Index;
 
-  fn shorthand(&self) -> Self::Ty;
+  fn index(&self) -> Self::Index;
 }
 
-impl Shorthand for Task {
-  type Ty = ShorthandTask;
+impl TaskIndex for Task {
+  type Index = IdxTask;
 
-  fn shorthand(&self) -> Self::Ty {
+  fn index(&self) -> Self::Index {
     match self.ty {
-      TaskType::ODepot => ShorthandTask::ODepot,
-      TaskType::DDepot => ShorthandTask::DDepot,
-      TaskType::Request => ShorthandTask::Request(self.start.req()),
-      TaskType::Transfer => ShorthandTask::Transfer(self.start.req(), self.end.req()),
-      TaskType::Start => ShorthandTask::Start(self.start.pv(), self.end.req()),
-      TaskType::End => ShorthandTask::End(self.end.pv(), self.start.req()),
-      TaskType::Direct => ShorthandTask::Direct(self.start.pv()),
+      TaskType::ODepot => IdxTask::ODepot,
+      TaskType::DDepot => IdxTask::DDepot,
+      TaskType::Request => IdxTask::Request(self.start.req()),
+      TaskType::Transfer => IdxTask::Transfer(self.start.req(), self.end.req()),
+      TaskType::Start => IdxTask::Start(self.start.pv(), self.end.req()),
+      TaskType::End => IdxTask::End(self.end.pv(), self.start.req()),
+      TaskType::Direct => IdxTask::Direct(self.start.pv()),
     }
   }
 }
 
-impl Shorthand for PvTask {
-  type Ty = ShorthandPvTask;
+impl TaskIndex for PvTask {
+  type Index = IdxPvTask;
 
-  fn shorthand(&self) -> Self::Ty {
+  fn index(&self) -> Self::Index {
     match self.ty {
-      TaskType::Request => ShorthandPvTask::Request(self.p, self.start.req()),
-      TaskType::Transfer => ShorthandPvTask::Transfer(self.p, self.start.req(), self.end.req()),
-      TaskType::Start => ShorthandPvTask::Start(self.p, self.end.req()),
-      TaskType::End => ShorthandPvTask::End(self.p, self.start.req()),
-      TaskType::Direct => ShorthandPvTask::Direct(self.p),
+      TaskType::Request => IdxPvTask::Request(self.p, self.start.req()),
+      TaskType::Transfer => IdxPvTask::Transfer(self.p, self.start.req(), self.end.req()),
+      TaskType::Start => IdxPvTask::Start(self.p, self.end.req()),
+      TaskType::End => IdxPvTask::End(self.p, self.start.req()),
+      TaskType::Direct => IdxPvTask::Direct(self.p),
       _ => unreachable!(),
     }
   }
 }
 
-impl<T> Shorthand for [T]
+impl<T> TaskIndex for [T]
   where
-    T: Shorthand,
+    T: TaskIndex,
 {
-  type Ty = Vec<T::Ty>;
+  type Index = Vec<T::Index>;
 
-  fn shorthand(&self) -> Self::Ty {
-    self.iter().map(|t| t.shorthand()).collect()
+  fn index(&self) -> Self::Index {
+    self.iter().map(|t| t.index()).collect()
   }
 }
 
@@ -148,10 +148,10 @@ mod parsers {
       };
   }
 
-  impl FromStr for ShorthandPvTask {
+  impl FromStr for IdxPvTask {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-      use ShorthandPvTask::*;
+      use IdxPvTask::*;
 
       one_of!(s =>
         [trn_p => p, r1, r2 => Transfer]
@@ -166,10 +166,10 @@ mod parsers {
   }
 
 
-  impl FromStr for ShorthandTask {
+  impl FromStr for IdxTask {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-      use ShorthandTask::*;
+      use IdxTask::*;
 
       one_of!(s =>
         [req => p => Request]

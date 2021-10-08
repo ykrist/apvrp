@@ -16,9 +16,9 @@ pub type TaskId = u32;
 mod checks;
 pub mod chain;
 
-mod shorthand;
+mod index_task;
 
-pub use shorthand::*;
+pub use index_task::*;
 use arrayvec::ArrayVec;
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -312,8 +312,8 @@ pub struct Tasks {
   pub pv_pred: Map<PvTask, Vec<PvTask>>,
   pub odepot: Task,
   pub ddepot: Task,
-  pub by_shorthandpv: Map<ShorthandPvTask, PvTask>,
-  pub by_shorthand: Map<ShorthandTask, Task>,
+  pub by_index_pv: Map<IdxPvTask, PvTask>,
+  pub by_index: Map<IdxTask, Task>,
 }
 
 // Optimisation(???): we could store Vec<TaskId> instead
@@ -322,7 +322,7 @@ struct PvTasks {
   pub all: Vec<PvTask>,
   pub by_start: Map<Loc, Vec<PvTask>>,
   pub by_end: Map<Loc, Vec<PvTask>>,
-  pub by_shorthand: Map<ShorthandPvTask, PvTask>,
+  pub by_index: Map<IdxPvTask, PvTask>,
   pub av_task_conn: Vec<(PvTask, PvTask)>,
   pub pv_task_conn: Vec<(PvTask, PvTask)>,
 }
@@ -458,7 +458,7 @@ impl PvTasks {
 
     let by_shorthand: Map<_, _> = all.iter()
       .copied()
-      .map(|t| (t.shorthand(), t))
+      .map(|t| (t.index(), t))
       .collect();
 
     let av_task_conn = build_av_task_connections(data, &all);
@@ -468,7 +468,7 @@ impl PvTasks {
       all,
       by_start,
       by_end,
-      by_shorthand,
+      by_index: by_shorthand,
       av_task_conn,
       pv_task_conn,
     }
@@ -494,20 +494,20 @@ fn build_av_task_connections(data: &Data,
 fn build_pv_task_connections(data: &Data,
                              all: &Vec<PvTask>,
                              by_start: &Map<Loc, Vec<PvTask>>,
-                             by_shorthand: &Map<ShorthandPvTask, PvTask>,
+                             by_index_task: &Map<IdxPvTask, PvTask>,
 ) -> Vec<(PvTask, PvTask)> {
-  use ShorthandPvTask::*;
+  use IdxPvTask::*;
   let mut connections = Vec::with_capacity(all.len());
 
   for &t1 in all {
     match t1.ty {
       TaskType::ODepot | TaskType::DDepot | TaskType::Direct | TaskType::End => {}
       TaskType::Start => {
-        connections.push((t1, by_shorthand[&Request(t1.p, t1.end.req())]));
+        connections.push((t1, by_index_task[&Request(t1.p, t1.end.req())]));
       }
 
       TaskType::Transfer => {
-        connections.push((t1, by_shorthand[&Request(t1.p, t1.end.req())]));
+        connections.push((t1, by_index_task[&Request(t1.p, t1.end.req())]));
       }
 
       TaskType::Request => {
@@ -521,11 +521,11 @@ fn build_pv_task_connections(data: &Data,
               let r_after = t2.end.req();
 
               let path = [
-                by_shorthand[&Start(p, r)],
+                by_index_task[&Start(p, r)],
                 t1,
                 t2,
-                by_shorthand[&Request(p, r_after)],
-                by_shorthand[&End(p, r_after)],
+                by_index_task[&Request(p, r_after)],
+                by_index_task[&End(p, r_after)],
               ];
 
               if schedule::check_pv_route(data, &path) {
@@ -694,7 +694,7 @@ impl Tasks {
     }
 
     let by_shorthand: Map<_, _> = all.iter()
-      .map(|&t| (t.shorthand(), t))
+      .map(|&t| (t.index(), t))
       .collect();
 
     Tasks {
@@ -713,8 +713,8 @@ impl Tasks {
       pv_pred,
       odepot,
       ddepot,
-      by_shorthand,
-      by_shorthandpv: pvtasks.by_shorthand,
+      by_index: by_shorthand,
+      by_index_pv: pvtasks.by_index,
     }
   }
 }

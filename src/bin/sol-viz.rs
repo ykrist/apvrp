@@ -32,8 +32,7 @@ fn main() -> Result<()> {
   let sol = SerialisableSolution::from_json_file(solution_file)?;
   let sol = sol.to_solution(&lookups);
 
-  let dummy_theta = &Default::default();
-  let mut graph = GraphModel::build(&lookups, &sol, dummy_theta)?;
+  let mut graph = GraphModel::build(&lookups, &sol)?;
 
   match graph.solve()? {
     SpStatus::Optimal(_, _) => {

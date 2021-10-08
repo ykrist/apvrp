@@ -1,5 +1,6 @@
 use crate::*;
 use crate::model::sp::{lp::TimingSubproblem, Subproblem};
+use crate::model::mp::MpVar;
 use serde::{Serialize, Deserialize};
 use std::fs::read_to_string;
 use std::path::Path;
@@ -383,7 +384,7 @@ pub fn get_tasks_by_pv<M: QueryVarValues>(ctx: &M, xvars: &Map<PvTask, Var>) -> 
 
 
 #[derive(Debug, Clone)]
-pub struct Solution {
+pub struct MpSolution {
   /// Total objective cost (optional)
   pub objective: Option<Cost>,
   pub av_routes: Vec<AvRoute>,
@@ -392,14 +393,32 @@ pub struct Solution {
   pub pv_cycles: Vec<PvCycle>,
 }
 
-impl Solution {
+impl MpSolution {
+  pub fn mp_vars<'a>(&'a self) -> impl Iterator<Item=MpVar> + 'a {
+    self.av_routes.iter()
+      .flat_map(|r| {
+        r.iter_edges().map(move |(t1, t2)| {
+          MpVar::Y(r.av(), t1.index(), t2.index())
+        })
+      })
+      .chain(self.av_cycles.iter().flat_map(|c|
+        c.iter_edges().map(move |(t1, t2)| MpVar::Y(c.av(), t1.index(), t2.index()))
+      ))
+      .chain(self.pv_routes.iter().flat_map(|r|
+        r.iter().map(|t| MpVar::X(t.p, t.index().into()))
+      ))
+      .chain(self.pv_cycles.iter().flat_map(|r|
+        r.unique_tasks().iter().map(|t| MpVar::X(t.p, t.index().into()))
+      ))
+  }
+
   pub fn to_serialisable(&self) -> SerialisableSolution {
     SerialisableSolution {
       objective: self.objective,
-      av_routes: self.av_routes.iter().map(|r| (r.av(), r.shorthand())).collect(),
-      av_cycles: self.av_cycles.iter().map(|r| (r.av(), r.shorthand())).collect(),
-      pv_routes: self.pv_routes.iter().map(|r| (r.pv(), r.shorthand())).collect(),
-      pv_cycles: self.pv_cycles.iter().map(|r| (r.pv(), r.shorthand())).collect(),
+      av_routes: self.av_routes.iter().map(|r| (r.av(), r.index())).collect(),
+      av_cycles: self.av_cycles.iter().map(|r| (r.av(), r.index())).collect(),
+      pv_routes: self.pv_routes.iter().map(|r| (r.pv(), r.index())).collect(),
+      pv_cycles: self.pv_cycles.iter().map(|r| (r.pv(), r.index())).collect(),
     }
   }
 
@@ -410,7 +429,7 @@ impl Solution {
     let pv_tasks = get_var_values(&mp.model, &mp.vars.x)?.map(|(key, _)| key);
     let (pv_routes, pv_cycles) = construct_pv_routes(pv_tasks);
 
-    Ok(Solution {
+    Ok(MpSolution {
       objective: Some(mp.obj_val()?),
       av_routes,
       av_cycles,
@@ -437,18 +456,18 @@ impl Solution {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerialisableSolution {
   pub objective: Option<Cost>,
-  pub av_routes: Vec<(Avg, Vec<ShorthandTask>)>,
-  pub av_cycles: Vec<(Avg, Vec<ShorthandTask>)>,
-  pub pv_routes: Vec<(Pv, Vec<ShorthandPvTask>)>,
-  pub pv_cycles: Vec<(Pv, Vec<ShorthandPvTask>)>,
+  pub av_routes: Vec<(Avg, Vec<IdxTask>)>,
+  pub av_cycles: Vec<(Avg, Vec<IdxTask>)>,
+  pub pv_routes: Vec<(Pv, Vec<IdxPvTask>)>,
+  pub pv_cycles: Vec<(Pv, Vec<IdxPvTask>)>,
 }
 
 impl SerialisableSolution {
-  pub fn to_solution(&self, tasks: impl AsRef<Tasks>) -> Solution {
+  pub fn to_solution(&self, tasks: impl AsRef<Tasks>) -> MpSolution {
     let tasks = tasks.as_ref();
 
-    let lookup_shorthand = |path: &[ShorthandTask]| -> Vec<Task> {
-      path.iter().map(move |t| tasks.by_shorthand[t]).collect()
+    let lookup_shorthand = |path: &[IdxTask]| -> Vec<Task> {
+      path.iter().map(move |t| tasks.by_index[t]).collect()
     };
 
     let av_routes = self.av_routes.iter()
@@ -459,8 +478,8 @@ impl SerialisableSolution {
       .map(|(av, cycle)| AvCycle::new(*av, lookup_shorthand(cycle)))
       .collect();
 
-    let lookup_shorthand = |path: &[ShorthandPvTask]| -> Vec<PvTask> {
-      path.iter().map(move |t| tasks.by_shorthandpv[t]).collect()
+    let lookup_shorthand = |path: &[IdxPvTask]| -> Vec<PvTask> {
+      path.iter().map(move |t| tasks.by_index_pv[t]).collect()
     };
 
     let pv_routes = self.pv_routes.iter()
@@ -471,7 +490,7 @@ impl SerialisableSolution {
       .map(|(_, cycle)| PvCycle::new( lookup_shorthand(cycle)))
       .collect();
 
-    Solution {
+    MpSolution {
       objective: self.objective,
       av_routes,
       av_cycles,
@@ -631,8 +650,8 @@ mod debugging {
 
   impl JsonTask {
     #[tracing::instrument(level = "trace", name = "json_task_to_sh_task")]
-    pub fn to_shorthand(&self, lss: &LocSetStarts) -> ShorthandPvTask {
-      use ShorthandPvTask::*;
+    pub fn to_shorthand(&self, lss: &LocSetStarts) -> IdxPvTask {
+      use IdxPvTask::*;
 
       let start = lss.decode(self.start);
       let end = lss.decode(self.end);
@@ -665,7 +684,7 @@ mod debugging {
   }
 
 
-  pub fn load_michael_soln(path: impl AsRef<Path>, tasks: impl AsRef<Tasks>, lss: &LocSetStarts) -> Result<Solution> {
+  pub fn load_michael_soln(path: impl AsRef<Path>, tasks: impl AsRef<Tasks>, lss: &LocSetStarts) -> Result<MpSolution> {
     let tasks = tasks.as_ref();
     let s = std::fs::read_to_string(path)?;
     let soln: JsonSolution = serde_json::from_str(&s)?;
@@ -677,7 +696,7 @@ mod debugging {
         let mut r = Vec::with_capacity(route.len() + 2);
         r.push(tasks.odepot);
         r.extend(
-          route.iter().map(|t| tasks.by_shorthand[&t.to_shorthand(lss).into()])
+          route.iter().map(|t| tasks.by_index[&t.to_shorthand(lss).into()])
         );
         r.push(tasks.ddepot);
         av_routes.push(AvRoute::new(av, r));
@@ -687,12 +706,12 @@ mod debugging {
     let mut pv_routes = Vec::new();
     for (_, route) in &soln.pv_routes {
       let route = route.iter()
-        .map(|t| tasks.by_shorthandpv[&t.to_shorthand(&lss).into()])
+        .map(|t| tasks.by_index_pv[&t.to_shorthand(&lss).into()])
         .collect();
       pv_routes.push(PvRoute::new(route));
     }
 
-    Ok(Solution {
+    Ok(MpSolution {
       objective: Some(soln.objective),
       av_routes,
       pv_routes,
@@ -705,5 +724,5 @@ mod debugging {
 pub use debugging::load_michael_soln;
 use std::ops::Deref;
 use smallvec::SmallVec;
-use crate::Shorthand;
+use crate::TaskIndex;
 use std::fmt::Debug;

@@ -8,7 +8,7 @@ use instances::dataset::apvrp::LocSetStarts;
 use apvrp::*;
 use apvrp::test::test_data_dir;
 use apvrp::experiment::*;
-use apvrp::solution::Solution;
+use apvrp::solution::MpSolution;
 use std::time::Duration;
 
 
@@ -83,9 +83,8 @@ fn print_obj_breakdown(mp: &TaskModelMaster) -> Result<Cost> {
   Ok(obj)
 }
 
-fn evalutate_full_objective(lookups: &Lookups, mp: &TaskModelMaster, obj_weights: &ObjWeights, sol: &Solution) -> Result<Cost> {
-  let dummy_theta = Default::default();
-  let mut subproblem = sp::dag::GraphModel::build(&lookups, sol, &dummy_theta)?;
+fn evalutate_full_objective(lookups: &Lookups, mp: &TaskModelMaster, obj_weights: &ObjWeights, sol: &MpSolution) -> Result<Cost> {
+  let mut subproblem = sp::dag::GraphModel::build(&lookups, sol)?;
   let sp_obj: Time = subproblem.solve_for_obj()?;
   let y_obj_tt: Time = subproblem.second_last_tasks
     .iter()
@@ -195,7 +194,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
     println!();
 
     if solution_found {
-      let sol = match Solution::from_mp(&mp) {
+      let sol = match MpSolution::from_mp(&mp) {
         Ok(sol) => sol,
         Err(e) => {
           callback.flush_cut_cache(&mut mp.model)?;

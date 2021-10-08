@@ -1,4 +1,6 @@
 #![allow(unused)]
+#![feature(hash_set_entry)]
+#![feature(entry_insert)]
 
 mod unordered_pair;
 mod viz;
@@ -27,8 +29,53 @@ enum Node<A, C> {
   Constr(C),
 }
 
+impl<A, C> Node<A, C> {
+  #[inline]
+  #[track_caller]
+  pub fn unwrap_clause(self) -> A {
+    match self {
+      Node::Clause(a) => a,
+      Node::Constr(_) => panic!("called `Node::unwrap_clause()` on a `Constr` value"),
+    }
+  }
+
+  #[inline]
+  #[track_caller]
+  pub fn unwrap_constraint(self) -> C {
+    match self {
+      Node::Constr(c) => c,
+      Node::Clause(_) => panic!("called `Node::unwrap_constraint()` on a `Clause` value"),
+    }
+  }
+
+  #[inline]
+  pub fn constraint(self) -> Option<C> {
+    match self {
+      Node::Constr(c) => Some(c),
+      Node::Clause(_) => None,
+    }
+  }
+
+  #[inline]
+  pub fn clause(self) -> Option<A> {
+    match self {
+      Node::Clause(c) => Some(c),
+      Node::Constr(_) => None,
+    }
+  }
+
+  #[inline]
+  pub fn as_ref<'a>(&'a self) -> Node<&'a A, &'a C> {
+    match *self {
+      Node::Clause(ref a) => Node::Clause(a),
+      Node::Constr(ref c ) => Node::Constr(c),
+    }
+  }
+}
+
 #[derive(Clone, Default)]
 pub struct InferenceModelBuilder<A, C: Constraint> {
+  clauses: Set<A>,
   constraints: Set<C>,
   predecessors: Map<Node<A, C>, Set<Node<A, C>>>,
 }
@@ -38,96 +85,82 @@ impl<A: Clause, C: Constraint> InferenceModelBuilder<A, C> {
   pub fn constraints(&self) -> &Set<C> { &self.constraints }
 
   pub fn add_domain_implication(&mut self, condn: A, result: A) {
+    self.clauses.get_or_insert_owned(&condn);
+    self.clauses.get_or_insert_owned(&result);
     self.predecessors.entry(Node::Clause(result)).or_default().insert(Node::Clause(condn));
   }
 
   pub fn add_implication(&mut self, clause: A, constraint: C) {
-    self.constraints.insert(constraint.clone());
+    self.clauses.get_or_insert_owned(&clause);
+    self.constraints.get_or_insert_owned(&constraint);
     self.predecessors.entry(Node::Constr(constraint)).or_default().insert(Node::Clause(clause));
   }
 
   pub fn add_constraint_domination(&mut self, stronger: C, weaker: C) {
-    self.constraints.insert(stronger.clone());
-    self.constraints.insert(weaker.clone());
+    self.constraints.get_or_insert_owned(&stronger);
+    self.constraints.get_or_insert_owned(&weaker);
     self.predecessors.entry(Node::Constr(weaker)).or_default().insert(Node::Constr(stronger));
   }
 
   pub fn finish(self) -> InferenceModel<A, C> {
-    #[tracing::instrument(skip(impliers, predecessors))]
-    fn dfs_add<A, C>(
-      impliers: &mut Map<C, Set<A>>,
-      clauses: &mut Set<A>,
-      in_progress: &mut Set<Node<A, C>>,
+    #[derive(Copy, Clone, Debug)]
+    enum NodeState {
+      Unvisited,
+      Inprogress,
+      Visited,
+    }
+    fn dfs_cycle_check<A, C>(
       current_node: &Node<A, C>,
-      predecessors: &Map<Node<A, C>, Set<Node<A, C>>>)
+      node_state: &mut Map<&Node<A, C>, NodeState>,
+      successors: &Map<Node<A, C>, Set<Node<A, C>>>)
       where
         A: Clause,
         C: Constraint,
     {
-      if in_progress.contains(current_node) {
-        panic!("cycles not supported")
+      match node_state.get_mut(current_node).unwrap() {
+        s @ NodeState::Unvisited => { *s = NodeState::Inprogress; },
+        NodeState::Inprogress => panic!("cycles not yet supported"),
+        NodeState::Visited => return
       }
 
-      match current_node {
-        Node::Clause(k) => {
-          if !clauses.insert(k.clone()) {
-            tracing::trace!("previously explored clause");
-            return;
-          }
-          tracing::trace!("new clause found");
-        }
-        Node::Constr(c) => {
-          if let Some(cl) = impliers.get(c) {
-            clauses.extend(cl.iter().cloned());
-            tracing::trace!(prev_clauses=?cl, "previously explored constraint node");
-            return;
-          }
+      if let Some(succ) = successors.get(current_node) {
+        for n in succ {
+          dfs_cycle_check(n, node_state, successors)
         }
       }
 
-      in_progress.insert(current_node.clone());
-      if let Some(pred) = predecessors.get(current_node) {
-        for p in pred {
-          dfs_add(impliers, clauses, in_progress, p, predecessors);
-        }
-      }
-      in_progress.remove(current_node);
+      *node_state.get_mut(current_node).unwrap() = NodeState::Visited;
     }
 
-    #[tracing::instrument(skip(dominated_constraints, successors))]
-    fn dfs_build_dom_constraints<A, C>(
-      dominated_constraints: &mut Map<C, Set<C>>,
-      dominated: &mut Set<C>,
+    #[tracing::instrument(skip(implications, successors))]
+    fn dfs_build_flat_implications<'a, A, C>(
+      implications: &'a mut Map<Node<A, C>, Set<Node<A, C>>>,
       current_node: &Node<A, C>,
-      start_node: &Node<A, C>,
-      successors: &Map<Node<A, C>, Set<Node<A, C>>>,
-    )
+      successors: &Map<Node<A, C>, Set<Node<A, C>>>)
       where
         A: Clause,
         C: Constraint,
     {
-      match current_node {
-        Node::Clause(_) => unreachable!(),
-        Node::Constr(c) => {
-          if let Some(cons) = dominated_constraints.get(c) {
-            dominated.extend(cons.iter().cloned());
-            return;
-          }
-
-          if current_node != start_node {
-            dominated.insert(c.clone());
-          }
-
-          if let Some(succ) = successors.get(current_node) {
-            for s in succ {
-              dfs_build_dom_constraints(dominated_constraints, dominated, s, start_node, successors);
-            }
-          }
+      if implications.contains_key(current_node) {
+        tracing::trace!(node=?current_node, "previously explored node");
+        return
+      }
+      let mut imp = Set::default();
+      if let Some(succ) = successors.get(current_node) {
+        for n in succ {
+          imp.insert(n.clone());
+          dfs_build_flat_implications(implications, n, successors);
+          imp.extend(implications[n].iter().cloned());
         }
       }
+      implications.insert(current_node.clone(), imp);
     }
 
-    let InferenceModelBuilder { constraints, predecessors } = self;
+
+    let InferenceModelBuilder { clauses, constraints, predecessors } = self;
+    let nodes : Set<_> = clauses.iter().map(|c| Node::Clause(c.clone()))
+      .chain(constraints.iter().map(|c| Node::Constr(c.clone())))
+      .collect();
 
     let successors = {
       let mut succ: Map<_, Set<_>> = Map::with_capacity_and_hasher(predecessors.len(), Default::default());
@@ -139,44 +172,44 @@ impl<A: Clause, C: Constraint> InferenceModelBuilder<A, C> {
       succ
     };
 
-    let mut impliers = Map::default();
-    let mut stack = Set::default();
-
-    for c in &constraints {
-      let mut imp_c: Set<A> = Set::default();
-      let nc = Node::Constr(c.clone());
-      dfs_add(&mut impliers, &mut imp_c, &mut stack, &nc, &predecessors);
-      let existing = impliers.insert(c.clone(), imp_c);
-      debug_assert!(existing.is_none());
-    }
-
-    let mut implications: Map<A, Set<C>> = Map::default();
-
-    for (c, clauses) in impliers.iter() {
-      for k in clauses {
-        implications.entry(k.clone()).or_default().insert(c.clone());
+    #[cfg(debug_assertions)] {// check for cycles
+      let mut node_states = nodes.iter().map(|n| (n, NodeState::Unvisited)).collect();
+      for n in &nodes {
+        dfs_cycle_check(n, &mut node_states, &successors);
       }
     }
 
-    let dominated_constraints = {
-      let mut domcons = Map::default();
-      let mut current = Set::default();
-      for c in constraints {
-        let n = &Node::Constr(c.clone());
-        dfs_build_dom_constraints(
-          &mut domcons,
-          &mut current,
-          &n,
-          &n,
-          &successors,
-        );
-        if !current.is_empty() {
-          domcons.insert(c, current.clone());
-          current.clear();
+
+    let mut flat_successors = Map::with_capacity_and_hasher(nodes.len(), Default::default());
+
+    for n in &nodes {
+      dfs_build_flat_implications(&mut flat_successors,n, &successors);
+    }
+
+    let mut dominated_constraints = Map::default();
+    let mut implications = Map::default();
+
+    for (n, succ) in flat_successors {
+      match n {
+        Node::Clause(a) => {
+          let cons : Set<_> = succ.into_iter().filter_map(Node::constraint).collect();
+          implications.insert(a, cons);
+        },
+        Node::Constr(c) => {
+          let cons : Set<_> = succ.into_iter().map(Node::unwrap_constraint).collect();
+          dominated_constraints.insert(c, cons);
         }
       }
-      domcons
-    };
+    }
+
+    let mut impliers: Map<_, Set<_>> = Map::default();
+    for (a, cons) in &implications {
+      for c in cons {
+        impliers.entry(c.clone())
+          .or_default()
+          .insert(a.clone());
+      }
+    }
 
     InferenceModel {
       predecessors,
@@ -209,19 +242,13 @@ impl<A: Clause, C: Constraint> InferenceModel<A, C> {
 
   pub fn build() -> InferenceModelBuilder<A, C> {
     InferenceModelBuilder {
+      clauses: Default::default(),
       constraints: Default::default(),
       predecessors: Default::default(),
     }
   }
 
   fn cover_ctx<'a>(&'a self, active_clauses: &'a Set<A>, active_constraints: &'a Set<C>) -> cover::Ctx<'a, A, C> {
-    // for a in active_clauses {
-    //   dbg!(a);
-    //   assert!(self.implications.contains_key(a))
-    // }
-    // for c in active_constraints {
-    //   assert!(self.impliers.contains_key(c))
-    // }
     cover::Ctx {
       active_clauses,
       active_constraints,
@@ -245,14 +272,16 @@ impl<A: Clause, C: Constraint> InferenceModel<A, C> {
         constraints.insert(c.clone());
       }
     }
-
-    for c in self.dominated_constraints(&constraints) {
-      constraints.remove(&c);
-    }
     constraints
   }
 
+  pub fn remove_dominated_constraints(&self, cons: &mut Set<C>) {
+    let implied = self.dominated_constraints(&*cons);
+    cons.retain(|c| !implied.contains(c));
+  }
+
   fn dominated_constraints<'a>(&self, constraints: impl IntoIterator<Item=&'a C>) -> Set<C> where C: 'a {
+    // Assumption: graph doesn't contain cycles (currently checked during ) - otherwise we remove entire cycle of constraints
       constraints.into_iter()
         .filter_map(|c| self.dominated_constraints.get(c))
         .flatten()

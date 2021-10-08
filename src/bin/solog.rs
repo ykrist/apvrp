@@ -1,13 +1,14 @@
 use structopt::*;
 use std::path::{PathBuf, Path};
 use apvrp::*;
-use apvrp::solution::{iter_solution_log, Solution};
+use apvrp::solution::{iter_solution_log, MpSolution};
 use slurm_harray::Experiment;
 use daggylp::{SolveStatus, InfKind};
 use daggylp::viz::GraphViz;
 use serde::{Serialize, Deserialize};
 use sawmill::InferenceModel;
-use apvrp::model::sp::{MpVar, Constraint};
+use apvrp::model::mp::MpVar;
+use apvrp::model::sp::{SpConstr};
 use apvrp::model::sp::dag::GraphModel;
 
 #[derive(Debug, Clone, StructOpt)]
@@ -30,30 +31,15 @@ struct SolutionInformation {
 }
 
 fn sawmill_graph(lookups: &Lookups,
-                 inf_model: &InferenceModel<MpVar, Constraint>,
+                 inf_model: &InferenceModel<MpVar, SpConstr>,
                  output_dir: &Path,
                  dag: &GraphModel,
-                 sol: &Solution,
+                 sol: &MpSolution,
                  iis: Option<&daggylp::Iis>,
                  idx: (i32, i32),
 ) -> anyhow::Result<()> {
   use apvrp::model::sp::*;
-  let active_vars = sol.av_routes.iter()
-    .flat_map(|r| {
-      r.iter_edges().map(move |(t1, t2)| {
-        MpVar::Y(r.av(), t1.shorthand(), t2.shorthand())
-      })
-    })
-    .chain(sol.av_cycles.iter().flat_map(|c|
-      c.iter_edges().map(move |(t1, t2)| MpVar::Y(c.av(), t1.shorthand(), t2.shorthand()))
-    ))
-    .chain(sol.pv_routes.iter().flat_map(|r|
-      r.iter().map(|t| MpVar::X(t.p, t.shorthand().into()))
-    ))
-    .chain(sol.pv_cycles.iter().flat_map(|r|
-      r.unique_tasks().iter().map(|t| MpVar::X(t.p, t.shorthand().into()))
-    ))
-    .collect::<Set<_>>();
+  let active_vars: Set<_> = sol.mp_vars().collect();
   let active_cons = inf_model.implied_constraints(&active_vars);
 
   let cover = iis.map(|iis| {
@@ -61,10 +47,10 @@ fn sawmill_graph(lookups: &Lookups,
     for (v1, v2) in iis.iter_edge_constraints() {
       let pt1 = dag.var_to_task[&v1];
       let pt2 = dag.var_to_task[&v2];
-      let t1 = ShorthandTask::from(pt1.shorthand());
-      let t2 = ShorthandTask::from(pt2.shorthand());
+      let t1 = IdxTask::from(pt1.index());
+      let t2 = IdxTask::from(pt2.index());
       for c in inf_model.constraints() {
-        if let Constraint::Delta(s1, s2, _) = c {
+        if let SpConstr::Delta(s1, s2, _) = c {
           if s1 == &t1 && s2 == &t2 {
             iis_cons.insert(c.clone());
           }
@@ -75,11 +61,16 @@ fn sawmill_graph(lookups: &Lookups,
     if let Some((ub_var, lb_var)) = iis.bounds() {
       let lb_pt = dag.var_to_task[&lb_var];
       let ub_pt = dag.var_to_task[&ub_var];
-      iis_cons.insert(Constraint::Lb(lb_pt.shorthand().into(), lb_pt.t_release));
-      iis_cons.insert(Constraint::Ub(ub_pt.shorthand().into(), ub_pt.t_deadline));
+      iis_cons.insert(SpConstr::Lb(lb_pt.index().into(), lb_pt.t_release));
+      iis_cons.insert(SpConstr::Ub(ub_pt.index().into(), ub_pt.t_deadline));
     }
-    println!("{:?} {:?}", &iis_cons, &active_cons);
-    // assert!(iis_cons.is_subset(&active_cons));
+    inf_model.remove_dominated_constraints(&mut iis_cons);
+    println!("{:?}\n{:?}", &iis_cons, &active_cons);
+    if !iis_cons.is_subset(&active_cons) {
+      let diff = iis_cons.difference(&active_cons).collect::<Set<_>>();
+      panic!("inactive iis constraints: {:?}", diff);
+    }
+    assert!(iis_cons.is_subset(&active_cons));
     inf_model.cover_default(&active_vars, &iis_cons)
   });
 
@@ -89,7 +80,8 @@ fn sawmill_graph(lookups: &Lookups,
     .active_constraints(&active_cons);
 
   if let Some(cover) = cover {
-    viz = viz.cover(cover);
+    let l = inf_model.lift_cover(&cover, &mut apvrp::model::sp::CoverLift::new(lookups));
+    viz = viz.cover(cover).lifted_cover(l);
   }
   viz.render_svg(output_dir.join(format!("inference{}-{}.svg", idx.0, idx.1))
     .to_str().unwrap()
@@ -98,13 +90,12 @@ fn sawmill_graph(lookups: &Lookups,
 }
 
 fn process_solution(lookups: &Lookups,
-                    inf_model: &InferenceModel<MpVar, Constraint>,
+                    inf_model: &InferenceModel<MpVar, SpConstr>,
                     output_dir: &Path,
-                    sol: Solution,
+                    sol: MpSolution,
                     sol_id: usize) -> anyhow::Result<()> {
-  let dummy_theta = Map::default();
 
-  let mut graph = apvrp::model::sp::dag::GraphModel::build(&lookups, &sol, &dummy_theta)?;
+  let mut graph = apvrp::model::sp::dag::GraphModel::build(&lookups, &sol)?;
 
   for j in 0.. {
     graph.model.write_debug(output_dir.join(format!("{}-it{}.txt", sol_id, j)))?;
@@ -120,7 +111,6 @@ fn process_solution(lookups: &Lookups,
           InfKind::Path => Status::PathIis,
           InfKind::Cycle => Status::Cycle,
         };
-        println!("{:?} {:?}", status, &iis);
         (status, Some(iis))
       }
     };
@@ -166,6 +156,7 @@ fn process_solution(lookups: &Lookups,
 }
 
 fn main() -> anyhow::Result<()> {
+  let _g = apvrp::logging::init_logging(None::<&str>, true)?;
   let args: Args = Args::from_args();
   let exp = experiment::ApvrpExp::from_index_file(&args.index_file)?;
 

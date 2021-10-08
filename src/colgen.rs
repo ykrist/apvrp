@@ -76,20 +76,20 @@ impl<'a> RouteGenerator<'a> {
   fn add_new_route(&mut self, reqlist: &RequestList) {
     let k = reqlist.len();
     if k == 0 {
-      self.routes.push(PvRoute::new(vec![self.tasks.by_shorthandpv[&ShorthandPvTask::Direct(self.pv)]]));
+      self.routes.push(PvRoute::new(vec![self.tasks.by_index_pv[&IdxPvTask::Direct(self.pv)]]));
       return
     }
     let n = k * 2 + 1;
     let mut route = Vec::with_capacity(n);
-    route.push(self.tasks.by_shorthandpv[&ShorthandPvTask::Start(self.pv, reqlist[0])]);
+    route.push(self.tasks.by_index_pv[&IdxPvTask::Start(self.pv, reqlist[0])]);
 
     for (&r1, &r2) in reqlist.iter().tuple_windows() {
-      route.push(self.tasks.by_shorthandpv[&ShorthandPvTask::Request(self.pv, r1)]);
-      route.push(self.tasks.by_shorthandpv[&ShorthandPvTask::Transfer(self.pv, r1, r2)]);
+      route.push(self.tasks.by_index_pv[&IdxPvTask::Request(self.pv, r1)]);
+      route.push(self.tasks.by_index_pv[&IdxPvTask::Transfer(self.pv, r1, r2)]);
     }
 
-    route.push(self.tasks.by_shorthandpv[&ShorthandPvTask::Request(self.pv, reqlist[k-1])]);
-    route.push(self.tasks.by_shorthandpv[&ShorthandPvTask::End(self.pv, reqlist[k-1])]);
+    route.push(self.tasks.by_index_pv[&IdxPvTask::Request(self.pv, reqlist[k-1])]);
+    route.push(self.tasks.by_index_pv[&IdxPvTask::End(self.pv, reqlist[k-1])]);
 
     #[cfg(debug_assertions)] {
       if !schedule::check_pv_route(self.data, &route) {

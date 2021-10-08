@@ -3,7 +3,7 @@ use crate::tasks::TaskId;
 use crate::logging::*;
 use grb::prelude::*;
 use fnv::FnvHashSet;
-use crate::solution::Solution;
+use crate::solution::MpSolution;
 use crate::model::{EdgeConstrKind, edge_constr_kind};
 use crate::utils::CollectExt;
 use crate::experiment::{ApvrpExp, GurobiParamVal};
@@ -17,6 +17,12 @@ pub struct MpVars {
   pub u: Map<Req, Var>,
   pub z: Map<RouteId, Var>,
   pub theta: Map<(Av, Task), Var>,
+}
+
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+pub enum MpVar {
+  X(Pv, IdxTask),
+  Y(Av, IdxTask, IdxTask),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -420,7 +426,7 @@ impl TaskModelMaster {
   }
 
   #[tracing::instrument(level = "error", skip(self, sol))]
-  pub fn fix_solution(&mut self, sol: &Solution) -> Result<()> {
+  pub fn fix_solution(&mut self, sol: &MpSolution) -> Result<()> {
     for r in &sol.pv_routes {
       trace!(?r, "fix PV route");
       self.model.set_obj_attr_batch(attr::LB, r.iter().map(|t| (self.vars.x[t], 1.0)))?;
