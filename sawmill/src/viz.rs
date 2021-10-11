@@ -5,10 +5,7 @@ pub struct InferenceModelViz<'a, A, C: Constraint> {
   model: &'a InferenceModel<A, C>,
   nodes: Map<Node<A, C>, usize>,
   flat: bool,
-  active_clauses: Option<&'a Set<A>>,
-  active_constraints: Option<&'a Set<C>>,
-  cover: Option<cover::Cover<A, C>>,
-  lifted_cover: Option<lift::LiftedCover<A, C>>,
+  active_nodes: Map<Node<A, C>, NodeVizState>,
   fmt_constraint: fn(&mut String, &C),
   fmt_clause: fn(&mut String, &A),
 }
@@ -22,12 +19,19 @@ enum NodeVizState {
   Cover,
   LiftedCover,
   Active,
-  None,
+}
+
+impl Default for NodeVizState {
+  fn default() -> Self { NodeVizState::Active }
 }
 
 impl NodeVizState {
-  fn active(&self) -> bool {
-    !matches!(self, NodeVizState::None)
+  fn set_cover(&mut self) { *self = NodeVizState::Cover }
+
+  fn set_lifted(&mut self) {
+    if !matches!(self, NodeVizState::Cover) {
+      *self = NodeVizState::LiftedCover
+    }
   }
 }
 
@@ -45,33 +49,52 @@ impl<'a, A: Clause, C: Constraint> InferenceModelViz<'a, A, C> {
     InferenceModelViz {
       model,
       nodes,
+      active_nodes: Map::default(),
       fmt_clause: fmt_with_debug,
       fmt_constraint: fmt_with_debug,
       flat: false,
-      active_clauses: None,
-      active_constraints: None,
-      cover: None,
-      lifted_cover: None,
     }
   }
 
   pub fn active_clauses(mut self, clauses: &'a Set<A>) -> Self {
-    self.active_clauses = Some(clauses);
+    for a in clauses {
+      self.active_nodes.entry(Node::Clause(a.clone())).or_default();
+      for c in self.model.implications.get(a).into_iter().flatten() {
+        self.active_nodes.entry(Node::Constr(c.clone())).or_default();
+      }
+    }
     self
   }
 
   pub fn active_constraints(mut self, constraints: &'a Set<C>) -> Self {
-    self.active_constraints = Some(constraints);
+    for c in constraints {
+      self.active_nodes.entry(Node::Constr(c.clone())).or_default();
+    }
     self
   }
 
-  pub fn cover(mut self, cover: cover::Cover<A, C>) -> Self {
-    self.cover = Some(cover);
+  pub fn cover(mut self, cover: &cover::Cover<A, C>) -> Self {
+    for (a, cons) in cover {
+      self.active_nodes.insert(Node::Clause(a.clone()), NodeVizState::Cover);
+      for c in cons {
+        self.active_nodes.insert(Node::Constr(c.clone()), NodeVizState::Cover);
+      }
+    }
     self
   }
 
-  pub fn lifted_cover(mut self, l: lift::LiftedCover<A, C>) -> Self {
-    self.lifted_cover = Some(l);
+  pub fn lifted_cover(mut self, l: &lift::LiftedCover<A, C>) -> Self {
+    for (clauses, cons) in l {
+      for a in clauses {
+        self.active_nodes.entry(Node::Clause(a.clone())).or_default().set_lifted();
+      }
+      for c in self.model.implied_constraints(clauses) {
+        let s = self.active_nodes.entry(Node::Constr(c)).or_default();
+      }
+      for c in cons {
+        self.active_nodes.entry(Node::Constr(c.clone())).or_default().set_lifted();
+      }
+    }
     self
   }
 
@@ -94,43 +117,8 @@ impl<'a, A: Clause, C: Constraint> InferenceModelViz<'a, A, C> {
     render_svg(self, filepath)
   }
 
-  fn node_state(&self, n: &Node<A, C>) -> NodeVizState {
-    if let Some(cover) = self.cover.as_ref() {
-      match n {
-        Node::Constr(c) => {
-          if cover.values().any(|s| s.contains(c)) {
-            return NodeVizState::Cover
-          }
-        }
-        Node::Clause(c) => {
-          if cover.contains_key(c) {
-            return NodeVizState::Cover
-          }
-        }
-      }
-    }
-
-    if let Some(cover) = self.lifted_cover.as_ref() {
-      match n {
-        Node::Constr(c) => {
-          if cover.iter().any(|(_, s)| s.contains(c)) {
-            return NodeVizState::Cover
-          }
-        }
-        Node::Clause(c) => {
-          if cover.iter().any(|(s, _)| s.contains(c)) {
-            return NodeVizState::LiftedCover
-          }
-        }
-      }
-    }
-
-    match (n, self.active_constraints, self.active_clauses) {
-      (Node::Clause(c), _, Some(active)) if active.contains(c) => NodeVizState::Active,
-      (Node::Constr(c), Some(active), _) if active.contains(c) => NodeVizState::Active,
-      _ => NodeVizState::None
-    }
-
+  fn node_is_visible(&self, n: &Node<A, C>) -> bool {
+    self.active_nodes.is_empty() || self.active_nodes.contains_key(n)
   }
 }
 
@@ -158,7 +146,7 @@ fn render_svg<'a, N: Clone + 'a, E: Clone + 'a, G: dot::Labeller<'a, N, E> + dot
 
 impl<'a, A: Clause, C: Constraint> dot::GraphWalk<'a, Node<A, C>, (Node<A, C>, Node<A, C>)> for InferenceModelViz<'a, A, C> {
   fn nodes(&self) -> dot::Nodes<Node<A, C>> {
-    let nodes = self.nodes.keys().filter(|n| self.node_state(n).active()).cloned().collect();
+    let nodes = self.nodes.keys().filter(|n| self.node_is_visible(n)).cloned().collect();
     dot::Nodes::Owned(nodes)
   }
 
@@ -168,14 +156,14 @@ impl<'a, A: Clause, C: Constraint> dot::GraphWalk<'a, Node<A, C>, (Node<A, C>, N
         .flat_map(|(a, cons)|
           cons.iter().map(move |c| (Node::Clause(a.clone()), Node::Constr(c.clone())))
         )
-        .filter(|e| self.node_state(&e.0).active() && self.node_state(&e.1).active())
+        .filter(|e| self.node_is_visible(&e.0) && self.node_is_visible(&e.1))
         .collect()
     } else {
       self.model.predecessors.iter()
         .flat_map(|(n, preds)|
           preds.iter().map(move |p| (p.clone(), n.clone()))
         )
-        .filter(|e| self.node_state(&e.0).active() && self.node_state(&e.1).active())
+        .filter(|e| self.node_is_visible(&e.0) && self.node_is_visible(&e.1))
         .collect()
     };
     edges.into()
@@ -206,9 +194,9 @@ impl<'a, A: Clause, C: Constraint> dot::Labeller<'a, Node<A, C>, (Node<A, C>, No
       Node::Clause(_) => "/pastel28/2",
     };
 
-    let (border_color, border_weight) = match self.node_state(n) {
-      NodeVizState::Cover => ("red", "3"),
-      NodeVizState::LiftedCover => ("blue", "3"),
+    let (border_color, border_weight) = match self.active_nodes.get(n) {
+      Some(&NodeVizState::Cover) => ("red", "3"),
+      Some(&NodeVizState::LiftedCover) => ("blue", "3"),
       _ =>  ("black", "0"),
     };
 

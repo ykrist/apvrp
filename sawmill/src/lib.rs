@@ -13,7 +13,7 @@ use std::borrow::Borrow;
 use crate::cover::Greedy;
 use std::path::Path;
 use std::io::Write;
-
+use tracing::{debug, debug_span, trace, instrument, trace_span};
 
 pub trait Constraint: Clone + Hash + Eq + std::fmt::Debug {}
 
@@ -102,6 +102,7 @@ impl<A: Clause, C: Constraint> InferenceModelBuilder<A, C> {
     self.predecessors.entry(Node::Constr(weaker)).or_default().insert(Node::Constr(stronger));
   }
 
+  #[instrument(level="debug", name="flatten_graph", skip(self))]
   pub fn finish(self) -> InferenceModel<A, C> {
     #[derive(Copy, Clone, Debug)]
     enum NodeState {
@@ -177,13 +178,16 @@ impl<A: Clause, C: Constraint> InferenceModelBuilder<A, C> {
       for n in &nodes {
         dfs_cycle_check(n, &mut node_states, &successors);
       }
+      debug!("cycle check found no cycles")
     }
 
 
     let mut flat_successors = Map::with_capacity_and_hasher(nodes.len(), Default::default());
 
     for n in &nodes {
+      let _s = trace_span!("dfs_search", node=?n).entered();
       dfs_build_flat_implications(&mut flat_successors,n, &successors);
+      trace!("DFS complete");
     }
 
     let mut dominated_constraints = Map::default();
@@ -210,7 +214,7 @@ impl<A: Clause, C: Constraint> InferenceModelBuilder<A, C> {
           .insert(a.clone());
       }
     }
-
+    debug!("finished");
     InferenceModel {
       predecessors,
       successors,

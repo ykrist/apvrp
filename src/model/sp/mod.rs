@@ -7,7 +7,7 @@ use grb::prelude::*;
 use crate::logging::*;
 use crate::model::{EdgeConstrKind, edge_constr_kind};
 use super::mp::MpVar;
-
+use serde::{Deserialize, Serialize};
 use IdxTask::*;
 
 use crate::utils::{iter_pairs, VarIterExt, PeekableExt};
@@ -39,7 +39,7 @@ impl Iis {
 }
 
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SpConstr {
   Lb(IdxTask, Time),
   Ub(IdxTask, Time),
@@ -254,14 +254,14 @@ impl MpSolution {
 
 
 
-
+#[instrument(level="info", skip(lu))]
 pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpConstr> {
   let mut model = sawmill::InferenceModel::<MpVar, SpConstr>::build();
   let mut included_tasks = Set::default();
 
-  for (pt, t) in lu.tasks.pvtask_to_task.iter() {
-    let s = t.index();
-    let p = pt.p;
+  for t in lu.tasks.pvtask_to_task.keys() {
+    let s = t.index().into();
+    let p = t.p;
     let x = MpVar::X(p, s);
 
     match s {
@@ -277,7 +277,7 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
     }
 
     model.add_implication(x, SpConstr::Lb(s, t.t_release));
-    model.add_implication(x, SpConstr::Ub(s, t.t_deadline));
+    model.add_implication(x, SpConstr::Ub(s, t.t_deadline - t.tt)); // FIXME bug?
 
     match s {
       Transfer(r, _) | End(_, r) => {
@@ -302,7 +302,7 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
     }
     included_tasks.insert(s);
   }
-
+  info!("finished X-variable implications");
   for (&av, av_tasks) in &lu.tasks.compat_with_av {
     for &task1 in av_tasks {
       let t1 = task1.index();
@@ -335,30 +335,49 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
       }
     }
   }
-
+  info!("finished Y-variable implications");
   let constraints = model.constraints().clone();
-  for &c1 in &constraints {
-    for &c2 in &constraints {
-      if c1 != c2 {
-        match (c1, c2) {
-          (SpConstr::Lb(t1, lb1), SpConstr::Lb(t2, lb2))
-          if t1 == t2 && lb1 >= lb2 => {
-            model.add_constraint_domination(c1, c2);
-          },
-          (SpConstr::Ub(t1, ub1), SpConstr::Ub(t2, ub2))
-          if t1 == t2 && ub1 <= ub2 => {
-            model.add_constraint_domination(c1, c2);
-          },
-          (SpConstr::Delta(t1, s1, d1), SpConstr::Delta(t2, s2, d2))
-          if t1 == t2 && s1 == s2 && d1 >= d2 => {
-            model.add_constraint_domination(c1, c2)
-          }
-          _ => {},
-        }
+  let mut groups: Map<_, Vec<_>> = Map::default();
+
+  #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+  enum ConstraintGroup {
+    Lb(IdxTask),
+    Ub(IdxTask),
+    Delta(IdxTask, IdxTask),
+  }
+
+  for &c in &constraints {
+    let (g, time) = match c {
+      SpConstr::Ub(t, v) => (ConstraintGroup::Ub(t), v),
+      SpConstr::Lb(t, v) => (ConstraintGroup::Lb(t), v),
+      SpConstr::Delta(t1, t2, v) => (ConstraintGroup::Delta(t1, t2), v),
+    };
+    groups.entry(g).or_default().push((time, c));
+  }
+
+
+  info!(total_subproblem_constraints=constraints.len());
+  for (group, mut elems) in groups {
+    let _s = trace_span!("constr_dom", ?group).entered();
+
+    match group {
+      // Bigger time is stronger
+      ConstraintGroup::Lb(_) | ConstraintGroup::Delta(..) => {
+        elems.sort_unstable_by_key(|e| -e.0);
       }
+      // Smaller time is stronger
+      ConstraintGroup::Ub(_) => {
+        elems.sort_unstable_by_key(|e| e.0);
+      }
+    }
+
+    for ((_, stronger), (_, weaker)) in iter_pairs(&elems) {
+      trace!(?stronger, ?weaker, "dominate");
+      model.add_constraint_domination(*stronger, *weaker);
     }
   }
 
+  info!("finished subproblem constraint domination");
   model.finish()
 }
 
@@ -374,7 +393,6 @@ impl<'a> CoverLift<'a> {
 }
 
 impl sawmill::lift::Lift<MpVar, SpConstr> for CoverLift<'_> {
-  /// Given a clause, this method should call a `ctx.add_*()` method for each clause which is mutually exclusive with `a`.
   fn visit_candidate_siblings(&mut self, ctx: &mut sawmill::lift::Ctx<MpVar, SpConstr>, var: &MpVar, _cons: &Set<SpConstr>) {
     match var {
       &MpVar::X(p, t) => {

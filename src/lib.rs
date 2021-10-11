@@ -241,7 +241,7 @@ mod sets;
 pub use sets::Sets;
 
 mod utils;
-pub use utils::{iter_cycle, Json};
+pub use utils::{iter_cycle, Json, IoContext};
 
 mod constants;
 pub use constants::*;
