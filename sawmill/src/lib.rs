@@ -234,6 +234,9 @@ pub struct InferenceModel<A, C> {
   impliers: Map<C, Set<A>>,
 }
 
+pub trait ImpliedConstraintsVistor<C> {
+  fn visit(&mut self, constraint: &C);
+}
 
 impl<A: Clause, C: Constraint> InferenceModel<A, C> {
   pub fn constraints<'a>(&'a self) -> impl Iterator<Item=&'a C> + 'a {
@@ -268,6 +271,12 @@ impl<A: Clause, C: Constraint> InferenceModel<A, C> {
   pub fn cover_default(&self, active_clauses: &Set<A>, constraints: &Set<C>) -> cover::Cover<A, C> {
     self.cover::<cover::Greedy>(active_clauses, constraints)
   }
+
+  // pub fn visit_implied_constraints(&self, active_clauses: impl IntoIterator<Item=&C>, visitor: &mut impl ImpliedConstraintsVistor) {
+  //   for c in active_clauses.into_iter().filter_map(|a| self.implications.get(a)).flatten() {
+  //     visitor.visit(c);
+  //   }
+  // }
 
   pub fn implied_constraints(&self, active_clauses: &Set<A>) -> Set<C> {
     let mut constraints: Set<_> = Set::default();

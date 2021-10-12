@@ -1,5 +1,6 @@
 use crate::*;
 use std::fmt::{self, Write as FmtWrite};
+use gvdot::{Graph, GraphComponent};
 
 pub struct InferenceModelViz<'a, A, C: Constraint> {
   model: &'a InferenceModel<A, C>,
@@ -113,113 +114,80 @@ impl<'a, A: Clause, C: Constraint> InferenceModelViz<'a, A, C> {
     self
   }
 
+  fn draw_edge(&self,g: &mut gvdot::Graph<Vec<u8>>, e: &(Node<A, C>, Node<A, C>)) {
+    if self.node_is_visible(&e.0) && self.node_is_visible(&e.1) {
+      g.add_edge(self.nodes[&e.0], self.nodes[&e.1]).unwrap();
+    }
+  }
+
   pub fn render_svg(&self, filepath: &str) -> std::io::Result<()> {
-    render_svg(self, filepath)
+    use gvdot::{GraphComponent, attr, val, SetAttribute};
+
+    let mut g = gvdot::Graph::new().directed().strict(true).in_memory();
+
+    for (n, i) in self.nodes.iter() {
+      if self.node_is_visible(n) {
+
+        let color = match n {
+          Node::Constr(_) => "/pastel28/1",
+          Node::Clause(_) => "/pastel28/2",
+        };
+
+        let (border_color, border_weight) = match self.active_nodes.get(n) {
+          Some(&NodeVizState::Cover) => ("red", "3"),
+          Some(&NodeVizState::LiftedCover) => ("blue", "3"),
+          _ =>  ("black", "0"),
+        };
+
+        let mut html = format!(
+          concat!(
+          r#"<FONT FACE="fantasque sans mono">"#,
+          r#"<TABLE CELLSPACING="0" CELLBORDER="1" BGCOLOR="{}" COLOR="{}" BORDER="{}">"#,
+          r#"<TR><TD>"#,
+          ),
+          color, border_color, border_weight
+        );
+
+        match n {
+          Node::Clause(a) => (self.fmt_clause)(&mut html, a),
+          Node::Constr(c) => (self.fmt_constraint)(&mut html, c),
+        }
+
+        write!(&mut html, concat!(
+        r#"</TD></TR>"#,
+        r#"</TABLE>"#,
+        r#"</FONT>"#
+        )).unwrap();
+
+
+        g.add_node(*i).unwrap()
+          .attr(attr::Shape, val::Shape::None).unwrap()
+          .attr(attr::Label, attr::html(&html)).unwrap();
+      }
+    }
+
+
+    let edges = if self.flat {
+      for e in self.model.implications.iter().flat_map(|(a, cons)|
+          cons.iter().map(move |c| (Node::Clause(a.clone()), Node::Constr(c.clone())))
+      ) {
+        self.draw_edge(&mut g, &e);
+      }
+    } else {
+      for e in self.model.predecessors.iter().flat_map(|(n, preds)|
+          preds.iter().map(move |p| (p.clone(), n.clone()))
+        ) {
+        self.draw_edge(&mut g, &e);
+      }
+    };
+
+    let dot = g.into_string();
+    let status = gvdot::render_svg(&dot, gvdot::Layout::Dot, filepath)?;
+    assert!(status.success());
+    Ok(())
   }
 
   fn node_is_visible(&self, n: &Node<A, C>) -> bool {
     self.active_nodes.is_empty() || self.active_nodes.contains_key(n)
-  }
-}
-
-fn render_svg<'a, N: Clone + 'a, E: Clone + 'a, G: dot::Labeller<'a, N, E> + dot::GraphWalk<'a, N, E>>(
-  g: &'a G,
-  filepath: &str,
-) -> std::io::Result<()> {
-  let mut buf: Vec<u8> = Vec::with_capacity(8096);
-  dot::render(g, &mut buf).unwrap();
-  let mut proc = std::process::Command::new("dot")
-    .arg("-Tsvg")
-    .arg("-Grankdir=LR")
-    .arg("-Granksep=2")
-    .arg(format!("-o{}", filepath))
-    .stdin(std::process::Stdio::piped())
-    .stdout(std::process::Stdio::piped())
-    .spawn()
-    .unwrap();
-
-  proc.stdin.take().unwrap().write(&buf)?;
-  let output = proc.wait_with_output()?;
-  assert!(output.status.success());
-  Ok(())
-}
-
-impl<'a, A: Clause, C: Constraint> dot::GraphWalk<'a, Node<A, C>, (Node<A, C>, Node<A, C>)> for InferenceModelViz<'a, A, C> {
-  fn nodes(&self) -> dot::Nodes<Node<A, C>> {
-    let nodes = self.nodes.keys().filter(|n| self.node_is_visible(n)).cloned().collect();
-    dot::Nodes::Owned(nodes)
-  }
-
-  fn edges(&self) -> dot::Edges<(Node<A, C>, Node<A, C>)> {
-    let edges: Vec<_> = if self.flat {
-      self.model.implications.iter()
-        .flat_map(|(a, cons)|
-          cons.iter().map(move |c| (Node::Clause(a.clone()), Node::Constr(c.clone())))
-        )
-        .filter(|e| self.node_is_visible(&e.0) && self.node_is_visible(&e.1))
-        .collect()
-    } else {
-      self.model.predecessors.iter()
-        .flat_map(|(n, preds)|
-          preds.iter().map(move |p| (p.clone(), n.clone()))
-        )
-        .filter(|e| self.node_is_visible(&e.0) && self.node_is_visible(&e.1))
-        .collect()
-    };
-    edges.into()
-  }
-
-  fn source(&self, edge: &(Node<A, C>, Node<A, C>)) -> Node<A, C> { edge.0.clone() }
-
-  fn target(&self, edge: &(Node<A, C>, Node<A, C>)) -> Node<A, C> { edge.1.clone() }
-}
-
-
-impl<'a, A: Clause, C: Constraint> dot::Labeller<'a, Node<A, C>, (Node<A, C>, Node<A, C>)> for InferenceModelViz<'a, A, C> {
-  fn graph_id(&self) -> dot::Id {
-    dot::Id::new("debug").unwrap()
-  }
-
-  fn node_shape(&self, _n: &Node<A, C>) -> Option<dot::LabelText> {
-    Some(dot::LabelText::label("none"))
-  }
-
-  fn node_id(&self, n: &Node<A, C>) -> dot::Id {
-    dot::Id::new(format!("n{}", self.nodes[n])).unwrap()
-  }
-
-  fn node_label(&self, n: &Node<A, C>) -> dot::LabelText {
-    let color = match n {
-      Node::Constr(_) => "/pastel28/1",
-      Node::Clause(_) => "/pastel28/2",
-    };
-
-    let (border_color, border_weight) = match self.active_nodes.get(n) {
-      Some(&NodeVizState::Cover) => ("red", "3"),
-      Some(&NodeVizState::LiftedCover) => ("blue", "3"),
-      _ =>  ("black", "0"),
-    };
-
-    let mut html = format!(
-      concat!(
-      r#"<FONT FACE="fantasque sans mono">"#,
-      r#"<TABLE CELLSPACING="0" CELLBORDER="1" BGCOLOR="{}" COLOR="{}" BORDER="{}">"#,
-      r#"<TR><TD>"#,
-      ),
-      color, border_color, border_weight
-    );
-
-    match n {
-      Node::Clause(a) => (self.fmt_clause)(&mut html, a),
-      Node::Constr(c) => (self.fmt_constraint)(&mut html, c),
-    }
-
-    write!(&mut html, concat!(
-    r#"</TD></TR>"#,
-    r#"</TABLE>"#,
-    r#"</FONT>"#
-    )).unwrap();
-
-    dot::LabelText::html(html)
   }
 }

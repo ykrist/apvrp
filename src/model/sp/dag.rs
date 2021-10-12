@@ -13,14 +13,17 @@ use grb::prelude::*;
 use crate::model::cb::CutType;
 
 pub struct GraphModel<'a> {
-  pub second_last_tasks: SmallVec<[Task; NUM_AV_UB]>,
+  pub second_last_tasks: SmallVec<[IdxTask; NUM_AV_UB]>,
   pub lu: &'a Lookups,
-  pub vars: Map<Task, Var>,
+  pub var_to_task: Map<Var, IdxTask>,
   /// ODepot var is *not* in this lookup.
-  pub var_to_task: Map<Var, PvTask>,
-  pub edges: Map<(Var, Var), (Task, Task)>,
+  pub task_to_var: Map<IdxTask, Var>,
+  pub edge_constraints: Map<(Var, Var), SpConstr>,
+  pub ubs: Map<IdxTask, Time>,
+  pub lbs: Map<IdxTask, Time>,
   pub model: Graph<AdjacencyList<ArrayVec<2>>>,
 }
+
 
 impl<'a> GraphModel<'a> {
   fn optimality_cut_required(&self, theta: &Map<(Avg, Task), Time>, mrs: &MrsTree) -> bool {
@@ -38,77 +41,59 @@ impl<'a> GraphModel<'a> {
 
 
 impl<'a> GraphModel<'a> {
-  #[tracing::instrument(level = "trace", skip(lu, sol))]
-  pub fn build(lu: &'a Lookups, sol: &'a MpSolution) -> Result<Self> {
-    let mut model = Graph::new();
-    let mut vars = map_with_capacity(lu.data.n_req as usize * 2);
-    let mut var_to_task = map_with_capacity(lu.data.n_req as usize * 2);
+  #[tracing::instrument(level = "trace", skip(lu, sp_constraints, obj_tasks))]
+  pub fn build(lu: &'a Lookups, sp_constraints: &Set<SpConstr>, obj_tasks: SmallVec<[IdxTask; NUM_AV_UB]>) -> Self {
+    let mut ubs: Map<IdxTask, Time> = Map::default();
+    let mut lbs: Map<IdxTask, Time> = Map::default();
 
-    let second_last_tasks: SmallVec<_> = sol.av_routes.iter()
-      .map(|r| *r.theta_task())
-      .collect();
-
-    let task_objective = {
-      let obj_tasks = second_last_tasks.as_slice();
-      move |t: &Task| -> Weight {
-        // loop over all AVs here, probably better than allocating on the heap.
-        if obj_tasks.contains(t) { 1 } else { 0 }
+    for c in sp_constraints {
+      match c {
+        &SpConstr::Ub(t, ub) => ubs.insert(t, ub),
+        &SpConstr::Lb(t, lb) => lbs.insert(t, lb),
+        _ => {}
       }
-    };
-
-    for &pt in sol.iter_sp_vars() {
-      let t = lu.tasks.pvtask_to_task[&pt];
-      let var = model.add_var(task_objective(&t), pt.t_release as Weight, (pt.t_deadline - pt.tt) as Weight);
-      let prev = var_to_task.insert(var, pt);
-      debug_assert_eq!(prev, None, "Duplicate variable in subproblem");
-      let prev = vars.insert(t, var);
-      debug_assert_eq!(prev, None);
     }
 
-    let mut constraints = map_with_capacity(vars.len() * 2);
+    debug_assert_eq!(ubs.len(), lbs.len());
+    let mut model = Graph::new();
+    let mut var_to_task = map_with_capacity(ubs.len());
+    let mut task_to_var = map_with_capacity(ubs.len());
+
+    for (t, ub) in ubs {
+      let lb = lbs[&t];
+      let obj = if obj_tasks.contains(&t) { 1 } else { 0 };
+      trace!(?t, lb, ub, obj, "add var");
+      let var = model.add_var(obj, lb as Weight, ub as Weight);
+      var_to_task.insert(var, t);
+      task_to_var.insert(t, var);
+    }
+
+    let mut edge_constraints : Map<(Var, Var), SpConstr> = Map::default();
     let mut model = model.finish_nodes();
 
-    for c in sol.iter_sp_x_edges() {
-      let (pt1, pt2) = match c {
-        XEdgeConstraint::Unloading(pt1, pt2) => {
-          trace!(t1=?pt1, t2=?pt2, "unloading constraint");
-          (pt1, pt2)
-        }
-        XEdgeConstraint::Loading(pt1, pt2) => {
-          trace!(t1=?pt1, t2=?pt2, "loading constraint");
-          (pt1, pt2)
-        }
-      };
-      let t1 = lu.tasks.pvtask_to_task[pt1];
-      let t2 = lu.tasks.pvtask_to_task[pt2];
-      let d = t1.tt + lu.data.srv_time[&t1.end];
-      let v1 = vars[&t1];
-      let v2 = vars[&t2];
-      model.add_constr(v1, d as Weight, v2);
-      constraints.insert((v1, v2), (t1, t2));
+    for c in sp_constraints {
+      match c {
+        &c @ SpConstr::Delta(t1, t2, d) => {
+          let v1 = task_to_var[&t1];
+          let v2 = task_to_var[&t2];
+          trace!(?t1, ?t2, d, "add constr");
+          model.add_constr(v1, d as Weight, v2);
+          edge_constraints.insert((v1, v2), c);
+        },
+        _ => {}
+      }
     }
 
-    for (&t1, &t2) in sol.iter_sp_y_edges() {
-      trace!(?t1, ?t2);
-      let v1 = vars[&t1];
-      let v2 = vars[&t2];
-
-      constraints.entry((v1, v2)).or_insert_with(|| {
-        trace!(?t1, ?t2, "AV travel  time constraint");
-        let d = t1.tt + lu.data.travel_time[&(t1.end, t2.start)];
-        model.add_constr(v1, d as Weight, v2);
-        (t1, t2)
-      });
-    }
-
-    Ok(GraphModel {
-      second_last_tasks,
-      lu,
-      vars,
-      var_to_task,
-      edges: constraints,
+    GraphModel {
       model: model.finish(),
-    })
+      var_to_task,
+      task_to_var,
+      edge_constraints,
+      lbs,
+      ubs,
+      second_last_tasks: obj_tasks,
+      lu,
+    }
   }
 
   pub fn solve_for_obj(&mut self) -> Result<Time> {
