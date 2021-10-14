@@ -36,7 +36,3 @@ anyhow = { version = "^1.0", features = ["backtrace"] }
 [[bin]]
 name = "apvrp"
 path = "src/bin/main.rs"
-
-[[bin]]
-name = "sol-viz"
-path = "src/bin/sol-viz.rs"

@@ -188,8 +188,8 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
       ODepot | DDepot => unreachable!(),
     }
 
-    model.add_implication(x, SpConstr::Lb(s, t.t_release));
-    model.add_implication(x, SpConstr::Ub(s, t.t_deadline - t.tt)); // FIXME bug?
+    model.add_implication(x, SpConstr::Lb(s, t.subproblem_lb()));
+    model.add_implication(x, SpConstr::Ub(s, t.subproblem_ub()));
 
     match s {
       Transfer(r, _) | End(_, r) => {

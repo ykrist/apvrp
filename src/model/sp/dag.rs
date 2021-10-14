@@ -102,6 +102,35 @@ impl<'a> GraphModel<'a> {
       SpStatus::Infeasible(kind) => anyhow::bail!("subproblem was infeasible, inf kind {:?}", kind)
     }
   }
+
+  pub fn get_iis(&self, inf_kind: InfKind, graph_iis: &daggylp::Iis) -> Iis {
+    match inf_kind {
+      InfKind::Path => {
+        let (lb_var, ub_var) = graph_iis.bounds().unwrap();
+        let lb_t = self.var_to_task[&lb_var];
+        let lb = self.lbs[&lb_t];
+
+        let ub_t = self.var_to_task[&ub_var];
+        let ub = self.ubs[&ub_t];
+
+        let mut iis: Set<_> = graph_iis.iter_edge_constraints()
+          .map(|e| self.edge_constraints[&e])
+          .collect();
+
+        iis.insert(SpConstr::Ub(ub_t, ub));
+        iis.insert(SpConstr::Lb(lb_t, lb));
+
+        Iis::Path(iis)
+      }
+
+      InfKind::Cycle => {
+        let cycle = graph_iis.iter_edge_constraints()
+          .map(|e| self.edge_constraints[&e])
+          .collect();
+        Iis::Cycle(cycle)
+      }
+    }
+  }
 }
 
 impl<'a> Subproblem<'a> for GraphModel<'a> {
@@ -121,36 +150,8 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
   // Find and remove one or more IIS when infeasible
   fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Iis> {
     let graph_iis = self.model.compute_iis(true);
-
-    let iis = match i {
-      InfKind::Path => {
-        let (lb_var, ub_var) = graph_iis.bounds().unwrap();
-        let lb_t = self.var_to_task[&lb_var];
-        let lb = self.lbs[&lb_t];
-
-        let ub_t = self.var_to_task[&ub_var];
-        let ub = self.ubs[&ub_t];
-
-        let mut iis : Set<_> = graph_iis.iter_edge_constraints()
-          .map(|e| self.edge_constraints[&e])
-          .collect();
-
-        iis.insert(SpConstr::Ub(ub_t, ub));
-        iis.insert(SpConstr::Lb(lb_t, lb));
-
-        Iis::Path(iis)
-      }
-
-      InfKind::Cycle => {
-        let cycle = graph_iis.iter_edge_constraints()
-          .map(|e| self.edge_constraints[&e])
-          .collect();
-        Iis::Cycle(cycle)
-      }
-    };
-
     self.model.remove_iis(&graph_iis);
-    Ok(iis)
+    Ok(self.get_iis(i, &graph_iis))
   }
 
   fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>, _o: Self::Optimal) -> Result<()> {
