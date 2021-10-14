@@ -13,7 +13,7 @@ pub struct Ctx<'a, A, C> {
 pub type LiftedCover<A, C> = Vec<(Set<A>, Set<C>)>;
 
 impl<A: Clause, C: Constraint> InferenceModel<A, C> {
-  pub fn lift_cover(&self, cover: &cover::Cover<A, C>, alg: &mut impl Lift<A, C>) -> LiftedCover<A, C> {
+  pub fn lift_cover(&self, cover: &cover::Cover<A, C>, mut alg: impl Lift<A, C>) -> LiftedCover<A, C> {
     let mut ctx = Ctx {
       model: self,
       cover,
@@ -66,4 +66,13 @@ impl<'a, A: Clause, C: Constraint> Ctx<'a, A, C> {
 pub trait Lift<A, C> {
   /// Given a clause, this method should call a `ctx.add_*()` method for each clause which is mutually exclusive with `a`.
   fn visit_candidate_siblings(&mut self, ctx: &mut Ctx<A, C>, a: &A, cons: &Set<C>);
+}
+
+impl<A, C, T> Lift<A, C> for &mut T
+  where T: Lift<A, C>
+{
+  #[inline(always)]
+  fn visit_candidate_siblings(&mut self, ctx: &mut Ctx<A, C>, a: &A, cons: &Set<C>) {
+    T::visit_candidate_siblings(self, ctx, a, cons)
+  }
 }

@@ -10,6 +10,9 @@ use apvrp::test::test_data_dir;
 use apvrp::experiment::*;
 use apvrp::solution::MpSolution;
 use std::time::Duration;
+use sawmill::InferenceModel;
+use apvrp::model::mp::MpVar;
+use apvrp::model::sp::SpConstr;
 
 
 fn infeasibility_analysis(mp: &mut TaskModelMaster) -> Result<()> {
@@ -83,12 +86,22 @@ fn print_obj_breakdown(mp: &TaskModelMaster) -> Result<Cost> {
   Ok(obj)
 }
 
-fn evalutate_full_objective(lookups: &Lookups, mp: &TaskModelMaster, obj_weights: &ObjWeights, sol: &MpSolution) -> Result<Cost> {
-  let mut subproblem = sp::dag::GraphModel::build(&lookups, sol)?;
+fn evalutate_full_objective(
+  lookups: &Lookups,
+  mp: &TaskModelMaster,
+  inference_model: &InferenceModel<MpVar, SpConstr>,
+  obj_weights: &ObjWeights,
+  sol: &MpSolution
+) -> Result<Cost> {
+  let mp_vars : Set<_> = sol.mp_vars().collect();
+  let mut sp_cons = inference_model.implied_constraints(&mp_vars);
+  inference_model.remove_dominated_constraints(&mut sp_cons);
+
+  let mut subproblem = sp::dag::GraphModel::build(&lookups, &sp_cons, sol.sp_objective_tasks());
   let sp_obj: Time = subproblem.solve_for_obj()?;
   let y_obj_tt: Time = subproblem.second_last_tasks
     .iter()
-    .map(|t| lookups.data.travel_time_to_ddepot(t))
+    .map(|t| lookups.data.travel_time_to_ddepot(&lookups.tasks.by_index[t]))
     .sum();
 
   let true_cost = mp.obj_val()? + (sp_obj + y_obj_tt) as Cost * obj_weights.av_finish_time;
@@ -118,6 +131,10 @@ fn run(exp: ApvrpExp) -> Result<()> {
     }
     lu
   };
+
+  stopwatch.lap(String::from("inf_model_build"));
+  let inference_model = model::sp::build_inference_graph(&lookups);
+
   stopwatch.lap(String::from("mp_build"));
   let obj_weights = ObjWeights::default();
   let mut mp = model::mp::TaskModelMaster::build(&lookups)?;
@@ -151,7 +168,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
   let mut callback = {
     let initial_phase = if exp.parameters.two_phase { Phase::NoAvTTCost } else { Phase::Final };
-    model::cb::Cb::new(&lookups, &exp, &mp, initial_phase, obj_weights)?
+    model::cb::Cb::new(&lookups, &exp, &mp, &inference_model, initial_phase, obj_weights)?
   };
 
 
@@ -204,7 +221,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
       };
 
       if matches!(&callback.phase, Phase::NoAvTTCost) {
-        bounds.record_ub_full_obj(evalutate_full_objective(&lookups, &mp, &obj_weights, &sol)?);
+        bounds.record_ub_full_obj(evalutate_full_objective(&lookups, &mp, &inference_model, &obj_weights, &sol)?);
       }
       solution = Some(sol);
     }

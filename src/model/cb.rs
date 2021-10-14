@@ -5,7 +5,6 @@ use grb::prelude::*;
 use grb::callback::{Callback, Where, CbResult, MIPSolCtx, MIPNodeCtx};
 use fnv::FnvHashSet;
 use super::{sp::*, Phase};
-use crate::model::sp::PathIis;
 use crate::utils::PermuteSliceClone;
 
 use crate::logging::*;
@@ -21,7 +20,8 @@ use experiment::{Params, SpSolverKind, CycleHandling};
 use slurm_harray::{Experiment};
 use serde::{Serialize, Deserialize};
 use smallvec::SmallVec;
-use crate::model::mp::ObjWeights;
+use crate::model::mp::{ObjWeights, MpVar};
+use sawmill::InferenceModel;
 
 
 #[derive(Debug, Clone)]
@@ -179,26 +179,28 @@ impl CbStats {
 
 #[derive(Debug, Clone, Default)]
 pub struct InfeasibilityTracker {
-  av_cycles: HashMap<Vec<Task>, usize>,
-  path_iis: HashMap<PathIis, usize>,
+  cycles: HashMap<Vec<SpConstr>, usize>,
+  paths: HashMap<Vec<SpConstr>, usize>,
 }
 
 impl InfeasibilityTracker {
-  pub fn av_cycle(&mut self, cycle: &[Task]) {
-    let mut sorted_cycle = cycle.to_vec();
-    sorted_cycle.sort_by_key(|t| t.id());
-    let count = self.av_cycles.entry(sorted_cycle).or_insert(0);
+  pub fn av_cycle(&mut self, lu: &Lookups, cycle: &AvCycle) {
+    let mut sorted_cycle : Vec<_> = cycle.sp_constraints(lu).collect();
+    sorted_cycle.sort_unstable();
+    let count = self.cycles.entry(sorted_cycle).or_insert(0);
     if *count > 0 { warn!(?count, ?cycle, "cycle has been encountered before") }
     *count += 1;
   }
 
-  pub fn path_iis(&mut self, iis: &PathIis) {
-    if let Some(count) = self.path_iis.get_mut(&iis) {
-      warn!(?iis, count=*count, "IIS has been seen before");
-      *count += 1;
-    } else {
-      self.path_iis.insert(iis.clone(), 1);
-    }
+  pub fn lp_iis(&mut self, iis: &Iis) {
+    let mut cons : Vec<_> = iis.constraints().iter().copied().collect();
+    cons.sort_unstable();
+    let count = match iis {
+      Iis::Path(_) => self.paths.entry(cons).or_insert(0),
+      Iis::Cycle(_) => self.cycles.entry(cons).or_insert(0),
+    };
+    if *count > 0 { warn!(?count, ?iis, "iis has been encountered before") }
+    *count += 1;
   }
 }
 
@@ -212,6 +214,7 @@ pub struct CachedCut {
 
 pub struct Cb<'a> {
   pub mp_obj: ObjWeights,
+  pub inference_model: &'a sawmill::InferenceModel<MpVar, SpConstr>,
   pub lu: &'a Lookups,
   pub params: &'a Params,
   pub var_names: Map<Var, String>,
@@ -237,7 +240,12 @@ pub struct Cb<'a> {
 }
 
 impl<'a> Cb<'a> {
-  pub fn new(lu: &'a Lookups, exp: &'a experiment::ApvrpExp, mp: &super::mp::TaskModelMaster, initial_phase: Phase, obj: ObjWeights) -> Result<Self> {
+  pub fn new(lu: &'a Lookups,
+             exp: &'a experiment::ApvrpExp,
+             mp: &super::mp::TaskModelMaster,
+             inf_model: &'a InferenceModel<MpVar, SpConstr>,
+             initial_phase: Phase,
+             obj: ObjWeights) -> Result<Self> {
     let stats = CbStats::default();
     let var_names: Map<_, _> = {
       let vars = mp.model.get_vars()?;
@@ -256,6 +264,7 @@ impl<'a> Cb<'a> {
 
     Ok(Cb {
       lu,
+      inference_model: inf_model,
       phase: initial_phase,
       mp_vars: mp.vars.clone(),
       mp_obj: obj,
@@ -355,7 +364,7 @@ impl<'a> Cb<'a> {
   fn av_cycle_cut(&mut self, cycle: &AvCycle) {
     // TODO: might be able to use the IIS stronger cut?
     #[cfg(debug_assertions)] {
-      self.infeasibilities.av_cycle(cycle);
+      self.infeasibilities.av_cycle(self.lu, cycle);
     }
 
     let cycle_tasks = &cycle[..cycle.len() - 1];
@@ -818,18 +827,22 @@ impl<'a> Callback for Cb<'a> {
               serde_json::to_writer(&mut *sol_log, &sol.to_serialisable())?; // need to re-borrow here
               write!(sol_log, "\n")?;
             }
+            let active_vars : Set<_> = sol.mp_vars().collect();
+            let mut active_sp_cons = self.inference_model.implied_constraints(&active_vars);
+            self.inference_model.remove_dominated_constraints(&mut active_sp_cons);
+
 
             trace!(?theta);
             let estimate: Time = theta.values().sum();
             tracing::span::Span::current().record("estimate", &estimate);
             let sp_obj = match self.params.sp {
               SpSolverKind::Dag => {
-                let mut sp = dag::GraphModel::build(self.lu, &sol)?;
-                sp.solve_subproblem_and_add_cuts(self, &theta, estimate)?
+                let mut sp = dag::GraphModel::build(self.lu, &active_sp_cons, sol.sp_objective_tasks());
+                sp.solve_subproblem_and_add_cuts(self, &active_vars, &theta, estimate)?
               }
               SpSolverKind::Lp => {
-                let mut sp = lp::TimingSubproblem::build(self.lu, &sol)?;
-                sp.solve_subproblem_and_add_cuts(self, &theta, estimate)?
+                let mut sp = lp::TimingSubproblem::build(self.lu, &active_sp_cons, sol.sp_objective_tasks())?;
+                sp.solve_subproblem_and_add_cuts(self, &active_vars, &theta, estimate)?
               }
             };
 

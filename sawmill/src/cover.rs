@@ -2,7 +2,8 @@ use crate::*;
 use std::hash::Hasher;
 use tracing::*;
 
-pub struct Ctx<'a, A, C: Constraint> {
+#[derive(Copy, Clone)]
+pub struct Ctx<'a, A, C> {
   pub(crate) active_clauses: &'a Set<A>,
   pub(crate) active_constraints: &'a Set<C>,
   pub(crate) model: &'a InferenceModel<A, C>
@@ -56,14 +57,21 @@ impl<'a, A: Clause, C: Constraint> Ctx<'a, A, C> {
   }
 }
 
-pub trait CoverAlgorithm<A, C: Constraint> {
-  fn find_cover(ctx: &Ctx<A, C>) -> Cover<A, C>;
+pub trait CoverAlgorithm<A, C> {
+  fn find_cover(&mut self, ctx: &Ctx<A, C>) -> Cover<A, C>;
 }
 
+impl<A, C, T> CoverAlgorithm<A, C> for &mut T where T: CoverAlgorithm<A, C> {
+  fn find_cover(&mut self, ctx: &Ctx<A, C>) -> Cover<A, C> {
+    T::find_cover(self, ctx)
+  }
+}
+
+#[derive(Debug)]
 pub struct Greedy;
 
 impl<A: Clause, C: Constraint> CoverAlgorithm<A, C> for Greedy {
-  fn find_cover(ctx: &Ctx<A, C>) -> Cover<A, C> {
+  fn find_cover(&mut self, ctx: &Ctx<A, C>) -> Cover<A, C> {
     let _s = trace_span!("greedy_cover").entered();
     let active_clauses = ctx.active_clauses();
     let active_constraints = ctx.active_constraints();

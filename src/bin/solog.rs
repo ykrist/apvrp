@@ -136,7 +136,7 @@ fn process_solution(mut out: OutputFiles,
 
   for _ in 0.. {
     graph.model.write_debug(out.get_filepath(".txt"))?;
-
+    
     let (status, iis) = match graph.model.solve() {
       SolveStatus::Optimal => {
         graph.model.compute_mrs();

@@ -1,6 +1,7 @@
 use crate::*;
 use std::fmt::{self, Write as FmtWrite};
 use gvdot::{Graph, GraphComponent};
+use std::io;
 
 pub struct InferenceModelViz<'a, A, C: Constraint> {
   model: &'a InferenceModel<A, C>,
@@ -114,16 +115,19 @@ impl<'a, A: Clause, C: Constraint> InferenceModelViz<'a, A, C> {
     self
   }
 
-  fn draw_edge(&self,g: &mut gvdot::Graph<Vec<u8>>, e: &(Node<A, C>, Node<A, C>)) {
+  fn draw_edge<W: io::Write>(&self,g: &mut gvdot::Graph<W>, e: &(Node<A, C>, Node<A, C>)) {
     if self.node_is_visible(&e.0) && self.node_is_visible(&e.1) {
       g.add_edge(self.nodes[&e.0], self.nodes[&e.1]).unwrap();
     }
   }
 
-  pub fn render_svg(&self, filepath: &str) -> std::io::Result<()> {
+  pub fn render(&self, filepath: impl AsRef<Path>) -> std::io::Result<()> {
     use gvdot::{GraphComponent, attr, val, SetAttribute};
 
-    let mut g = gvdot::Graph::new().directed().strict(true).in_memory();
+    let mut g = gvdot::Graph::new()
+      .directed()
+      .strict(true)
+      .stream_to_gv(gvdot::Layout::Dot, filepath)?;
 
     for (n, i) in self.nodes.iter() {
       if self.node_is_visible(n) {
@@ -181,8 +185,7 @@ impl<'a, A: Clause, C: Constraint> InferenceModelViz<'a, A, C> {
       }
     };
 
-    let dot = g.into_string();
-    let status = gvdot::render_svg(&dot, gvdot::Layout::Dot, filepath)?;
+    let status = g.wait()?;
     assert!(status.success());
     Ok(())
   }

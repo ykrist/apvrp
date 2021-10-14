@@ -3,7 +3,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Ord, PartialOrd)]
 pub enum IdxPvTask {
   Transfer(Pv, Req, Req),
   Start(Pv, Req),
@@ -12,7 +12,7 @@ pub enum IdxPvTask {
   Direct(Pv),
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Ord, PartialOrd)]
 pub enum IdxTask {
   Transfer(Req, Req),
   Start(Pv, Req),
@@ -23,6 +23,29 @@ pub enum IdxTask {
   DDepot,
 }
 
+impl IdxTask {
+  pub fn infer_pv(&self) -> Option<Pv> {
+    use IdxTask::*;
+    match self {
+      Direct(p) | Start(p, _) | End(p, _) => Some(*p),
+      _ => None,
+    }
+  }
+}
+
+impl From<(Pv, IdxTask)> for IdxPvTask {
+  fn from((p, t): (Pv, IdxTask)) -> Self {
+    debug_assert!(t.infer_pv().is_none() || t.infer_pv() == Some(p));
+    match t {
+      IdxTask::Request(r) => IdxPvTask::Request(p, r),
+      IdxTask::Start(_, r) => IdxPvTask::Start(p, r),
+      IdxTask::End(_, r) => IdxPvTask::End(p, r),
+      IdxTask::Direct(_) => IdxPvTask::Direct(p),
+      IdxTask::Transfer(r1, r2) => IdxPvTask::Transfer(p, r1, r2),
+      IdxTask::DDepot | IdxTask::ODepot => panic!("not valid for AV depot tasks")
+    }
+  }
+}
 
 impl From<IdxPvTask> for IdxTask {
   fn from(t: IdxPvTask) -> Self {

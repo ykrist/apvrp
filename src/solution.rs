@@ -16,6 +16,7 @@ use std::assert_matches::*;
 
 mod route {
   use super::*;
+  use crate::model::sp::SpConstr;
 
   /// A Passive vehicle route, beginning at a PV origin depot and ending at a PV destination depot
   #[derive(Debug, Clone, Eq, PartialEq)]
@@ -116,6 +117,15 @@ mod route {
     pub fn new(av: Av, tasks: Vec<Task>) -> Self {
       debug_assert_eq!(tasks.first().unwrap(), tasks.last().unwrap());
       AvCycle { av, tasks }
+    }
+
+    pub fn unique_tasks(&self) -> &[Task] {
+      &self.tasks[..self.len() - 1]
+    }
+
+    pub fn sp_constraints<'a>(&'a self, lu: &'a Lookups) -> impl Iterator<Item=SpConstr> + 'a {
+      self.iter_edges()
+        .map(move |(t1, t2)| SpConstr::Delta(t1.index(), t2.index(), lu.data.travel_time[&(t1.end, t2.start)]))
     }
   }
 
@@ -394,6 +404,11 @@ pub struct MpSolution {
 }
 
 impl MpSolution {
+  pub fn num_nondepot_tasks(&self) -> usize {
+    self.av_routes.iter().map(|r| r.without_depots().len()).sum::<usize>()
+    + self.av_cycles.iter().map(|c| c.unique_tasks().len()).sum::<usize>()
+  }
+
   pub fn mp_vars<'a>(&'a self) -> impl Iterator<Item=MpVar> + 'a {
     self.av_routes.iter()
       .flat_map(|r| {
@@ -442,13 +457,19 @@ impl MpSolution {
     if !(self.pv_cycles.is_empty() && self.av_cycles.is_empty()) {
       anyhow::bail!("Cycles in solution")
     }
-    let mut sp = TimingSubproblem::build(lu, self)?;
+    let mut sp = TimingSubproblem::from_mp_sol(lu, self)?;
     sp.model.optimize()?;
     use grb::Status::*;
     match sp.model.status()? {
-      Optimal => SpSolution::from_sp(&sp),
+      Optimal => SpSolution::from_sp(self, &sp),
       status => Err(anyhow::anyhow!("unexpected subproblem status: {:?}", status)),
     }
+  }
+
+  pub fn sp_objective_tasks(&self) -> SmallVec<[IdxTask; crate::constants::NUM_AV_UB]> {
+    self.av_routes.iter()
+      .map(|r| r[r.len() - 2].index())
+      .collect()
   }
 }
 
@@ -542,15 +563,15 @@ impl SpSolution {
     println!("   Y Cost     {:8}    {:8}", y_travel_costs, obj.tt * y_travel_costs);
   }
 
-  pub fn from_sp(sp: &TimingSubproblem) -> Result<SpSolution> {
-    let task_start_times: Map<_, _> = get_var_values(&sp.model, &sp.vars)?
+  pub fn from_sp(sol: &MpSolution, sp: &TimingSubproblem) -> Result<SpSolution> {
+    let task_start_times: Map<_, _> = get_var_values(&sp.model, &sp.task_to_var)?
       .map(|(task, time)| (task, time.round() as Time))
       .collect();
 
-    let av_routes: Vec<_> = sp.mp_sol.av_routes.iter().cloned()
+    let av_routes: Vec<_> = sol.av_routes.iter().cloned()
       .map(|route: AvRoute| {
         let mut sched: Vec<_> = std::iter::once(0) // ODepot
-          .chain(route.without_depots().iter().map(|t| task_start_times[t]))
+          .chain(route.without_depots().iter().map(|t| task_start_times[&t.index()]))
           .collect();
         // DDepot
         sched.push(*sched.last().unwrap() + sp.lu.data.travel_time_to_ddepot(route.theta_task()));
@@ -558,10 +579,10 @@ impl SpSolution {
       })
       .collect();
 
-    let pv_routes: Vec<_> = sp.mp_sol.pv_routes.iter().cloned()
+    let pv_routes: Vec<_> = sol.pv_routes.iter().cloned()
       .map(|route| {
         let sched = route.iter()
-          .map(|t| task_start_times[&sp.lu.tasks.pvtask_to_task[t]]).collect();
+          .map(|t| task_start_times[&t.index().into()]).collect();
         (route, sched)
       })
       .collect();

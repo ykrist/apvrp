@@ -28,7 +28,7 @@ pub struct GraphModel<'a> {
 impl<'a> GraphModel<'a> {
   fn optimality_cut_required(&self, theta: &Map<(Avg, Task), Time>, mrs: &MrsTree) -> bool {
     let mut theta_sum = 0;
-    for t in mrs.obj_vars().map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]]) {
+    for t in mrs.obj_vars().map(|v| self.lu.tasks.by_index[&self.var_to_task[&v]]) {
       for a in self.lu.sets.avs() {
         if let Some(&theta_v) = theta.get(&(a, t)) {
           theta_sum += theta_v;
@@ -48,8 +48,8 @@ impl<'a> GraphModel<'a> {
 
     for c in sp_constraints {
       match c {
-        &SpConstr::Ub(t, ub) => ubs.insert(t, ub),
-        &SpConstr::Lb(t, lb) => lbs.insert(t, lb),
+        &SpConstr::Ub(t, ub) => { ubs.insert(t, ub); },
+        &SpConstr::Lb(t, lb) => { lbs.insert(t, lb); },
         _ => {}
       }
     }
@@ -59,7 +59,7 @@ impl<'a> GraphModel<'a> {
     let mut var_to_task = map_with_capacity(ubs.len());
     let mut task_to_var = map_with_capacity(ubs.len());
 
-    for (t, ub) in ubs {
+    for (&t, &ub) in &ubs {
       let lb = lbs[&t];
       let obj = if obj_tasks.contains(&t) { 1 } else { 0 };
       trace!(?t, lb, ub, obj, "add var");
@@ -109,8 +109,6 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
   type Optimal = ();
   // Additional information obtained when proving the subproblem to be infeasible
   type Infeasible = InfKind;
-  // A group of constraint sets representing one or more IIS
-  type IisConstraintSets = std::iter::Once<Iis>;
 
   // Solve the subproblem and return status
   fn solve(&mut self) -> Result<SpStatus<Self::Optimal, Self::Infeasible>> {
@@ -121,33 +119,38 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
     Ok(s)
   }
   // Find and remove one or more IIS when infeasible
-  fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Self::IisConstraintSets> {
+  fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Iis> {
     let graph_iis = self.model.compute_iis(true);
+
     let iis = match i {
       InfKind::Path => {
         let (lb_var, ub_var) = graph_iis.bounds().unwrap();
-        let lb_pt = self.var_to_task[&lb_var];
-        let ub_pt = self.var_to_task[&ub_var];
-        let path = graph_iis.iter_edge_vars()
-          .map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]])
+        let lb_t = self.var_to_task[&lb_var];
+        let lb = self.lbs[&lb_t];
+
+        let ub_t = self.var_to_task[&ub_var];
+        let ub = self.ubs[&ub_t];
+
+        let mut iis : Set<_> = graph_iis.iter_edge_constraints()
+          .map(|e| self.edge_constraints[&e])
           .collect();
 
-        Iis::Path(PathIis {
-          ub: ub_pt,
-          lb: lb_pt,
-          path,
-        })
+        iis.insert(SpConstr::Ub(ub_t, ub));
+        iis.insert(SpConstr::Lb(lb_t, lb));
+
+        Iis::Path(iis)
       }
 
       InfKind::Cycle => {
-        let cycle = graph_iis.iter_edge_vars()
-          .map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]])
+        let cycle = graph_iis.iter_edge_constraints()
+          .map(|e| self.edge_constraints[&e])
           .collect();
         Iis::Cycle(cycle)
       }
     };
+
     self.model.remove_iis(&graph_iis);
-    Ok(std::iter::once(iis))
+    Ok(iis)
   }
 
   fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>, _o: Self::Optimal) -> Result<()> {
@@ -157,30 +160,35 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
       }
 
       let (obj, edges) = self.model.edge_sensitivity_analysis(&mrs);
-      let mut cut = cb.mp_vars.x_sum_similar_tasks(self.lu, self.var_to_task[&mrs.root()]).grb_sum() * obj;
+      let mut cut = obj * cb.mp_vars.x_sum_similar_tasks_lb(
+        self.lu,
+        &self.var_to_task[&mrs.root()],
+        mrs.root_lb() as Time)
+        .grb_sum();
 
       for ((v1, v2), old_obj, new_obj) in edges {
-        let (t1, t2) = self.edges[&(v1, v2)];
+        let t1 = self.var_to_task[&v1];
+        let t2 = self.var_to_task[&v2];
         // summand for (t1, t2)
         // = (x(t2) - y(t1,t2))*new_obj - (1 - y(t1, t2))*old_obj
         // = x(t2)*new_obj  + y(t1, t2)*(old_obj - new_obj) - old_obj
-        for xvar in cb.mp_vars.x_sum_similar_tasks(self.lu, self.var_to_task[&v2]) {
+        for xvar in cb.mp_vars.x_sum_similar_tasks_lb(self.lu, &t2, self.lbs[&t2]) {
           cut += xvar * new_obj;
         }
 
-        for var in cb.mp_vars.max_weight_edge_sum(self.lu, t1, t2) {
+        for var in cb.mp_vars.max_weight_edge_sum(self.lu, self.lu.tasks.by_index[&t1], self.lu.tasks.by_index[&t2]) {
           cut += (old_obj - new_obj) * var;
         }
 
         cut += -old_obj;
       }
 
-      for t in mrs.obj_vars().map(|v| self.lu.tasks.pvtask_to_task[&self.var_to_task[&v]]) {
+      for (var, t) in mrs.obj_vars().map(|v| (v, self.lu.tasks.by_index[&self.var_to_task[&v]])) {
         // Conditional objective terms
         // I(x,y) = sum(Y[a, t, ddepot] for a in A)
         // each term is - (1 - I(x, y) ) * c(t) * optimal_time(t) where c(t) = 1
         // = I(x, y) * optimal_time(t) - optimal_time(t)
-        let time = self.model.get_solution(&self.vars[&t])?;
+        let time = self.model.get_solution(&var)?;
         cb.mp_vars.y_sum_av(self.lu, t, self.lu.tasks.ddepot).map(|y| time * y).sum_into(&mut cut);
         cut += -time;
 

@@ -126,10 +126,29 @@ impl MpVars {
     }
   }
 
+  pub fn x_sum_similar_tasks_lb<'a>(&'a self, lu: &'a Lookups, t: &IdxTask, lb: Time) -> impl Iterator<Item=Var> + 'a {
+    let tasks = lu.tasks.task_to_pvtasks[&lu.tasks.by_index[t]].iter()
+      .filter(move |t| t.t_release == lb);
+    #[cfg(debug_assertions)] {
+      let count = tasks.clone().count();
+      if count == 0 {
+        error!(
+          pv_tasks=?&lu.tasks.task_to_pvtasks[&lu.tasks.by_index[&t]],
+          ?t,
+          lb,
+          "no PV tasks match LB"
+        );
+      }
+    }
+    tasks.map(move |t| self.x[t])
+  }
+
+
   pub fn x_sum_similar_tasks<'a>(&'a self, lu: &'a Lookups, t: PvTask) -> impl Iterator<Item=Var> + 'a {
     lu.tasks.pvtask_to_similar_pvtask[&t].iter()
       .map(move |t| self.x[t])
   }
+
   pub fn x_sum_all_task<'a>(&'a self, lu: &'a Lookups, t: Task) -> impl Iterator<Item=Var> + 'a {
     lu.tasks.task_to_pvtasks[&t].iter().map(move |t| self.x[t])
   }

@@ -32,32 +32,44 @@ thread_local! {
   };
 }
 
-pub struct TimingConstraints {
-  pub edge_constraints: Map<(Task, Task), Constr>,
-  pub lb: Map<PvTask, Constr>,
-  pub ub: Map<PvTask, Constr>,
+
+pub struct TimingSubproblem<'a> {
+  pub var_to_task: Map<Var, IdxTask>,
+  pub task_to_var: Map<IdxTask, Var>,
+  pub constraint_map: Map<SpConstr, Constr>,
+  pub constraint_map_inv: Map<Constr, SpConstr>,
+  pub obj_tasks: SmallVec<[IdxTask; NUM_AV_UB]>,
+  pub model: Model,
+  pub lu: &'a Lookups,
 }
 
-impl TimingConstraints {
-  pub fn build(lu: &Lookups, sol: &MpSolution, model: &mut Model, vars: &Map<Task, Var>) -> Result<Self> {
+impl<'a> TimingSubproblem<'a> {
+  pub fn from_mp_sol(lu: &'a Lookups, sol: &MpSolution) -> Result<Self> {
     let _span = error_span!("constraints").entered();
 
-    let mut edge_constraints = map_with_capacity(2 * vars.len());
-    let mut lb = map_with_capacity(vars.len());
-    let mut ub = map_with_capacity(vars.len());
+    let mut model = ENV.with(|env| Model::with_env("subproblem", env))?;
+    let mut constraint_map = Map::default();
+    let mut task_to_var = map_with_capacity(sol.num_nondepot_tasks());
 
     for &pvt in sol.iter_sp_vars() {
-      let t = &lu.tasks.pvtask_to_task[&pvt];
+      let t = lu.tasks.pvtask_to_task[&pvt].index();
+      let var = add_ctsvar!(model, name: &format!("T[{:?}]", t))?;
+      task_to_var.insert(t, var);
+
+      let lb = pvt.subproblem_lb();
+      let ub = pvt.subproblem_ub();
+
       trace!(
-        p_lb=pvt.t_release,
-        p_ub=(pvt.t_deadline - pvt.tt),
-        lb=t.t_release,
-        ub=(t.t_deadline - t.tt),
+        lb,
+        ub,
         ?t, ?pvt, "bounds"
       );
 
-      lb.insert(pvt, model.add_constr("", c!(vars[t] >= pvt.t_release))?);
-      ub.insert(pvt, model.add_constr("", c!(vars[t] <= pvt.t_deadline - pvt.tt))?);
+      let grb_c = model.add_constr("", c!(task_to_var[&t] >= lb))?;
+      constraint_map.insert(SpConstr::Lb(t, lb), grb_c);
+
+      let grb_c = model.add_constr("", c!(task_to_var[&t] <= ub))?;
+      constraint_map.insert(SpConstr::Ub(t, ub), grb_c);
     }
 
     for c in sol.iter_sp_x_edges() {
@@ -71,109 +83,119 @@ impl TimingConstraints {
           (pt1, pt2)
         }
       };
-      let t1 = lu.tasks.pvtask_to_task[pt1];
-      let t2 = lu.tasks.pvtask_to_task[pt2];
+      let d = pt1.tt + lu.data.srv_time[&pt1.end];
+      let t1 = lu.tasks.pvtask_to_task[pt1].index();
+      let t2 = lu.tasks.pvtask_to_task[pt2].index();
 
-      let d = t1.tt + lu.data.srv_time[&t1.end];
-      let c=  model.add_constr("", c!(vars[&t1] + d <= vars[&t2] ))?;
-      edge_constraints.insert((t1, t2), c);
+
+      let grb_c = model.add_constr("", c!(task_to_var[&t1] + d <= task_to_var[&t2]))?;
+      constraint_map.insert(SpConstr::Delta(t1, t2, d), grb_c);
     }
 
-    for (&t1, &t2) in sol.iter_sp_y_edges() {
-      if edge_constraints.contains_key(&(t1, t2)) {
-        trace!(?t1, ?t2, "AV TT constraint dominated by loading/unloading constraint")
-      } else {
-        trace!(?t1, ?t2, "av_sync");
-        let c = c!(vars[&t1] + t1.tt + lu.data.travel_time[&(t1.end, t2.start)] <= vars[&t2]);
-        edge_constraints.insert((t1, t2), model.add_constr("", c)?);
-      }
+    for (t1, t2) in sol.iter_sp_y_edges() {
+      trace!(?t1, ?t2, "av_sync");
+      let d = t1.tt + lu.data.travel_time[&(t1.end, t2.start)];
+      let t1 = t1.index();
+      let t2 = t2.index();
+      let grb_c = model.add_constr("", c!(task_to_var[&t1] + d <= task_to_var[&t2]))?;
+      constraint_map.insert(SpConstr::Delta(t1, t2, d), grb_c);
     }
-    Ok(TimingConstraints { edge_constraints, ub, lb })
+
+    let obj_tasks = sol.sp_objective_tasks();
+    model.set_objective(obj_tasks.iter().map(|t| task_to_var[t]).grb_sum(), Minimize)?;
+
+    let var_to_task = utils::inverse_map(&task_to_var);
+    let constraint_map_inv = utils::inverse_map(&constraint_map);
+    Ok(TimingSubproblem {
+      lu,
+      model,
+      task_to_var,
+      var_to_task,
+      constraint_map,
+      constraint_map_inv,
+      obj_tasks,
+    })
   }
-}
 
 
-pub struct TimingSubproblem<'a> {
-  pub vars: Map<Task, Var>,
-  // Tasks which appear in the objective
-  pub second_last_tasks: SmallVec<[Task; NUM_AV_UB]>,
-  pub cons: TimingConstraints,
-  pub model: Model,
-  pub mp_sol: &'a MpSolution,
-  pub lu: &'a Lookups,
-}
-
-impl<'a> TimingSubproblem<'a> {
-  pub fn build(lu: &'a Lookups, sol: &'a MpSolution) -> Result<TimingSubproblem<'a>> {
+  pub fn build(lu: &'a Lookups, constraints: &Set<SpConstr>, obj_tasks: SmallVec<[IdxTask; NUM_AV_UB]>) -> Result<TimingSubproblem<'a>> {
     let _span = error_span!("sp_build").entered();
 
+    let mut var_to_task = Map::default();
+
     let mut model = ENV.with(|env| Model::with_env("subproblem", env))?;
-    let vars: Map<_, _> = {
-      let mut v = map_with_capacity(100);
-      for t in sol.iter_sp_vars() {
-          let t = lu.tasks.pvtask_to_task[t];
-          #[cfg(debug_assertions)]
-            v.insert(t, add_ctsvar!(model, name: &format!("T[{:?}]", &t))?);
-          #[cfg(not(debug_assertions))]
-            v.insert(t, add_ctsvar!(model)?);
-        }
-      v
-    };
 
-    let cons = TimingConstraints::build(lu, sol, &mut model, &vars)?;
+    for c in constraints {
+      if let SpConstr::Lb(t, _) = c {
+        #[cfg(debug_assertions)]
+          let var = add_ctsvar!(model, name: &format!("T[{:?}]", t))?;
+        #[cfg(not(debug_assertions))]
+          let var = add_ctsvar!(model)?;
+        var_to_task.insert(var, *t);
+      }
+    }
 
-    let second_last_tasks : SmallVec<_> = sol.av_routes.iter().map(|r| *r.theta_task()).collect();
-    let obj = second_last_tasks.iter().map(|t| vars[t]).grb_sum();
+    let task_to_var: Map<_, _> = var_to_task.iter().map(|(&v, &t)| (t, v)).collect();
+    let mut constraint_map = map_with_capacity(constraints.len());
+    let mut constraint_map_inv = map_with_capacity(constraints.len());
+
+    for c in constraints {
+      let ineq = match c {
+        SpConstr::Lb(t, lb) => c!(task_to_var[t] >= *lb),
+        SpConstr::Ub(t, ub) => c!(task_to_var[t] <= *ub),
+        SpConstr::Delta(t1, t2, d) => c!(task_to_var[t1] + *d <= task_to_var[t2]),
+      };
+      let grb_c = model.add_constr("", ineq)?;
+      constraint_map.insert(*c, grb_c);
+      constraint_map_inv.insert(grb_c, *c);
+    }
+
+    let obj = obj_tasks.iter().map(|t| task_to_var[t]).grb_sum();
 
     model.update()?;
     trace!(obj=?obj.with_names(&model));
     model.set_objective(obj, Minimize)?;
 
-    Ok(TimingSubproblem { vars, cons, model, mp_sol: sol, second_last_tasks, lu })
+    Ok(TimingSubproblem {
+      task_to_var,
+      var_to_task,
+      constraint_map,
+      constraint_map_inv,
+      obj_tasks,
+      model,
+      lu,
+    })
   }
 
-  pub fn write_debug_graph(&self, path: impl AsRef<Path>) -> Result<()> {
-    use std::io::Write;
-
-    let mut writer = BufWriter::new(File::create(&path).write_context(&path)?);
-    let mut task_order = map_with_capacity(self.cons.lb.len());
-
-    for (k,&pt) in self.cons.lb.keys().enumerate() {
-      let t = self.lu.tasks.pvtask_to_task[&pt];
-      let obj = if self.second_last_tasks.contains(&t) { 1 } else { 0 };
-      task_order.insert(t, k);
-      writeln!(writer, "{} {} {}", pt.t_release, pt.t_deadline, obj)?;
-    }
-    writeln!(writer, "edges")?;
-
-    for ((t1, t2), c) in &self.cons.edge_constraints {
-      let rhs : f64 = self.model.get_obj_attr(attr::RHS, c)?;
-      let d = rhs.abs().round() as Time;
-      let i = task_order[t1];
-      let j = task_order[t2];
-      writeln!(writer, "{} {} {}", i, j, d)?;
-    }
-
-    Ok(())
+  pub fn iis_constraints<'b>(&'b self) -> Result<impl Iterator<Item=SpConstr> + 'b> {
+    let model_cons = self.model.get_constrs()?;
+    let iis_constr = self.model.get_obj_attr_batch(grb::prelude::attr::IISConstr, model_cons.iter().copied())?;
+    Ok(iis_constr.into_iter().zip(model_cons).filter_map(move |(is_iis, grb_c)| {
+      if is_iis > 0 {
+        Some(self.constraint_map_inv[grb_c])
+      } else {
+        None
+      }
+    }))
   }
 
-  #[instrument(level="error", name="debug_iis", skip(self))]
+  pub fn mrs_constraints<'b>(&'b self) -> Result<impl Iterator<Item=SpConstr> + 'b> {
+    let model_cons = self.model.get_constrs()?;
+    let iis_constr = self.model.get_obj_attr_batch(grb::prelude::attr::Pi, model_cons.iter().copied())?;
+    Ok(iis_constr.into_iter().zip(model_cons).filter_map(move |(dual, grb_c)| {
+      if dual.abs() > 0.1 {
+        Some(self.constraint_map_inv[grb_c])
+      } else {
+        None
+      }
+    }))
+  }
+
+  #[instrument(level = "error", name = "debug_iis", skip(self))]
   pub fn debug_infeasibility(&mut self) -> Result<()> {
     self.model.compute_iis()?;
-    for (t, lb) in &self.cons.lb {
-      if self.model.get_obj_attr(attr::IISConstr, lb)? > 0 {
-        error!(cons="lb", ?t, val=?self.model.get_obj_attr(attr::RHS, lb)?);
-      }
-    }
-    for (t, ub) in &self.cons.ub {
-      if self.model.get_obj_attr(attr::IISConstr, ub)? > 0 {
-        error!(cons="ub", ?t, val=?self.model.get_obj_attr(attr::RHS, ub)?);
-      }
-    }
-    for ((t1, t2), c) in &self.cons.edge_constraints {
-      if self.model.get_obj_attr(attr::IISConstr, c)? > 0 {
-        error!(cons="edge", ?t1, ?t2, val=?-self.model.get_obj_attr(attr::RHS, c)?);
-      }
+    for cons in self.iis_constraints()? {
+      error!(?cons);
     }
     Ok(())
   }
@@ -182,7 +204,6 @@ impl<'a> TimingSubproblem<'a> {
 impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
   type Optimal = ();
   type Infeasible = ();
-  type IisConstraintSets = std::iter::Once<Iis>;
 
   fn solve(&mut self) -> Result<SpStatus<(), ()>> {
     self.model.optimize()?;
@@ -200,139 +221,63 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     }
   }
 
-  #[instrument(level="trace", skip(self))]
-  fn extract_and_remove_iis(&mut self, _: ()) -> Result<Self::IisConstraintSets> {
-    #[cfg(debug_assertions)]
-    fn find_iis_bound<'a>(model: &Model, cons: impl IntoIterator<Item=(&'a PvTask, &'a Constr)>) -> Result<Option<PvTask>> {
-      let mut task = None;
-      for (t, c) in cons {
-        if model.get_obj_attr(attr::IISConstr, c)? > 0 {
-          assert_eq!(task, None);
-          task = Some(*t);
-        }
-      }
-      Ok(task)
-    }
-
-    #[cfg(not(debug_assertions))]
-    fn find_iis_bound<'a>(model: &Model, cons: impl IntoIterator<Item=(&'a PvTask, &'a Constr)>) -> Result<Option<PvTask>> {
-      for (t, c) in cons {
-        if model.get_obj_attr(attr::IISConstr, c)? > 0 {
-          return Ok(Some(*t));
-        }
-      }
-      Ok(None)
-    }
-
+  #[instrument(level = "trace", skip(self))]
+  fn extract_and_remove_iis(&mut self, _: ()) -> Result<Iis> {
     self.model.compute_iis()?;
 
-    let bounds = match find_iis_bound(&self.model, &self.cons.ub)? {
-      Some(ub) => {
-        let lb = find_iis_bound(&self.model, &self.cons.lb)?.expect("IIS has no lower bound");
-        Some((lb, ub))
+    let iis: Set<_> = self.iis_constraints()?.collect();
+    trace!(?iis);
+
+    match iis.iter().filter(|c| matches!(c, SpConstr::Lb(..))).count() {
+      0 => Ok(Iis::Cycle(iis)),
+      1 => Ok(Iis::Path(iis)),
+      count => {
+        error!(count, ?iis, "multiple lower bounds in IIS");
+        panic!("bugalug")
       }
-      None => {
-        debug_assert_eq!(find_iis_bound(&self.model, &self.cons.lb)?, None);
-        None
-      }
-    };
-
-    let mut iis_succ = Map::default();
-
-    { // Split borrows
-      let cons = &mut self.cons.edge_constraints;
-      let model = &mut self.model;
-
-      cons.retain_ok::<_, anyhow::Error>(|(t1, t2), c| {
-        if model.get_obj_attr(attr::IISConstr, c)? > 0 {
-          trace!(?t1, ?t2);
-          iis_succ.insert(*t1, *t2);
-          model.remove(*c)?;
-          Ok(false)
-        } else {
-          Ok(true)
-        }
-      })?;
     }
-
-    trace!(?iis_succ);
-
-    let iis = if let Some((lb_task, ub_task)) = bounds {
-      // Path IIS
-      let mut path = SmallVec::with_capacity(iis_succ.len() + 1);
-
-      let mut t = self.lu.tasks.pvtask_to_task[&lb_task];
-      path.push(t);
-
-      while iis_succ.len() > 0 {
-        t = iis_succ.remove(&t).expect("bad IIS path");
-        path.push(t);
-      }
-      debug_assert_eq!(path.last(), self.lu.tasks.pvtask_to_task.get(&ub_task));
-
-      Iis::Path(PathIis { ub: ub_task, lb: lb_task, path } )
-    } else {
-      // Path IIS
-      let mut cycle = SmallVec::with_capacity(iis_succ.len());
-
-      let mut t = *iis_succ.keys().next().expect("IIS has no edge constraints");
-      cycle.push(t);
-
-      while iis_succ.len() > 1 { // keep last one
-        t = iis_succ.remove(&t).expect("bad IIS cycle");
-        cycle.push(t);
-      }
-      Iis::Cycle(cycle)
-    };
-
-    Ok(std::iter::once(iis))
   }
 
-  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, _theta: &Map<(Avg, Task), Time> , _: ()) -> Result<()> {
+  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, _theta: &Map<(Avg, Task), Time>, _: ()) -> Result<()> {
     let sp_obj = self.model.get_attr(attr::ObjVal)?;
     let _s = trace_span!("optimality_cut", obj=%sp_obj).entered();
     let mut lhs = Expr::default();
 
-    let mut num_edges_constraints = 0i32;
-    for ((t1, t2), c) in &self.cons.edge_constraints {
-      let dual = self.model.get_obj_attr(attr::Pi, c)?;
-      if dual.abs() > 0.1 {
-        num_edges_constraints += 1;
-        trace!(?t1, ?t2, ?dual, "non-zero edge dual");
-        cb.mp_vars.max_weight_edge_sum(self.lu, *t1, *t2).sum_into(&mut lhs);
-      }
-    }
-
-    self.second_last_tasks.iter()
-      .flat_map(|&t| cb.mp_vars.y_sum_av(cb.lu, t, cb.lu.tasks.ddepot))
-      .sum_into(&mut lhs);
-
+    let mut num_edge_constraints = 0i32;
     let mut num_lbs = 0i32;
-    for (t, c) in &self.cons.lb {
-      let dual = self.model.get_obj_attr(attr::Pi, c)?;
-      if dual.abs() > 0.1 {
-        num_lbs += 1;
-        trace!(?t, ?dual, "non-zero LB dual");
-        for t in &self.lu.tasks.pvtask_to_similar_pvtask[t] {
-          lhs += cb.mp_vars.x[t];
+    for cons in self.mrs_constraints()? {
+      match cons {
+        SpConstr::Lb(t, lb) => {
+          num_lbs += 1;
+          cb.mp_vars.x_sum_similar_tasks_lb(self.lu, &t, lb).sum_into(&mut lhs)
+        }
+        SpConstr::Delta(t1, t2, _) => {
+          num_edge_constraints += 1;
+          cb.mp_vars.max_weight_edge_sum(
+            self.lu,
+            self.lu.tasks.by_index[&t1],
+            self.lu.tasks.by_index[&t2],
+          ).sum_into(&mut lhs);
+        }
+        SpConstr::Ub(..) => {
+          error!(?cons, "UB constraint in MRS");
+          panic!("bugalug")
         }
       }
+      trace!(?cons, "MRS constraint");
     }
 
-    #[cfg(debug_assertions)] {
-      for (_, c) in &self.cons.ub {
-        let dual = self.model.get_obj_attr(attr::Pi, c)?;
-        assert!(dual.abs() < 0.1, "non-zero dual on UB");
-      }
-    }
+    self.obj_tasks.iter()
+      .flat_map(|t| cb.mp_vars.y_sum_av(cb.lu, self.lu.tasks.by_index[t], cb.lu.tasks.ddepot))
+      .sum_into(&mut lhs);
 
-    let num_obj_tasks = self.second_last_tasks.len() as i32;
-    trace!(num_lbs, num_edges_constraints, num_obj_tasks);
-    lhs = sp_obj * (1 - num_lbs - num_edges_constraints - num_obj_tasks + lhs);
+    let num_obj_tasks = self.obj_tasks.len() as i32;
+    trace!(num_lbs, num_edge_constraints, num_obj_tasks);
+    lhs = sp_obj * (1 - num_lbs - num_edge_constraints - num_obj_tasks + lhs);
 
     let rhs = self.lu.sets.avs()
-      .cartesian_product(&self.second_last_tasks)
-      .filter_map(|(a, &t)| cb.mp_vars.theta.get(&(a,t)))
+      .cartesian_product(&self.obj_tasks)
+      .filter_map(|(a, t)| cb.mp_vars.theta.get(&(a, self.lu.tasks.by_index[t])))
       .grb_sum();
 
     cb.enqueue_cut(c!(lhs <= rhs), CutType::LpOpt);

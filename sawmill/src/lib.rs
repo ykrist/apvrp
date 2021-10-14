@@ -263,13 +263,14 @@ impl<A: Clause, C: Constraint> InferenceModel<A, C> {
     }
   }
 
-  pub fn cover<Algo: cover::CoverAlgorithm<A, C>>(&self, active_clauses: &Set<A>, constraints: &Set<C>) -> cover::Cover<A, C> {
+  pub fn cover_with_algorithm<Alg: cover::CoverAlgorithm<A, C>>(&self, mut alg: Alg, active_clauses: &Set<A>, constraints: &Set<C>) -> cover::Cover<A, C> {
     let ctx = self.cover_ctx(active_clauses, constraints);
-    Algo::find_cover(&ctx)
+    alg.find_cover(&ctx)
   }
 
-  pub fn cover_default(&self, active_clauses: &Set<A>, constraints: &Set<C>) -> cover::Cover<A, C> {
-    self.cover::<cover::Greedy>(active_clauses, constraints)
+  #[inline(always)]
+  pub fn cover(&self, active_clauses: &Set<A>, constraints: &Set<C>) -> cover::Cover<A, C> {
+    self.cover_with_algorithm(cover::Greedy, active_clauses, constraints)
   }
 
   // pub fn visit_implied_constraints(&self, active_clauses: impl IntoIterator<Item=&C>, visitor: &mut impl ImpliedConstraintsVistor) {

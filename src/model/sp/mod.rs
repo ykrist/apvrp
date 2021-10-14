@@ -12,34 +12,36 @@ use IdxTask::*;
 
 use crate::utils::{iter_pairs, VarIterExt, PeekableExt};
 use daggylp::Weight;
+use sawmill::lift::LiftedCover;
 
 pub mod lp;
 pub mod dag;
 
-
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct PathIis {
-  lb: PvTask,
-  ub: PvTask,
-  path: SmallVec<[Task; 10]>,
-}
-
 #[derive(Debug, Clone)]
 pub enum Iis {
   /// Includes first task LB, last task UB, tasks must be in time-order
-  Path(PathIis),
+  Path(Set<SpConstr>),
   /// Tasks should be ordered according to the cycle.  First task should NOT be the same as the last task.
-  Cycle(SmallVec<[Task; 10]>),
+  Cycle(Set<SpConstr>),
 }
 
 impl Iis {
-  // pub fn constraints<'a>(&'a self) -> impl Iterator<Item=&'a SpConstr> + 'a {
-  //   todo!()
-  // }
+  pub fn constraints<'a>(&'a self) -> &'a Set<SpConstr> {
+    match self {
+      Iis::Cycle(s) | Iis::Path(s) => s,
+    }
+  }
+
+  pub fn cut_type(&self) -> CutType {
+    match self {
+      Iis::Cycle(_) => CutType::LpCycle,
+      Iis::Path(_) => CutType::LpPath,
+    }
+  }
 }
 
 
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, PartialOrd, Ord)]
 pub enum SpConstr {
   Lb(IdxTask, Time),
   Ub(IdxTask, Time),
@@ -64,17 +66,15 @@ pub trait Subproblem<'a>: Sized {
   type Optimal;
   // Additional information obtained when proving the subproblem to be infeasible
   type Infeasible;
-  // A group of constraint sets representing one or more IIS
-  type IisConstraintSets: IntoIterator<Item=Iis>;
 
   // Solve the subproblem and return status
   fn solve(&mut self) -> Result<SpStatus<Self::Optimal, Self::Infeasible>>;
   // Find and remove one or more IIS when infeasible
-  fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Self::IisConstraintSets>;
+  fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Iis>;
   // Find and remove one or more MRS when optimal
-  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>,  o: Self::Optimal) -> Result<()>;
+  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>, o: Self::Optimal) -> Result<()>;
 
-  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>, estimate: Time) -> Result<Option<Time>> {
+  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, active_mpvars: &Set<MpVar>, theta: &Map<(Avg, Task), Time>, estimate: Time) -> Result<Option<Time>> {
     // TODO: stop early once the IIS covers start getting too big
     //  Can use cb.params, will need find the size of the cover before constructing the constraint
 
@@ -85,31 +85,21 @@ pub trait Subproblem<'a>: Sized {
             self.add_optimality_cuts(cb, theta, o)?;
           }
           if solve == 0 {
-            return Ok(Some(sp_obj))
+            return Ok(Some(sp_obj));
           } else {
-            return Ok(None)
+            return Ok(None);
           }
         }
 
         SpStatus::Infeasible(i) => {
-          for iis in self.extract_and_remove_iis(i)?.into_iter() {
-            trace!(?iis);
-            match iis {
-              Iis::Path(iis) => {
-                #[cfg(debug_assertions)] {
-                  cb.infeasibilities.path_iis(&iis);
-                }
-                cb.enqueue_cut(build_path_infeasiblity_cut(cb, &iis), CutType::LpPath);
-              }
-              Iis::Cycle(cycle) => {
-                #[cfg(debug_assertions)] {
-                  assert_ne!(cycle.first(), cycle.last());
-                  cb.infeasibilities.av_cycle(&cycle);
-                }
-                cb.enqueue_cut(build_cyclic_infeasiblity_cut(cb, &cycle), CutType::LpCycle);
-              }
-            }
+          let iis = self.extract_and_remove_iis(i)?;
+          trace!(?iis);
+          #[cfg(debug_assertions)] {
+            cb.infeasibilities.lp_iis(&iis);
           }
+          let cover = cb.inference_model.cover(active_mpvars, iis.constraints());
+          let lifted_cover = cb.inference_model.lift_cover(&cover, CoverLift{ lookups: cb.lu });
+          cb.enqueue_cut(build_cut_from_lifted_cover(&cb, &lifted_cover), iis.cut_type());
         }
       }
     }
@@ -118,99 +108,22 @@ pub trait Subproblem<'a>: Sized {
   }
 }
 
-#[instrument(level = "debug", skip(cb))]
-pub fn build_path_infeasiblity_cut(cb: &cb::Cb, iis: &PathIis) -> IneqExpr {
-  let PathIis { lb: lb_task, ub: ub_task, path } = iis;
-  let n = path.len() - 1;
-  debug_assert_eq!((lb_task.start, lb_task.end), (path[0].start, path[0].end));
-  debug_assert_eq!((ub_task.start, ub_task.end), (path[n].start, path[n].end));
-  debug_assert!(path.len() > 1);
-
+pub fn build_cut_from_lifted_cover(cb: &cb::Cb, lifted_cover: &LiftedCover<MpVar, SpConstr>) -> IneqExpr {
+  let rhs = lifted_cover.len() - 1;
   let mut lhs = Expr::default();
-  let mut rhs = 1; // 2 bounds - 1
-
-  cb.mp_vars.x_sum_similar_tasks(cb.lu, *lb_task).sum_into(&mut lhs);
-  cb.mp_vars.x_sum_similar_tasks(cb.lu, *ub_task).sum_into(&mut lhs);
-
-  let mut edge_nodes = path.as_slice();
-
-  if matches!(lb_task.ty, TaskType::Transfer| TaskType::Start) && path[0].end == path[1].start {
-    edge_nodes = &edge_nodes[1..];
-    trace!(?edge_nodes, "LB task responsible for first edge");
+  for (vars, _) in lifted_cover {
+    vars.iter().map(|v| match v {
+      &MpVar::X(p, t) => cb.mp_vars.x[&cb.lu.tasks.by_index_pv[&IdxPvTask::from((p, t))]],
+      MpVar::Y(av, t1, t2) => {
+        let t1 = cb.lu.tasks.by_index[t1];
+        let t2 = cb.lu.tasks.by_index[t2];
+        cb.mp_vars.y[&(*av, t1, t2)]
+      },
+    })
+      .sum_into(&mut lhs)
   }
-
-  if matches!(ub_task.ty, TaskType::Transfer | TaskType::End) && path[n - 1].end == path[n].start {
-    edge_nodes = &edge_nodes[..edge_nodes.len()-1];
-    trace!(?edge_nodes, "UB task responsible for last edge");
-  }
-
-  let mut x_edges = Set::default();
-
-  for (t1, t2) in iter_pairs(edge_nodes) {
-    let _s = trace_span!("edge_constraint", ?t1, ?t2).entered();
-    match edge_constr_kind(t1, t2) {
-      EdgeConstrKind::AvTravelTime => {
-        rhs += 1;
-        cb.mp_vars.y_sum_av(cb.lu, *t1, *t2).sum_into(&mut lhs);
-        trace!("AV TT");
-      }
-      EdgeConstrKind::Loading => {
-        x_edges.insert(*t1);
-        trace!("Loading");
-      }
-      EdgeConstrKind::Unloading => {
-        x_edges.insert(*t2);
-        trace!("Unloading");
-      }
-    }
-  }
-
-  rhs += x_edges.len();
-  x_edges.iter()
-    .flat_map(|t| &cb.lu.tasks.task_to_pvtasks[t])
-    .map(|t| cb.mp_vars.x[t])
-    .sum_into(&mut lhs);
-
-
-  trace!(lhs=?lhs.with_names(&cb.var_names), iis_size=path.len()+1, "generate cut");
+  trace!(lhs=?lhs.with_names(&cb.var_names), iis_size=lifted_cover.len(), "generate auto cut");
   c!( lhs <= rhs)
-}
-
-pub fn build_cyclic_infeasiblity_cut(cb: &cb::Cb, cycle: &[Task]) -> IneqExpr {
-  debug_assert_ne!(cycle.first(), cycle.last());
-  debug_assert!(cycle.len() > 1, "cycle too short: {:?}", cycle);
-
-  let mut x_edges = set_with_capacity(cycle.len());
-  let mut rhs = 0u32;
-
-  let mut lhs = Expr::default();
-
-  for (t1, t2) in iter_cycle(cycle) {
-    match edge_constr_kind(t1, t2) {
-      EdgeConstrKind::AvTravelTime => {
-        rhs += 1;
-        cb.mp_vars.y_sum_av(cb.lu, *t1, *t2).sum_into(&mut lhs);
-        trace!("AV TT");
-      }
-      EdgeConstrKind::Loading => {
-        x_edges.insert(*t1);
-        trace!("Loading");
-      }
-      EdgeConstrKind::Unloading => {
-        x_edges.insert(*t2);
-        trace!("Unloading");
-      }
-    }
-  }
-
-  rhs += x_edges.len() as u32;
-  rhs -= 1;
-
-  for t in x_edges {
-    cb.mp_vars.x_sum_all_task(cb.lu, t).sum_into(&mut lhs);
-  }
-
-  c!(lhs <= rhs)
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -253,8 +166,7 @@ impl MpSolution {
 }
 
 
-
-#[instrument(level="info", skip(lu))]
+#[instrument(level = "info", skip(lu))]
 pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpConstr> {
   let mut model = sawmill::InferenceModel::<MpVar, SpConstr>::build();
   let mut included_tasks = Set::default();
@@ -356,7 +268,7 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
   }
 
 
-  info!(total_subproblem_constraints=constraints.len());
+  info!(total_subproblem_constraints = constraints.len());
   for (group, mut elems) in groups {
     let _s = trace_span!("constr_dom", ?group).entered();
 
@@ -388,7 +300,7 @@ pub struct CoverLift<'a> {
 
 impl<'a> CoverLift<'a> {
   pub fn new(lookups: &'a Lookups) -> Self {
-    CoverLift{ lookups }
+    CoverLift { lookups }
   }
 }
 
@@ -408,7 +320,7 @@ impl sawmill::lift::Lift<MpVar, SpConstr> for CoverLift<'_> {
             ctx.add_checked(MpVar::Y(b, t1, t2));
           }
         }
-      },
+      }
     }
   }
 }

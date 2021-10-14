@@ -221,6 +221,17 @@ pub trait Json: Serialize + DeserializeOwned {
   }
 }
 
+
+pub fn inverse_map<K, V, S>(m: &HashMap<K, V, S>) -> HashMap<V, K, S>
+  where
+    K: Hash + Eq + Clone,
+    V: Hash + Eq + Clone,
+    S: BuildHasher + Default,
+{
+  m.iter().map(|(k, v)| (v.clone(), k.clone())).collect()
+}
+
+
 impl<T: Serialize + DeserializeOwned> Json for T {}
 
 

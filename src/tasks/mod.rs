@@ -187,6 +187,14 @@ impl PvTask {
       tt,
     }
   }
+
+  #[inline(always)]
+  pub fn subproblem_ub(&self) -> Time { self.t_deadline - self.tt }
+
+  #[inline(always)]
+  pub fn subproblem_lb(&self) -> Time { self.t_release }
+
+
 }
 
 #[derive(Copy, Clone)]
