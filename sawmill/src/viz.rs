@@ -127,8 +127,9 @@ impl<'a, A: Clause, C: Constraint> InferenceModelViz<'a, A, C> {
     let mut g = gvdot::Graph::new()
       .directed()
       .strict(true)
-      .stream_to_gv(gvdot::Layout::Dot, filepath)?;
-
+      .stream_to_gv(gvdot::Layout::Dot, filepath)?
+      .attr(gvdot::attr::RankDir, gvdot::val::RankDir::LR)?;
+    
     for (n, i) in self.nodes.iter() {
       if self.node_is_visible(n) {
 
