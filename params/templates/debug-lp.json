@@ -1,0 +1,23 @@
+{
+  "timelimit": 7200,
+  "cpus": 1,
+  "param_name": "debug-lp",
+  "sp": "Lp",
+  "av_fork_cuts": {
+    "start": 1,
+    "end": 0
+  },
+  "av_tournament_cuts": {
+    "start": 1,
+    "end": 0
+  },
+  "pv_fork_cuts": {
+    "start": 1,
+    "end": 0
+  },
+  "endtime_cuts": false,
+  "cycle_cuts": false,
+  "two_phase": true,
+  "gurobi": [],
+  "pvcg": false
+}

@@ -214,6 +214,11 @@ pub struct ApvrpExp {
   pub outputs: Outputs,
 }
 
+#[inline(always)]
+fn scale_time(t: u64, s: f64) -> u64 {
+  (t as f64 * s).round() as u64
+}
+
 impl Experiment for ApvrpExp {
   impl_experiment_helper! {
     profile;
@@ -236,10 +241,12 @@ impl Experiment for ApvrpExp {
     match prof {
       SlurmProfile::Test => {
         s.push_str("-test");
+        params.timelimit = scale_time(params.timelimit, 1.5);
       },
       SlurmProfile::Trace => {
         s.push_str("-trace");
         aux_params.soln_log = true;
+        params.timelimit = scale_time(params.timelimit, 2.5);
       },
       _ => {},
     }
@@ -272,12 +279,7 @@ impl ResourcePolicy for ApvrpExp {
     } else {
       Duration::from_secs(self.parameters.timelimit + 300)
     };
-
-    match self.profile {
-      SlurmProfile::Default => timelimit,
-      SlurmProfile::Test => timelimit.mul_f32(1.5),
-      SlurmProfile::Trace => timelimit.mul_f32(2.5),
-    }
+    timelimit
   }
 
   fn memory(&self) -> MemoryAmount {
