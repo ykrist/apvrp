@@ -109,8 +109,6 @@ fn evalutate_full_objective(
 }
 
 fn run(exp: ApvrpExp) -> Result<()> {
-  apvrp::check_commit_hash()?;
-  panic!("oh no uwu");
   #[allow(non_snake_case)]
     let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
 
@@ -300,6 +298,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
 #[tracing::instrument(level = "error")]
 fn main() -> Result<()> {
+  apvrp::check_commit_hash()?;
   let exp: experiment::ApvrpExp = handle_slurm_args()?;
   exp.write_index_file()?;
   exp.write_parameter_file()?;
