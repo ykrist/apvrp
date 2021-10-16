@@ -207,6 +207,7 @@ impl NewOutput for Outputs {
 
 #[derive(Debug, Clone)]
 pub struct ApvrpExp {
+  profile: SlurmProfile,
   pub inputs: Inputs,
   pub parameters: Params,
   pub aux_params: AuxParams,
@@ -215,6 +216,7 @@ pub struct ApvrpExp {
 
 impl Experiment for ApvrpExp {
   impl_experiment_helper! {
+    profile;
     inputs: Inputs;
     parameters: Params;
     outputs: Outputs;
@@ -225,10 +227,21 @@ impl Experiment for ApvrpExp {
     concat!(env!("CARGO_MANIFEST_DIR"), "/logs/").into()
   }
 
-  fn post_parse(_inputs: &Self::Inputs, params: &mut Self::Parameters) {
+  fn post_parse(prof: SlurmProfile, _inputs: &Self::Inputs, params: &mut Self::Parameters, aux_params: &mut Self::AuxParameters) {
     params.gurobi.sort_by_cached_key(|(s, _)| s.clone());
     if params.param_name.is_none() {
       params.param_name = Some(params.id_str())
+    }
+    let s = params.param_name.as_mut().unwrap();
+    match prof {
+      SlurmProfile::Test => {
+        s.push_str("-test");
+      },
+      SlurmProfile::Trace => {
+        s.push_str("-trace");
+        aux_params.soln_log = true;
+      },
+      _ => {},
     }
   }
 }
@@ -252,14 +265,19 @@ impl ResourcePolicy for ApvrpExp {
   fn time(&self) -> Duration {
     use instance_groups::*;
     let i = self.inputs.index;
-
-    if A_TW25.contains(&i)
+    let timelimit = if A_TW25.contains(&i)
       || A_TW50.contains(&i)
       || A_TW100.contains(&i) {
-      return Duration::from_secs(300)
-    }
+      Duration::from_secs(300)
+    } else {
+      Duration::from_secs(self.parameters.timelimit + 300)
+    };
 
-    Duration::from_secs(self.parameters.timelimit + 300)
+    match self.profile {
+      SlurmProfile::Default => timelimit,
+      SlurmProfile::Test => timelimit.mul_f32(1.5),
+      SlurmProfile::Trace => timelimit.mul_f32(2.5),
+    }
   }
 
   fn memory(&self) -> MemoryAmount {
@@ -277,7 +295,11 @@ impl ResourcePolicy for ApvrpExp {
   }
 
   fn script(&self) -> String {
-    include_str!("slurm_job_template.sh").to_string()
+    let script = match self.profile {
+      SlurmProfile::Test | SlurmProfile::Default => include_str!("slurm_job.sh"),
+      SlurmProfile::Trace => include_str!("slurm_job_trace.sh"),
+    };
+    script.to_string()
   }
 
   fn cpus(&self) -> usize {
@@ -285,11 +307,22 @@ impl ResourcePolicy for ApvrpExp {
   }
 
   fn job_name(&self) -> Option<String> {
-    self.parameters.param_name.clone()
+    use std::fmt::Write;
+    let mut s = self.parameters.param_name.clone();
+    if let Some(s) = s.as_mut() {
+       if self.profile == SlurmProfile::Trace {
+         write!(s, "-{}", self.inputs.index).unwrap();
+       }
+    }
+    s
   }
 
   fn constraint(&self) -> Option<String> {
-    Some("R640".to_string())
+    match self.profile {
+      SlurmProfile::Default =>Some("R640".to_string()),
+      _ => None,
+    }
+
   }
 }
 
