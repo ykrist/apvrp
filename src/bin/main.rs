@@ -110,7 +110,7 @@ fn evalutate_full_objective(
 
 fn run(exp: ApvrpExp) -> Result<()> {
   apvrp::check_commit_hash()?;
-
+  panic!("oh no uwu");
   #[allow(non_snake_case)]
     let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
 
