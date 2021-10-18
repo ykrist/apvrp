@@ -462,6 +462,10 @@ impl MpSolution {
     use grb::Status::*;
     match sp.model.status()? {
       Optimal => SpSolution::from_sp(self, &sp),
+      Infeasible => {
+        sp.debug_infeasibility()?;
+        Err(anyhow::anyhow!("subproblem is infeasible"))
+      }
       status => Err(anyhow::anyhow!("unexpected subproblem status: {:?}", status)),
     }
   }

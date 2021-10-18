@@ -165,18 +165,24 @@ impl MpSolution {
   }
 }
 
+impl Lookups {
+  #[inline(always)]
+  pub fn av_task_travel_time(&self, t1: &Task, t2: &Task) -> Time {
+    t1.tt + self.data.travel_time[&(t1.end, t2.start)]
+  }
+}
 
 #[instrument(level = "info", skip(lu))]
 pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpConstr> {
   let mut model = sawmill::InferenceModel::<MpVar, SpConstr>::build();
   let mut included_tasks = Set::default();
 
-  for t in lu.tasks.pvtask_to_task.keys() {
-    let s = t.index().into();
-    let p = t.p;
-    let x = MpVar::X(p, s);
+  for pv_task in lu.tasks.pvtask_to_task.keys() {
+    let t = pv_task.index().into();
+    let p = pv_task.p;
+    let x = MpVar::X(p, t);
 
-    match s {
+    match t {
       Transfer(r1, r2) => {
         model.add_domain_implication(x, MpVar::X(p, Request(r1)));
         model.add_domain_implication(x, MpVar::X(p, Request(r2)));
@@ -188,31 +194,31 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
       ODepot | DDepot => unreachable!(),
     }
 
-    model.add_implication(x, SpConstr::Lb(s, t.subproblem_lb()));
-    model.add_implication(x, SpConstr::Ub(s, t.subproblem_ub()));
+    model.add_implication(x, SpConstr::Lb(t, pv_task.subproblem_lb()));
+    model.add_implication(x, SpConstr::Ub(t, pv_task.subproblem_ub()));
 
-    match s {
+    match t {
       Transfer(r, _) | End(_, r) => {
         model.add_implication(x, SpConstr::Delta(
           Request(r),
-          s,
+          t,
           lu.data.travel_time[&(Loc::ReqP(r), Loc::ReqD(r))] + lu.data.srv_time[&Loc::ReqD(r)],
         ));
       }
       _ => {}
     }
 
-    match s {
+    match t {
       Transfer(_, r) | Start(_, r) => {
         model.add_implication(x, SpConstr::Delta(
-          s,
+          t,
           Request(r),
-          t.tt + lu.data.srv_time[&Loc::ReqP(r)],
+          pv_task.tt + lu.data.srv_time[&Loc::ReqP(r)],
         ));
       }
       _ => {}
     }
-    included_tasks.insert(s);
+    included_tasks.insert(t);
   }
   info!("finished X-variable implications");
   for (&av, av_tasks) in &lu.tasks.compat_with_av {
@@ -225,7 +231,7 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
           model.add_implication(y, SpConstr::Delta(
             t1,
             t2,
-            lu.data.travel_time[&(task1.end, task2.start)],
+            lu.av_task_travel_time(&task1, &task2)
           ));
 
           let mut p1 = task1.infer_pv();
@@ -234,7 +240,7 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
           if task1.end == task2.start {
             p1 = p1.or(p2);
             p2 = p2.or(p1);
-            assert_eq!(p1, p2)
+            debug_assert_eq!(p1, p2)
           }
 
           if let Some(p1) = p1 {

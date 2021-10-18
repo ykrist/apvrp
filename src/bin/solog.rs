@@ -1,7 +1,7 @@
 use structopt::*;
 use std::path::{PathBuf, Path};
 use apvrp::*;
-use apvrp::solution::{iter_solution_log, MpSolution};
+use apvrp::solution::{iter_solution_log, MpSolution, SerialisableSolution};
 use slurm_harray::Experiment;
 use daggylp::{InfKind, viz::GraphViz};
 use serde::{Serialize, Deserialize};
@@ -18,7 +18,9 @@ struct Args {
   #[structopt(short="s")]
   start: Option<usize>,
   #[structopt(short="e")]
-  end: Option<usize>
+  end: Option<usize>,
+  #[structopt(long="final")]
+  final_soln_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,17 +38,25 @@ struct SolutionInformation {
 
 struct OutputFiles<'a> {
   dir: &'a Path,
-  major_index: u32,
+  major_index: Option<u32>,
   minor_index: u32,
 }
 
 impl<'a> OutputFiles<'a> {
+  pub fn oneshot(dir: &'a Path) -> anyhow::Result<Self> {
+    Ok(OutputFiles {
+      dir,
+      major_index : None,
+      minor_index: 0,
+    })
+  }
+
   pub fn new(dir: &'a Path, major_index: u32) -> anyhow::Result<Self> {
     let p = dir.join(major_index.to_string());
     std::fs::create_dir_all(&p).write_context(&p)?;
     Ok(OutputFiles {
       dir,
-      major_index,
+      major_index: Some(major_index),
       minor_index: 0,
     })
   }
@@ -56,7 +66,10 @@ impl<'a> OutputFiles<'a> {
   }
 
   pub fn get_filepath(&self, suffix: &str) -> String {
-    let mut p = self.dir.join(self.major_index.to_string());
+    let mut p = match self.major_index {
+      Some(i) => self.dir.join(i.to_string()),
+      None => self.dir.to_path_buf()
+    };
     p.push(self.minor_index.to_string());
     let mut p = p.into_os_string().into_string().unwrap();
     p.push_str(suffix);
@@ -176,17 +189,31 @@ fn main() -> anyhow::Result<()> {
   let lookups = Lookups::load_data_and_build(exp.inputs.index)?;
   let inf_model = apvrp::model::sp::build_inference_graph(&lookups);
 
-  let output_dir = args.index_file.with_file_name(format!("{}-subproblems", exp.inputs.index));
+  let output_dir = if args.final_soln_only {
+    args.index_file.with_file_name(format!("{}-soln", exp.inputs.index))
+  } else {
+    args.index_file.with_file_name(format!("{}-subproblems", exp.inputs.index))
+  };
+
   std::fs::create_dir_all(&output_dir)?;
 
-  for (k, sol) in iter_solution_log(&sol_log)?.enumerate().skip(args.start.unwrap_or(0)) {
-    if k > args.end.unwrap_or(usize::MAX) {
-      break
-    }
-    let out = OutputFiles::new(&output_dir, k as u32)?;
+  if args.final_soln_only {
+    let p = args.index_file.with_file_name(format!("{}-soln.json", exp.inputs.index));
+    let contents = std::fs::read_to_string(&p).read_context(&p)?;
+    let sol : SerialisableSolution = serde_json::from_str(&contents)?;
+    let out = OutputFiles::oneshot(&output_dir)?;
     process_solution(out, &lookups, &inf_model, sol.to_solution(&lookups))?;
-
+  } else{
+    for (k, sol) in iter_solution_log(&sol_log)?.enumerate().skip(args.start.unwrap_or(0)) {
+      if k > args.end.unwrap_or(usize::MAX) {
+        break
+      }
+      let out = OutputFiles::new(&output_dir, k as u32)?;
+      process_solution(out, &lookups, &inf_model, sol.to_solution(&lookups))?;
+    }
   }
+
+
 
   Ok(())
 }

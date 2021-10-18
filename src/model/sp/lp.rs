@@ -94,7 +94,7 @@ impl<'a> TimingSubproblem<'a> {
 
     for (t1, t2) in sol.iter_sp_y_edges() {
       trace!(?t1, ?t2, "av_sync");
-      let d = t1.tt + lu.data.travel_time[&(t1.end, t2.start)];
+      let d = lu.av_task_travel_time(&t1, &t2);
       let t1 = t1.index();
       let t2 = t2.index();
       let grb_c = model.add_constr("", c!(task_to_var[&t1] + d <= task_to_var[&t2]))?;
