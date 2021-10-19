@@ -22,6 +22,7 @@ use serde::{Serialize, Deserialize};
 use smallvec::SmallVec;
 use crate::model::mp::{ObjWeights, MpVar};
 use sawmill::InferenceModel;
+use std::fmt::Debug;
 
 
 #[derive(Debug, Clone)]
@@ -188,8 +189,7 @@ impl InfeasibilityTracker {
     let mut sorted_cycle : Vec<_> = cycle.sp_constraints(lu).collect();
     sorted_cycle.sort_unstable();
     let count = self.cycles.entry(sorted_cycle).or_insert(0);
-    if *count > 0 { warn!(?count, ?cycle, "cycle has been encountered before") }
-    *count += 1;
+    InfeasibilityTracker::check_and_inc_count(count, cycle);
   }
 
   pub fn lp_iis(&mut self, iis: &Iis) {
@@ -199,7 +199,17 @@ impl InfeasibilityTracker {
       Iis::Path(_) => self.paths.entry(cons).or_insert(0),
       Iis::Cycle(_) => self.cycles.entry(cons).or_insert(0),
     };
-    if *count > 0 { warn!(?count, ?iis, "iis has been encountered before") }
+    InfeasibilityTracker::check_and_inc_count(count, iis);
+  }
+
+  #[inline(always)]
+  fn check_and_inc_count<T: Debug>(count : &mut usize, iis: T) {
+    if *count > 100 {
+      error!(?count, ?iis, "IIS is not being cut off");
+      panic!("bugalug")
+    } else if *count > 0 {
+      warn!(?count, ?iis, "IIS has been encountered before")
+    }
     *count += 1;
   }
 }

@@ -228,6 +228,12 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     let iis: Set<_> = self.iis_constraints()?.collect();
     trace!(?iis);
 
+    for c in &iis {
+      let grb_c = self.constraint_map.remove(c).expect("IIS constraint missing from constraint_map");
+      self.constraint_map_inv.remove(&grb_c).unwrap();
+      self.model.remove(grb_c).context("removing IIS constraint from Gurobi model")?;
+    }
+
     match iis.iter().filter(|c| matches!(c, SpConstr::Lb(..))).count() {
       0 => Ok(Iis::Cycle(iis)),
       1 => Ok(Iis::Path(iis)),

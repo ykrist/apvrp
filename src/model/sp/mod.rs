@@ -342,10 +342,9 @@ mod tests {
   use anyhow::Context;
   use crate::test::*;
 
-  fn compare_one(lu: &Lookups, sol: &MpSolution) -> Result<()> {
-    let dummy_theta = Default::default();
-    let mut dagmodel = dag::GraphModel::build(lu, sol)?;
-    let mut lpmodel = lp::TimingSubproblem::build(lu, sol)?;
+  fn compare_one(lu: &Lookups, sp_constraints: &Set<SpConstr>, obj_tasks: SmallVec<[IdxTask; NUM_AV_UB]>) -> Result<()> {
+    let mut dagmodel = dag::GraphModel::build(lu, sp_constraints, obj_tasks.clone());
+    let mut lpmodel = lp::TimingSubproblem::build(lu, sp_constraints, obj_tasks)?;
 
     let dag_result = dagmodel.solve()?;
     let lp_result = lpmodel.solve()?;
@@ -361,9 +360,6 @@ mod tests {
         if !lp_result.is_optimal() {
           lpmodel.debug_infeasibility()?;
         }
-        let output = test_output_dir().join("LP.txt");
-        lpmodel.write_debug_graph(&output)?;
-        dagmodel.model.write_debug(test_output_dir().join("DAG.txt"))?;
         anyhow::bail!("status mismatch:\nDAG = {:?}\n LP = {:?}", dag_result, lp_result)
       }
     }
@@ -374,10 +370,14 @@ mod tests {
     let exp = ApvrpExp::from_index_file(&index_file).read_context(&index_file)?;
     println!("{:?}", &exp.inputs);
     let lu = Lookups::load_data_and_build(exp.inputs.index)?;
+    let inf_model = build_inference_graph(&lu);
     let sol_log = index_file.as_ref().with_file_name(&exp.outputs.solution_log);
     for (k, solution) in iter_solution_log(&sol_log)?.enumerate() {
       let sol = solution.to_solution(&lu);
-      compare_one(&lu, &sol).with_context(|| format!("Failed for solution #{} of {:?}", k, &sol_log))?
+      let mp_vars : Set<_> = sol.mp_vars().collect();
+      let mut sp_constraints = inf_model.implied_constraints(&mp_vars);
+      inf_model.remove_dominated_constraints(&mut sp_constraints);
+      compare_one(&lu, &sp_constraints, sol.sp_objective_tasks()).with_context(|| format!("Failed for solution #{} of {:?}", k, &sol_log))?
     }
     Ok(())
   }
