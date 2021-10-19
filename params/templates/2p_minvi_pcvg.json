@@ -1,7 +1,7 @@
 {
   "timelimit": 7200,
   "cpus": 1,
-  "param_name": "bl_2p_minvi",
+  "param_name": "2p_minvi_pcvg",
   "sp": "Dag",
   "av_fork_cuts": {
     "start": 0,
