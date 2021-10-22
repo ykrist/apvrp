@@ -281,7 +281,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     trace!(num_lbs, num_edge_constraints, num_obj_tasks);
     lhs = sp_obj * (1 - num_lbs - num_edge_constraints - num_obj_tasks + lhs);
 
-    let rhs = self.lu.sets.avs()
+    let rhs = self.lu.sets.av_groups()
       .cartesian_product(&self.obj_tasks)
       .filter_map(|(a, t)| cb.mp_vars.theta.get(&(a, self.lu.tasks.by_index[t])))
       .grb_sum();

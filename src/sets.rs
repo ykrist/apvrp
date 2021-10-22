@@ -1,12 +1,12 @@
-use crate::{Loc, Data, Avg, Av, Pv, Req};
+use crate::{Loc, Data, Avg, Av, Pv, Req, RawAv, RawPvTask, RawPv, RawReq};
 use std::ops::Range;
 use std::iter::Iterator;
 
 #[derive(Debug, Clone)]
 pub struct Sets {
-  n_active: Av,
-  n_passive: Pv,
-  n_req: Req,
+  n_active: RawAv,
+  n_passive: RawPv,
+  n_req: RawReq,
   av_groups: Vec<Avg>,
 }
 
@@ -23,18 +23,21 @@ impl Sets {
     }
   }
 
-
+  #[inline(always)]
+  pub fn num_pvs(&self) -> usize {
+    self.n_passive as usize
+  }
 
   /// Set of passive vehicles
   #[inline(always)]
-  pub fn pvs(&self) -> Range<Pv> {
-    0..self.n_passive
+  pub fn pvs(&self) -> impl Iterator<Item=Pv> {
+    (0..self.n_passive).map(Pv)
   }
 
   /// Set of passive vehicle origin locations
   #[inline(always)]
   pub fn pv_origins(&self) -> impl Iterator<Item=Loc> {
-    self.pvs().map(Loc::Po)
+    self.pvs().map(|p| Loc::Po(p))
   }
 
   /// Set of passive vehicle dest. locations
@@ -45,8 +48,8 @@ impl Sets {
 
   /// Set of requests
   #[inline(always)]
-  pub fn reqs(&self) -> Range<Req> {
-    0..self.n_req
+  pub fn reqs(&self) -> impl Iterator<Item=Req> {
+    (0..self.n_req).map(Req)
   }
 
   /// Request origin locations
@@ -63,7 +66,7 @@ impl Sets {
 
   // /// Set of active vehicles
   #[inline(always)]
-  pub fn avs(&self) -> impl Iterator<Item=Avg> + Clone + '_ {
+  pub fn av_groups(&self) -> impl Iterator<Item=Avg> + Clone + '_ {
     self.av_groups.iter().copied()
   }
 }

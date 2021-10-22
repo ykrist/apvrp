@@ -411,7 +411,7 @@ impl<'a> Cb<'a> {
 
     let rhs_sum = chain.legal_before(self.lu)
       .flat_map(|t| {
-        self.lu.sets.avs().filter_map(move |av| y.get(&(av, t, first_task)).copied())
+        self.lu.sets.av_groups().filter_map(move |av| y.get(&(av, t, first_task)).copied())
       })
       .grb_sum();
 
@@ -431,7 +431,7 @@ impl<'a> Cb<'a> {
 
     let rhs_sum = chain.legal_after(self.lu)
       .flat_map(|t2| {
-        self.lu.sets.avs().filter_map(move |av| y.get(&(av, last_task, t2)).copied())
+        self.lu.sets.av_groups().filter_map(move |av| y.get(&(av, last_task, t2)).copied())
       })
       .grb_sum();
 
@@ -675,7 +675,7 @@ impl<'a> Cb<'a> {
   }
 
 
-  fn separate_av_cuts(&mut self, theta: &Map<(Av, Task), Time>, routes: &[AvRoute], cycles: &[AvCycle]) -> Result<()> {
+  fn separate_av_cuts(&mut self, theta: &Map<(Avg, Task), Time>, routes: &[AvRoute], cycles: &[AvCycle]) -> Result<()> {
     if self.params.cycle_cuts {
       for cycle in cycles {
         if let Some(chain) = self.illegal_av_chain_in_cycle(&cycle) {

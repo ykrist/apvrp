@@ -321,7 +321,7 @@ impl sawmill::lift::Lift<MpVar, SpConstr> for CoverLift<'_> {
         }
       }
       &MpVar::Y(a, t1, t2) => {
-        for b in self.lookups.sets.avs() {
+        for b in self.lookups.sets.av_groups() {
           if a != b {
             ctx.add_checked(MpVar::Y(b, t1, t2));
           }

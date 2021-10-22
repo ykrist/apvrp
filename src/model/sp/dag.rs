@@ -29,7 +29,7 @@ impl<'a> GraphModel<'a> {
   fn optimality_cut_required(&self, theta: &Map<(Avg, Task), Time>, mrs: &MrsTree) -> bool {
     let mut theta_sum = 0;
     for t in mrs.obj_vars().map(|v| self.lu.tasks.by_index[&self.var_to_task[&v]]) {
-      for a in self.lu.sets.avs() {
+      for a in self.lu.sets.av_groups() {
         if let Some(&theta_v) = theta.get(&(a, t)) {
           theta_sum += theta_v;
         }
@@ -195,7 +195,7 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
 
 
         // Theta-terms for this task
-        for a in self.lu.sets.avs() {
+        for a in self.lu.sets.av_groups() {
           if let Some(&theta) = cb.mp_vars.theta.get(&(a, t)) {
             cut += -1 * theta;
           }

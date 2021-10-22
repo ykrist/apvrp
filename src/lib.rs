@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![deny(unused_must_use)]
+
 pub use fnv::{FnvHashMap as Map, FnvHashSet as Set};
 pub use anyhow::Result;
 
@@ -19,13 +20,58 @@ use instances::dataset::apvrp::{
   LocSetStarts,
 };
 pub use instances::dataset::apvrp::{
-  Av, Pv, Req, Time, Cost, Loc as RawLoc,
+  Av as RawAv,
+  Pv as RawPv,
+  Req as RawReq,
+  Loc as RawLoc,
+  Time, Cost,
   ApvrpInstance,
 };
-pub use instances::dataset::Dataset;
 
-/// Active Vehicle Group.
-pub type Avg = Av;
+pub use wrapper_types::*;
+mod wrapper_types {
+  use super::*;
+  use serde::{Deserialize, Serialize};
+  use std::str::FromStr;
+  use std::num::ParseIntError;
+
+  macro_rules! new_wrapper_ty {
+      ($t:ident = $inner:ty) => {
+        #[derive(Copy, Clone, Hash, Eq, Ord, PartialOrd, PartialEq, Serialize, Deserialize)]
+        #[repr(transparent)]
+        #[serde(transparent)]
+        pub struct $t(pub $inner);
+
+        impl fmt::Display for $t {
+          fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fmt::Debug::fmt(self, f)
+          }
+        }
+
+        impl fmt::Debug for $t {
+          fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fmt::Debug::fmt(&self.0, f)
+          }
+        }
+
+        impl FromStr for $t {
+          type Err = ParseIntError;
+          fn from_str(s: &str) -> Result<Self, Self::Err> {
+            s.parse::<$inner>().map($t)
+          }
+        }
+      };
+  }
+
+
+  new_wrapper_ty!{ Av = RawAv }
+  new_wrapper_ty!{ Avg = RawAv }
+  new_wrapper_ty!{ Pv = RawPv }
+  new_wrapper_ty!{ Req = RawReq }
+
+}
+
+pub use instances::dataset::Dataset;
 
 #[derive(Debug, Clone)]
 pub struct Data {
@@ -74,13 +120,13 @@ pub fn set_with_capacity<T>(capacity: usize) -> Set<T> {
 #[derive(Hash, Copy, Clone, Eq, PartialEq)]
 pub enum Loc {
   /// Passive vehicle origin (p)
-  Po(u16),
+  Po(Pv),
   /// Passive vehicle destination (p)
-  Pd(u16),
+  Pd(Pv),
   /// Request pickup (r)
-  ReqP(u16),
+  ReqP(Req),
   /// Request delivery (r)
-  ReqD(u16),
+  ReqD(Req),
   /// AV origin depot
   Ao,
   /// AV dest depot
@@ -143,22 +189,34 @@ impl Loc {
 }
 
 pub trait LocSetStartsExt {
+  fn odepot_to_pv(&self, i: RawLoc) -> Pv;
+  fn pickup_to_req(&self, i: RawLoc) -> Req;
   fn decode(&self, loc: RawLoc) -> Loc;
   fn encode(&self, loc: Loc) -> RawLoc;
 }
 
 impl LocSetStartsExt for LocSetStarts {
+  #[inline(always)]
+  fn odepot_to_pv(&self, i: RawLoc) -> Pv {
+    Pv(i - self.pv_o)
+  }
+
+  #[inline(always)]
+  fn pickup_to_req(&self, i: RawLoc) -> Req {
+    Req(i - self.req_p)
+  }
+
   fn decode(&self, loc: RawLoc) -> Loc {
     if loc == self.avo {
       Loc::Ao
     } else if loc < self.pv_d {
-      Loc::Po(loc - self.pv_o)
+      Loc::Po(self.odepot_to_pv(loc))
     } else if loc < self.req_p {
-      Loc::Pd(loc - self.pv_d)
+      Loc::Pd(Pv(loc - self.pv_d))
     } else if loc < self.req_d {
-      Loc::ReqP(loc - self.req_p)
+      Loc::ReqP(self.pickup_to_req(loc))
     } else if loc < self.avd {
-      Loc::ReqD(loc - self.req_d)
+      Loc::ReqD(Req(loc - self.req_d))
     } else if loc == self.avd {
       Loc::Ad
     } else {
@@ -170,10 +228,10 @@ impl LocSetStartsExt for LocSetStarts {
     match loc {
       Loc::Ao => self.avo,
       Loc::Ad => self.avd,
-      Loc::Po(p) => self.pv_o + p,
-      Loc::Pd(p) => self.pv_d + p,
-      Loc::ReqP(r) => self.req_p + r,
-      Loc::ReqD(r) => self.req_d + r,
+      Loc::Po(p) => self.pv_o + p.0,
+      Loc::Pd(p) => self.pv_d + p.0,
+      Loc::ReqP(r) => self.req_p + r.0,
+      Loc::ReqD(r) => self.req_d + r.0,
     }
   }
 }
@@ -255,6 +313,7 @@ pub mod solution;
 use fnv::FnvHashSet;
 use crate::colgen::PvRoutes;
 use anyhow::Context;
+use std::fmt::Display;
 
 pub mod schedule;
 pub mod experiment;

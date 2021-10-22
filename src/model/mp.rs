@@ -13,16 +13,16 @@ use crate::colgen::RouteId;
 pub struct MpVars {
   pub obj: Var,
   pub x: Map<PvTask, Var>,
-  pub y: Map<(Av, Task, Task), Var>,
+  pub y: Map<(Avg, Task, Task), Var>,
   pub u: Map<Req, Var>,
   pub z: Map<RouteId, Var>,
-  pub theta: Map<(Av, Task), Var>,
+  pub theta: Map<(Avg, Task), Var>,
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub enum MpVar {
   X(Pv, IdxTask),
-  Y(Av, IdxTask, IdxTask),
+  Y(Avg, IdxTask, IdxTask),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -156,13 +156,13 @@ impl MpVars {
   #[inline(always)]
   pub fn y_sum_av<'a>(&'a self, lu: &'a Lookups, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {
     trace!(?t1, ?t2, "y_sum_av");
-    debug_assert_ne!(lu.sets.avs().filter_map(move |a| self.y.get(&(a, t1, t2))).count(), 0);
+    debug_assert_ne!(lu.sets.av_groups().filter_map(move |a| self.y.get(&(a, t1, t2))).count(), 0);
     self.y_sum_av_possibly_empty(lu, t1, t2)
   }
 
   #[inline(always)]
   pub fn y_sum_av_possibly_empty<'a>(&'a self, lu: &'a Lookups, t1: Task, t2: Task) -> impl Iterator<Item=Var> + 'a {
-    lu.sets.avs()
+    lu.sets.av_groups()
       .filter_map(move |a| self.y.get(&(a, t1, t2)).copied())
   }
 }
@@ -172,8 +172,8 @@ pub struct MpConstraints {
   pub req_cover: Map<Req, Constr>,
   pub pv_cover: Map<Pv, Constr>,
   pub pv_flow: Map<(Pv, Loc), Constr>,
-  pub num_av: Map<Av, Constr>,
-  pub av_flow: Map<(Av, Task), Constr>,
+  pub num_av: Map<Avg, Constr>,
+  pub av_flow: Map<(Avg, Task), Constr>,
   pub xy_link: Map<Task, Constr>,
   pub av_pv_compat: Map<PvTask, Constr>,
   pub zx_link: Map<PvTask, Constr>,
@@ -185,7 +185,6 @@ impl MpConstraints {
     let req_cover = {
       let mut cmap = map_with_capacity(lu.data.n_req as usize);
       for r in lu.sets.reqs() {
-        trace!(r);
         let xsum = lu.tasks.by_req_cover[&r].iter()
           .map(|t| vars.x[t])
           .grb_sum();
@@ -270,7 +269,7 @@ impl MpConstraints {
     let av_flow = {
       let mut cmap = Map::default(); // TODO capacity
       for (&av, av_tasks) in &lu.tasks.compat_with_av {
-        tracing::trace!(av, ?av_tasks);
+        tracing::trace!(av=av.0, ?av_tasks);
         for &t1 in av_tasks {
           if t1.is_depot() { continue; }
 
@@ -297,7 +296,7 @@ impl MpConstraints {
       for &t2 in &lu.tasks.all {
         if t2.is_depot() { continue; }
         let ysum = lu.tasks.pred[&t2].iter()
-          .flat_map(|&t1| lu.sets.avs().into_iter().map(move |av| (av, t1, t2)))
+          .flat_map(|&t1| lu.sets.av_groups().into_iter().map(move |av| (av, t1, t2)))
           .filter_map(|k| vars.y.get(&k))
           .grb_sum();
         let xsum = lu.tasks.task_to_pvtasks[&t2].iter()
@@ -311,7 +310,7 @@ impl MpConstraints {
     };
 
     let av_pv_compat = {
-      let mut cmap = map_with_capacity(lu.tasks.all.len() * lu.sets.pvs().len());
+      let mut cmap = map_with_capacity(lu.tasks.all.len() * lu.sets.num_pvs());
       for (&pt, &x) in &vars.x {
         let t = lu.tasks.pvtask_to_task[&pt];
 
@@ -328,43 +327,7 @@ impl MpConstraints {
 
     let obj = model.add_constr("Obj", c!(-vars.obj == 0))?;
 
-    let initial_cuts: Map<_, _> = lu.sets.avs().map(|av| {
-      let _s = trace_span!("initial_cuts", av).entered();
-      let mut cut = Expr::default();
-
-      for &t1 in &lu.tasks.compat_with_av[&av] {
-        for &t2 in &lu.tasks.succ[&t1] {
-          if let Some(&y) = vars.y.get(&(av, t1, t2)) {
-            if t1.is_depot() {
-              cut += t2.t_release * y;
-            } else if t2.is_depot() {
-              // handled already
-            } else {
-              let travel_time = t1.tt + lu.data.travel_time[&(t1.end, t2.start)];
-              let service_time = if t1.end == t2.start {
-                trace!(?t1, ?t2, s=?lu.data.srv_time.get(&t1.end));
-                debug_assert_eq!(t1.tt, travel_time);
-                lu.data.srv_time.get(&t1.end).copied().unwrap_or(0)
-                // 0
-              } else {
-                0
-              };
-              let latest_arrival_at_t2 = t1.t_deadline + travel_time + service_time;
-              let minimum_waiting_time = std::cmp::max(t2.t_release - latest_arrival_at_t2, 0);
-              cut += (travel_time + service_time + minimum_waiting_time) * y;
-            }
-          }
-        }
-      }
-      let theta_sum = vars.theta.iter()
-        .filter(|((a, _), _)| a == &av)
-        .map(|(_, &theta)| theta)
-        .grb_sum();
-
-      let c = model.add_constr(&format!("InitOpt[{}]", av), c!(theta_sum >= cut))?;
-      Ok((av, c))
-    })
-      .collect_ok()?;
+    let initial_cuts: Map<_, _> = todo!();
 
     Ok(MpConstraints {
       obj,
@@ -452,7 +415,7 @@ impl TaskModelMaster {
     }
 
     for r in &sol.av_routes {
-      trace!(a=r.av(), r=?(&*r), "fix AV route");
+      trace!(a=r.av().0, r=?(&*r), "fix AV route");
       for key in r.iter_y_vars() {
         if let Some(y) = self.vars.y.get(&key) {
           self.model.set_obj_attr(attr::LB, y, 1.0)?;
