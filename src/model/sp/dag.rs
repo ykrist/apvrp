@@ -11,6 +11,7 @@ use crate::utils::{iter_pairs, VarIterExt};
 use tracing::*;
 use grb::prelude::*;
 use crate::model::cb::CutType;
+use sawmill::InferenceModel;
 
 pub struct GraphModel<'a> {
   pub second_last_tasks: SmallVec<[IdxTask; NUM_AV_UB]>,
@@ -22,6 +23,8 @@ pub struct GraphModel<'a> {
   pub ubs: Map<IdxTask, Time>,
   pub lbs: Map<IdxTask, Time>,
   pub model: Graph<AdjacencyList<ArrayVec<2>>>,
+
+  // pub pv_req_assignments: Map<Req, Pv>,
 }
 
 
@@ -36,6 +39,70 @@ impl<'a> GraphModel<'a> {
       }
     }
     (theta_sum as Weight) < mrs.obj()
+  }
+
+  fn big_grey_umgak(&mut self, cb: &mut cb::Cb, active_vars: &Set<MpVar> , inf_model: &InferenceModel<MpVar, SpConstr>) {
+    let mrs = self.model.compute_mrs();
+
+
+    fn hebbe(lbs: &[Time], delta: &[Time]) -> Time {
+      debug_assert_eq!(lbs.len(), delta.len());
+      let mut time = lbs[0] + delta[0];
+      for (&lb, &d) in lbs[1..].iter().zip(&delta[1..]) {
+        time = std::cmp::max(time, lb) + d;
+      }
+      time
+    }
+
+    let cb = |path: &[Var]| {
+      let mut tasks = Vec::new();
+      let mut implied_lbs = Vec::new();
+      let mut edge_weights = Vec::new();
+      let mut edge_constraint_order = map_with_capacity(path.len());
+
+      for v in path {
+        let t = self.var_to_task[v];
+        implied_lbs.push(self.lu.tasks.by_index[&t].t_release);
+        tasks.push(t);
+      }
+      let _s = info_span!("mrs_path", path=?tasks).entered();
+
+      let lb_task = tasks[0];
+      let lb = self.lbs[&lb_task];
+      let mut mrs_objective  = lb;
+
+      for (k, (&v1, &v2)) in iter_pairs(path).enumerate() {
+        let c = self.edge_constraints[&(v1, v2)];
+        let (_, _, d) = c.unwrap_delta();
+        mrs_objective += d;
+        edge_weights.push(d);
+        edge_constraint_order.insert(c, k);
+      }
+      let last_lil_bit = self.lu.av_task_travel_time(&self.lu.tasks.by_index[tasks.last().unwrap()], &self.lu.tasks.ddepot);
+      edge_weights.push(last_lil_bit);
+      mrs_objective += last_lil_bit;
+
+      let mut constraint_set: Set<_> = edge_constraint_order.keys().copied().collect();
+      constraint_set.insert(SpConstr::Lb(lb_task, lb));
+      let cover = inf_model.cover(active_vars, &constraint_set);
+
+      for (var, constrs) in cover {
+        let start_idx = if let Some(idx) = constrs.iter().map(|c| edge_constraint_order[c]).max() {
+          idx + 1
+        } else {
+          debug_assert_eq!(constrs.len(), 1);
+          0
+        };
+        let new_obj = hebbe(&implied_lbs[start_idx..], &edge_weights[start_idx..]);
+        let coeff = new_obj - mrs_objective;
+        error!(?var, ?constrs, new_obj, coeff)
+      }
+    };
+
+    for mrs in mrs {
+      mrs.visit_paths(cb);
+    }
+    todo!()
   }
 }
 

@@ -48,6 +48,16 @@ pub enum SpConstr {
   Delta(IdxTask, IdxTask, Time),
 }
 
+impl SpConstr {
+  #[track_caller]
+  #[inline(always)]
+  pub fn unwrap_delta(self) -> (IdxTask, IdxTask, Time) {
+    match self {
+      SpConstr::Delta(t1, t2, d) => (t1, t2, d),
+      _ => panic!("unwrap on a non-Delta constraint")
+    }
+  }
+}
 
 #[derive(Debug)]
 pub enum SpStatus<O, I> {

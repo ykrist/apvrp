@@ -19,6 +19,7 @@ pub struct MpVars {
   pub theta: Map<(Avg, Task), Var>,
 }
 
+
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub enum MpVar {
   X(Pv, IdxTask),
