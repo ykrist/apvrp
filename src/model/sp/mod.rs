@@ -13,6 +13,9 @@ use IdxTask::*;
 use crate::utils::{iter_pairs, VarIterExt, PeekableExt};
 use daggylp::Weight;
 use sawmill::lift::LiftedCover;
+use sawmill::cover::Cover;
+use sawmill::InferenceModel;
+use crate::model::cb::ThetaVals;
 
 pub mod lp;
 pub mod dag;
@@ -60,49 +63,157 @@ impl SpConstr {
 }
 
 #[derive(Debug)]
-pub enum SpStatus<O, I> {
-  Optimal(Time, O),
-  Infeasible(I),
+pub enum SpStatus {
+  Optimal(Time),
+  Infeasible,
 }
 
-impl<O, I> SpStatus<O, I> {
+impl SpStatus {
   fn is_optimal(&self) -> bool {
     matches!(self, SpStatus::Optimal(..))
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct MrsPath {
+  objective: Time,
+  lower_bound: Time,
+  /// n tasks (excluding the DDepot task), in order
+  tasks: Vec<Task>,
+  /// n edge constraints (including the task-to-DDepot edge)
+  edge_constraints: Vec<SpConstr>,
+}
+
+pub struct MrsPathVisitor<'a, 'b> {
+  theta_estimate: &'a Map<(Avg, Task), Time>,
+  task_to_avg: Map<IdxTask, Avg>,
+  active_mp_vars: &'a Set<MpVar>,
+  cb: &'a mut cb::Cb<'b>
+}
+
+impl<'a, 'b> MrsPathVisitor<'a, 'b> {
+  fn new(cb: &'a mut cb::Cb<'b>, active_mp_vars: &'a Set<MpVar>, theta: &'a Map<(Avg, Task), Time>) -> Self {
+    let task_to_avg = active_mp_vars.iter().filter_map(|v| match v {
+      MpVar::Y(a, t, td) if td == &IdxTask::DDepot => Some((*t, *a)),
+      _ => None,
+    }).collect();
+    trace!(?theta);
+    MrsPathVisitor {
+      theta_estimate: theta,
+      active_mp_vars,
+      task_to_avg,
+      cb
+    }
+  }
+
+  #[inline(always)]
+  fn optimality_cut_required(&self, t: Task, true_obj: Time) -> bool {
+    let a = self.active_vehicle(&t.index());
+    trace!(a=a.0, ?t, true_obj);
+    self.theta_estimate.get(&(a, t)).copied().unwrap_or(0) < true_obj
+  }
+
+  pub fn add_optimality_cut(&mut self, mrs_path: MrsPath) {
+    fn subpath_objective(lbs: &[Time], delta: &[Time]) -> Time {
+      debug_assert_eq!(lbs.len(), delta.len());
+      let mut time = lbs[0] + delta[0];
+      for (&lb, &d) in lbs[1..].iter().zip(&delta[1..]) {
+        time = std::cmp::max(time, lb) + d;
+      }
+      time
+    }
+
+    debug_assert_eq!(mrs_path.tasks.len(), mrs_path.edge_constraints.len());
+
+    let last_task = *mrs_path.tasks.last().unwrap();
+    let a = self.active_vehicle(&last_task.index());
+
+    let implied_lbs: Vec<_> = mrs_path.tasks.iter().map(|t| t.t_release).collect();
+    let edge_weights: Vec<_> = mrs_path.edge_constraints.iter().map(|c| {
+      let (_, _, d) = c.unwrap_delta();
+      d
+    }).collect();
+
+    let mut constraint_set: Set<_> = mrs_path.edge_constraints.iter().copied().collect();
+    constraint_set.insert(SpConstr::Lb(mrs_path.tasks[0].index(), mrs_path.lower_bound));
+
+    let cover = self.cb.inference_model.cover(self.active_mp_vars, &constraint_set);
+
+    let mut lhs = Expr::default();
+
+    for (var, constrs) in cover {
+      let grb_var = self.cb.mp_vars.get_grb_var(self.cb.lu, &var);
+      if constrs.contains(mrs_path.edge_constraints.last().unwrap()) {
+        lhs +=  grb_var * mrs_path.objective;
+        continue
+      }
+      let start_idx = match constrs.iter()
+        .filter_map(|c| mrs_path.edge_constraints.iter().rposition(|x| c == x))
+        .max() {
+        None => {
+          debug_assert_eq!(constrs.len(), 1);
+          0
+        },
+        Some(k) => k + 1,
+      };
+
+      let new_obj = subpath_objective(&implied_lbs[start_idx..], &edge_weights[start_idx..]);
+      let coeff = new_obj - mrs_path.objective;
+      trace!(?var, ?constrs, new_obj, coeff);
+      lhs += (1 - grb_var) * coeff;
+    }
+
+    self.cb.enqueue_cut(c!( lhs <= self.cb.mp_vars.theta[&(a, last_task)] ), CutType::LpOpt);
+  }
+
+  #[inline(always)]
+  pub fn active_vehicle(&self, t: &IdxTask) -> Avg {
+    trace!(?t);
+    self.task_to_avg[t]
+  }
+}
+
+
 pub trait Subproblem<'a>: Sized {
-  // Additional information obtained when solving the subproblem to optimality
-  type Optimal;
-  // Additional information obtained when proving the subproblem to be infeasible
-  type Infeasible;
 
   // Solve the subproblem and return status
-  fn solve(&mut self) -> Result<SpStatus<Self::Optimal, Self::Infeasible>>;
-  // Find and remove one or more IIS when infeasible
-  fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Iis>;
-  // Find and remove one or more MRS when optimal
-  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>, o: Self::Optimal) -> Result<()>;
+  fn solve(&mut self) -> Result<SpStatus>;
 
-  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, active_mpvars: &Set<MpVar>, theta: &Map<(Avg, Task), Time>, estimate: Time) -> Result<Option<Time>> {
+  fn calculate_theta(&mut self) -> Result<ThetaVals>;
+
+  // Find and remove one or more IIS when infeasible
+  fn extract_and_remove_iis(&mut self) -> Result<Iis>;
+
+  // Find the MRS paths
+  fn visit_mrs_paths(&mut self, visitor: &mut MrsPathVisitor) -> Result<()>;
+
+  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, active_mpvars: &Set<MpVar>, theta: &Map<(Avg, Task), Time>, estimate: Time) -> Result<Option<Map<(Avg, Task), Time>>> {
     // TODO: stop early once the IIS covers start getting too big
     //  Can use cb.params, will need find the size of the cover before constructing the constraint
 
-    for solve in 0.. {
+    for solve_iteration in 0.. {
+      let _s = debug_span!("solve_loop", iter=solve_iteration).entered();
+
       match self.solve()? {
-        SpStatus::Optimal(sp_obj, o) => {
+        SpStatus::Optimal(sp_obj) => {
           if estimate < sp_obj {
-            self.add_optimality_cuts(cb, theta, o)?;
+            trace!(?active_mpvars);
+            let mut visitor = MrsPathVisitor::new(cb, active_mpvars, theta);
+            self.visit_mrs_paths(&mut visitor)?;
           }
-          if solve == 0 {
-            return Ok(Some(sp_obj));
+
+          if solve_iteration == 0 {
+            let new_theta = self.calculate_theta()?;
+            trace!(?new_theta, sp_obj);
+            // debug_assert_eq!(sp_obj, new_theta.values().sum::<Time>());
+            return Ok(Some(new_theta));
           } else {
             return Ok(None);
           }
         }
 
-        SpStatus::Infeasible(i) => {
-          let iis = self.extract_and_remove_iis(i)?;
+        SpStatus::Infeasible => {
+          let iis = self.extract_and_remove_iis()?;
           trace!(?iis);
           #[cfg(debug_assertions)] {
             cb.infeasibilities.lp_iis(&iis);
@@ -230,7 +341,10 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
     }
     included_tasks.insert(t);
   }
+
+  included_tasks.insert(IdxTask::DDepot);
   info!("finished X-variable implications");
+
   for (&av, av_tasks) in &lu.tasks.compat_with_av {
     for &task1 in av_tasks {
       let t1 = task1.index();

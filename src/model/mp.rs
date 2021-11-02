@@ -10,7 +10,7 @@ use crate::experiment::{ApvrpExp, GurobiParamVal};
 use crate::colgen::RouteId;
 
 #[derive(Clone)]
-pub struct MpVars {
+pub struct MpVars { // TODO these should use IdxTask
   pub obj: Var,
   pub x: Map<PvTask, Var>,
   pub y: Map<(Avg, Task, Task), Var>,
@@ -19,6 +19,20 @@ pub struct MpVars {
   pub theta: Map<(Avg, Task), Var>,
 }
 
+impl MpVars {
+  pub fn get_grb_var(&self, lu: &Lookups, v: &MpVar) -> Var {
+    match v {
+      MpVar::X(p, t) => {
+        self.x[&lu.tasks.pvtask[&(*p, lu.tasks.by_index[t])]]
+      },
+      MpVar::Y(a, t1, t2) => {
+        let t1 = lu.tasks.by_index[t1];
+        let t2 = lu.tasks.by_index[t2];
+        self.y[&(*a, t1, t2)]
+      }
+    }
+  }
+}
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub enum MpVar {
@@ -178,7 +192,7 @@ pub struct MpConstraints {
   pub xy_link: Map<Task, Constr>,
   pub av_pv_compat: Map<PvTask, Constr>,
   pub zx_link: Map<PvTask, Constr>,
-  pub initial_cuts: Map<Av, Constr>,
+  pub initial_cuts: Map<Avg, Constr>,
 }
 
 impl MpConstraints {
@@ -328,7 +342,47 @@ impl MpConstraints {
 
     let obj = model.add_constr("Obj", c!(-vars.obj == 0))?;
 
-    let initial_cuts: Map<_, _> = todo!();
+    let initial_cuts: Map<_, _> = lu.sets.av_groups().map(|av| {
+        let _s = trace_span!("initial_cuts", av=av.0).entered();
+        let mut cut = Expr::default();
+
+        for &t1 in &lu.tasks.compat_with_av[&av] {
+          for &t2 in &lu.tasks.succ[&t1] {
+            if let Some(&y) = vars.y.get(&(av, t1, t2)) {
+              if t1.is_depot() {
+                cut += t2.t_release * y;
+              } else {
+                let travel_time = t1.tt + lu.data.travel_time[&(t1.end, t2.start)];
+                let service_time = if t1.end == t2.start {
+                  trace!(?t1, ?t2, s=?lu.data.srv_time.get(&t1.end));
+                  debug_assert_eq!(t1.tt, travel_time);
+                  lu.data.srv_time.get(&t1.end).copied().unwrap_or(0)
+                } else {
+                  0
+                };
+                let latest_arrival_at_t2 = t1.t_deadline + travel_time + service_time;
+                let minimum_waiting_time = std::cmp::max(t2.t_release - latest_arrival_at_t2, 0);
+                cut += (travel_time + service_time + minimum_waiting_time) * y;
+              }
+            }
+          }
+        }
+
+      let theta_sum = vars.theta.iter()
+          .filter(|((a, _), _)| a == &av)
+          .map(|(_, &theta)| theta)
+          .grb_sum();
+
+        let c = model.add_constr(&format!("InitOpt[{}]", av), c!(theta_sum >= cut))?;
+        Ok((av, c))
+      }).collect_ok()?;
+    //
+    // let initial_cuts2: Map<_, _> = vars.theta.iter().map(|((a, t), theta)| {
+    //   let td = lu.tasks.ddepot;
+    //   let y = vars.y[&(*a, *t, td)];
+    //   let c = model.add_constr(&format!("InitOpt2[{}|{:?}]", a, t), c!(theta <= td.t_deadline * y))?;
+    //   Ok(((*a, *t), c))
+    // }).collect_ok()?;
 
     Ok(MpConstraints {
       obj,
@@ -386,16 +440,13 @@ impl TaskModelMaster {
   pub fn set_objective(&mut self, lu: &Lookups, obj_param: ObjWeights) -> Result<()> {
     let vars = &self.vars;
     let model = &mut self.model;
-    let constr = self.cons.obj;
+    let obj_constr = self.cons.obj;
 
     let new_coeffs = vars.x.iter().map(|(t, &var)|
       (var, obj_param.tt * lu.data.travel_cost[&(t.start, t.end)])
     ).chain(
       vars.y.iter().map(|((_, t1, t2), &var)| {
         let mut obj = obj_param.tt * lu.data.travel_cost[&(t1.end, t2.start)];
-        if t2.is_depot() {
-          obj += obj_param.av_finish_time * lu.data.travel_time_to_ddepot(t1)
-        }
         (var, obj)
       })
     ).chain(
@@ -404,7 +455,7 @@ impl TaskModelMaster {
       vars.theta.values().map(|&var| (var, obj_param.av_finish_time))
     );
 
-    model.set_coeffs(new_coeffs.map(|(var, coeff)| (var, constr, coeff as f64)))?;
+    model.set_coeffs(new_coeffs.map(|(var, coeff)| (var, obj_constr, coeff as f64)))?;
     Ok(())
   }
 

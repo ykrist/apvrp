@@ -99,12 +99,7 @@ fn evalutate_full_objective(
 
   let mut subproblem = sp::dag::GraphModel::build(&lookups, &sp_cons, sol.sp_objective_tasks());
   let sp_obj: Time = subproblem.solve_for_obj()?;
-  let y_obj_tt: Time = subproblem.second_last_tasks
-    .iter()
-    .map(|t| lookups.data.travel_time_to_ddepot(&lookups.tasks.by_index[t]))
-    .sum();
-
-  let true_cost = mp.obj_val()? + (sp_obj + y_obj_tt) as Cost * obj_weights.av_finish_time;
+  let true_cost = mp.obj_val()? + sp_obj as Cost * obj_weights.av_finish_time;
   Ok(true_cost)
 }
 
@@ -243,7 +238,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
       }
       Phase::NoAvTTCost => {
         if optimal {
-          println!("-------------------------------------------------------------------------------------------------egg");
+          println!("-------------------------------------------------------------------------------------------------");
           #[cfg(debug_assertions)] {
             if callback.cached_solution.is_none() {
               error!("solved to optimality but no solution has been saved");

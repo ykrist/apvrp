@@ -128,13 +128,13 @@ fn process_solution(mut out: OutputFiles,
     graph.model.write_debug(out.get_filepath(".txt"))?;
 
     let (status, iis) = match graph.solve()? {
-      SpStatus::Optimal(_, _) => {
+      SpStatus::Optimal(_) => {
         graph.model.compute_mrs();
         (Status::Optimal, None)
       }
-      SpStatus::Infeasible(i) => {
-        let iis = graph.extract_and_remove_iis(i)?;
-        let status = match i {
+      SpStatus::Infeasible => {
+        let iis = graph.extract_and_remove_iis()?;
+        let status = match graph.inf_kind.unwrap() {
           InfKind::Path => Status::PathIis,
           InfKind::Cycle => Status::Cycle,
         };

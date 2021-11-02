@@ -470,9 +470,9 @@ impl MpSolution {
     }
   }
 
-  pub fn sp_objective_tasks(&self) -> SmallVec<[IdxTask; crate::constants::NUM_AV_UB]> {
+  pub fn sp_objective_tasks(&self) -> Map<IdxTask, Avg> {
     self.av_routes.iter()
-      .map(|r| r[r.len() - 2].index())
+      .map(|r| (r[r.len() - 2].index(), r.av()))
       .collect()
   }
 }
@@ -537,7 +537,6 @@ impl SpSolution {
     let data = data.as_ref();
 
     let mut theta_costs = 0;
-    let mut theta_y = 0;
     let mut y_travel_costs = 0;
     let mut x_travel_costs = 0;
 
@@ -551,18 +550,13 @@ impl SpSolution {
       for (t1, t2) in route.iter_edges() {
         y_travel_costs += data.travel_cost[&(t1.end, t2.start)];
       }
-      let t = route.theta_task();
-      let time = times[times.len() - 2];
+      let time = times[times.len() - 1];
       theta_costs += time;
-      let to_depot = data.travel_time[&(t.start, t.end)] + data.travel_time[&(t.end, Loc::Ad)];
-      theta_y += to_depot;
-      debug_assert_eq!(time + to_depot, *times.last().unwrap())
     }
 
     println!("\nObjective terms:");
     println!("Component   Unweighted    Weighted");
     println!("    Theta     {:8}    {:8}", theta_costs, obj.av_finish_time * theta_costs);
-    println!("     Y TT     {:8}    {:8}", theta_y, obj.av_finish_time * theta_y);
     println!("   X Cost     {:8}    {:8}", x_travel_costs, obj.tt * x_travel_costs);
     println!("   Y Cost     {:8}    {:8}", y_travel_costs, obj.tt * y_travel_costs);
   }
