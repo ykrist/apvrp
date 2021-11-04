@@ -7,7 +7,7 @@ use daggylp::{InfKind, viz::GraphViz};
 use serde::{Serialize, Deserialize};
 use sawmill::InferenceModel;
 use apvrp::model::mp::MpVar;
-use apvrp::model::sp::{Iis, SpConstr, dag::GraphModel, Subproblem, SpStatus};
+use apvrp::model::sp::{Iis, SpConstr, dag::GraphModel, Subproblem, SpStatus, MrsPathVisitor};
 use apvrp::IoContext;
 use apvrp::logging::*;
 
@@ -82,20 +82,18 @@ fn sawmill_graph(
   lookups: &Lookups,
   inf_model: &InferenceModel<MpVar, SpConstr>,
   sol: &MpSolution,
-  iis: Option<&Iis>,
+  constraints: Option<&Set<SpConstr>>,
 ) -> anyhow::Result<()> {
   let active_vars: Set<_> = sol.mp_vars().collect();
   let active_cons = inf_model.implied_constraints(&active_vars);
 
-  let cover = iis.map(|iis| {
-    println!("{:?}\n{:?}", &iis, &active_cons);
-    let iis_cons = iis.constraints();
-    if !iis_cons.is_subset(&active_cons) {
-      let diff = iis_cons.difference(&active_cons).collect::<Set<_>>();
+  let cover = constraints.map(|constraints| {
+    if !constraints.is_subset(&active_cons) {
+      let diff = constraints.difference(&active_cons).collect::<Set<_>>();
       std::fs::write("dump.json", serde_json::to_string(&inf_model.constraints().collect::<Vec<_>>()).unwrap()).unwrap();
       panic!("inactive iis constraints: {:?}", diff);
     }
-    inf_model.cover(&active_vars, &iis_cons)
+    inf_model.cover(&active_vars, &constraints)
   });
 
   let mut viz = inf_model.viz()
@@ -164,7 +162,7 @@ fn process_solution(mut out: OutputFiles,
       .render(&filename)?;
     info!(%filename, "wrote");
 
-    sawmill_graph(&out, lookups, inf_model, &sol, iis.as_ref())?;
+    sawmill_graph(&out, lookups, inf_model, &sol, iis.as_ref().map(|i| i.constraints()))?;
     if iis.is_none() {
       break;
     }

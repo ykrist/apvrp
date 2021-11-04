@@ -123,6 +123,7 @@ pub struct CbStats {
   n_cuts: CutCountArray,
   n_cuts_total: u64,
   n_mipsol: u64,
+  n_subproblems_global: u64,
   n_subproblems: u64,
 }
 
@@ -133,6 +134,7 @@ impl std::default::Default for CbStats {
       n_cuts_total: 0,
       n_mipsol: 0,
       n_subproblems: 0,
+      n_subproblems_global: 0,
     }
   }
 }
@@ -174,7 +176,13 @@ impl CbStats {
   }
 
   pub fn inc_n_sp(&mut self) -> u64 {
-    Self::inc_and_return_old(&mut self.n_subproblems)
+    Self::inc_and_return_old(&mut self.n_subproblems) + self.n_subproblems_global
+  }
+
+  pub fn finish_phase(&mut self) -> Self {
+    let mut new = CbStats::default();
+    new.n_subproblems_global = self.n_subproblems_global + self.n_subproblems;
+    std::mem::replace(self, new)
   }
 }
 
@@ -293,10 +301,6 @@ impl<'a> Cb<'a> {
       error: None,
       cached_solution: None,
     })
-  }
-
-  pub fn reset_stats(&mut self) -> CbStats {
-    std::mem::replace(&mut self.stats, CbStats::default())
   }
 
 

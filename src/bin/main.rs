@@ -223,7 +223,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
       callback.phase.name(),
       &mp.model,
       bounds.finish(),
-      callback.reset_stats(),
+      callback.stats.finish_phase(),
     )?);
 
     callback.flush_cut_cache(&mut mp.model)?;
