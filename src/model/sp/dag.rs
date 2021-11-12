@@ -179,36 +179,35 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
     Ok(self.get_iis(self.inf_kind.expect("expected infeasible model"), &graph_iis))
   }
 
-  // Find the MRS paths which need an optimality cut
-  fn visit_mrs_paths(&mut self, visitor: &mut MrsPathVisitor) -> Result<()> {
-    let mrs = self.model.compute_mrs();
+  // Find the critical paths which need an optimality cut
+  fn visit_critical_paths(&mut self, visitor: &mut CriticalPathVisitor) -> Result<()> {
+    let model = &mut self.model;
+    let lu = self.lu;
+    let var_to_task = &self.var_to_task;
+    let edge_constraints = &self.edge_constraints;
+    let lbs = &self.lbs;
 
-    for mrs in mrs {
-      if !mrs.has_obj_vars() {
-        continue;
+    self.model.visit_critical_paths(|model, p| {
+      let last_var = p.last().unwrap();
+      let last_task = lu.tasks.by_index[&var_to_task[last_var]];
+      let mrs_objective = model.get_solution(last_var).unwrap() as Time + lu.data.travel_time_to_ddepot(&last_task);
+      let tasks: Vec<_> = p.iter().map(|v| lu.tasks.by_index[&var_to_task[v]]).collect();
+      trace!(?tasks, mrs_objective);
+      if visitor.optimality_cut_required(last_task, mrs_objective) {
+        let mut edge_constraints: Vec<_> = iter_pairs(p).map(|(&v1, &v2)| edge_constraints[&(v1, v2)]).collect();
+        let last_task = tasks.last().unwrap();
+        edge_constraints.push(
+          SpConstr::Delta(last_task.index(), IdxTask::DDepot, lu.data.travel_time_to_ddepot(last_task))
+        );
+
+        visitor.add_optimality_cut(MrsPath {
+          objective: mrs_objective,
+          lower_bound: lbs[&tasks[0].index()],
+          tasks,
+          edge_constraints,
+        });
       }
-      mrs.visit_paths(|p| {
-        let last_var = p.last().unwrap();
-        let last_task = self.lu.tasks.by_index[&self.var_to_task[last_var]];
-        let mrs_objective = self.model.get_solution(last_var).unwrap() as Time + self.lu.data.travel_time_to_ddepot(&last_task);
-        let tasks: Vec<_> = p.iter().map(|v| self.lu.tasks.by_index[&self.var_to_task[v]]).collect();
-        trace!(?tasks, mrs_objective);
-        if visitor.optimality_cut_required(last_task, mrs_objective) {
-          let mut edge_constraints: Vec<_> = iter_pairs(p).map(|(&v1, &v2)| self.edge_constraints[&(v1, v2)]).collect();
-          let last_task = tasks.last().unwrap();
-          edge_constraints.push(
-            SpConstr::Delta(last_task.index(), IdxTask::DDepot, self.lu.data.travel_time_to_ddepot(last_task))
-          );
-
-          visitor.add_optimality_cut(MrsPath {
-            objective: mrs_objective,
-            lower_bound: self.lbs[&tasks[0].index()],
-            tasks,
-            edge_constraints,
-          });
-        }
-      })
-    }
+    })?;
     Ok(())
   }
 }

@@ -376,14 +376,13 @@ impl MpConstraints {
         let c = model.add_constr(&format!("InitOpt[{}]", av), c!(theta_sum >= cut))?;
         Ok((av, c))
       }).collect_ok()?;
-    //
-    // let initial_cuts2: Map<_, _> = vars.theta.iter().map(|(&(a, t), &theta)|{
-    //     let y = vars.y[&(a, t, lu.tasks.ddepot)];
-    //     let earliest_finish = t.t_release * lu.data.travel_time_to_ddepot(&t);
-    //     let c = model.add_constr(&format!("InitOpt2[{}|{:?}]", a, t), c!(theta >= earliest_finish * y))?;
-    //     Ok(((a, t), c))
-    //   }).collect_ok()?;
-    // //
+
+    let initial_cuts2: Map<_, _> = vars.theta.iter().map(|(&(a, t), &theta)|{
+        let y = vars.y[&(a, t, lu.tasks.ddepot)];
+        let earliest_finish = t.t_release + lu.data.travel_time_to_ddepot(&t);
+        let c = model.add_constr(&format!("InitOpt2[{}|{:?}]", a, t), c!(theta >= earliest_finish * y))?;
+        Ok(((a, t), c))
+      }).collect_ok()?;
 
     Ok(MpConstraints {
       obj,

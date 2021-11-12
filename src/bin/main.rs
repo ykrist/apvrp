@@ -174,6 +174,14 @@ fn run(exp: ApvrpExp) -> Result<()> {
     mp.model.update()?;
     debug_assert_eq!(mp.model.get_attr(attr::IsMIP)?, 0);
     mp.model.optimize()?;
+
+    #[cfg(debug_assertions)]
+    if let Status::Infeasible = mp.model.status()? {
+      callback.flush_cut_cache(&mut mp.model)?;
+      infeasibility_analysis(&mut mp)?;
+      anyhow::bail!("bugalug");
+    }
+
     bounds.record_root_lb(&mp)?;
     mp.enforce_integrality()?;
 

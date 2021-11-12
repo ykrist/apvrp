@@ -84,21 +84,21 @@ pub struct MrsPath {
   edge_constraints: Vec<SpConstr>,
 }
 
-pub struct MrsPathVisitor<'a, 'b> {
+pub struct CriticalPathVisitor<'a, 'b> {
   theta_estimate: &'a Map<(Avg, Task), Time>,
   task_to_avg: Map<IdxTask, Avg>,
   active_mp_vars: &'a Set<MpVar>,
   cb: &'a mut cb::Cb<'b>
 }
 
-impl<'a, 'b> MrsPathVisitor<'a, 'b> {
+impl<'a, 'b> CriticalPathVisitor<'a, 'b> {
   fn new(cb: &'a mut cb::Cb<'b>, active_mp_vars: &'a Set<MpVar>, theta: &'a Map<(Avg, Task), Time>) -> Self {
     let task_to_avg = active_mp_vars.iter().filter_map(|v| match v {
       MpVar::Y(a, t, td) if td == &IdxTask::DDepot => Some((*t, *a)),
       _ => None,
     }).collect();
     trace!(?theta);
-    MrsPathVisitor {
+    CriticalPathVisitor {
       theta_estimate: theta,
       active_mp_vars,
       task_to_avg,
@@ -113,7 +113,14 @@ impl<'a, 'b> MrsPathVisitor<'a, 'b> {
     self.theta_estimate.get(&(a, t)).copied().unwrap_or(0) < true_obj
   }
 
+  #[inline(always)]
+  pub fn active_vehicle(&self, t: &IdxTask) -> Avg {
+    trace!(?t);
+    self.task_to_avg[t]
+  }
+
   pub fn add_optimality_cut(&mut self, mrs_path: MrsPath) {
+    #[inline]
     fn subpath_objective(lbs: &[Time], delta: &[Time]) -> Time {
       debug_assert_eq!(lbs.len(), delta.len());
       let mut time = lbs[0] + delta[0];
@@ -160,17 +167,13 @@ impl<'a, 'b> MrsPathVisitor<'a, 'b> {
       let new_obj = subpath_objective(&implied_lbs[start_idx..], &edge_weights[start_idx..]);
       let coeff = new_obj - mrs_path.objective;
       trace!(?var, ?constrs, new_obj, coeff);
+      debug_assert!(new_obj <= mrs_path.objective);
       lhs += (1 - grb_var) * coeff;
     }
 
     self.cb.enqueue_cut(c!( lhs <= self.cb.mp_vars.theta[&(a, last_task)] ), CutType::LpOpt);
   }
 
-  #[inline(always)]
-  pub fn active_vehicle(&self, t: &IdxTask) -> Avg {
-    trace!(?t);
-    self.task_to_avg[t]
-  }
 }
 
 
@@ -185,31 +188,23 @@ pub trait Subproblem<'a>: Sized {
   fn extract_and_remove_iis(&mut self) -> Result<Iis>;
 
   // Find the MRS paths
-  fn visit_mrs_paths(&mut self, visitor: &mut MrsPathVisitor) -> Result<()>;
+  fn visit_critical_paths(&mut self, visitor: &mut CriticalPathVisitor) -> Result<()>;
 
   fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, active_mpvars: &Set<MpVar>, theta: &Map<(Avg, Task), Time>, estimate: Time) -> Result<Option<Map<(Avg, Task), Time>>> {
     // TODO: stop early once the IIS covers start getting too big
     //  Can use cb.params, will need find the size of the cover before constructing the constraint
 
-    for solve_iteration in 0.. {
-      let _s = debug_span!("solve_loop", iter=solve_iteration).entered();
+    let mut iis_covers = Vec::new();
+    let mut n_constraint_counts = SmallVec::<[u8; 15]>::new();
+    let mut subproblems_solved = 0u32;
+
+    let sp_obj = loop {
+      let _s = debug_span!("solve_loop", iter=subproblems_solved).entered();
+      subproblems_solved += 1;
 
       match self.solve()? {
         SpStatus::Optimal(sp_obj) => {
-          if estimate < sp_obj {
-            trace!(?active_mpvars);
-            let mut visitor = MrsPathVisitor::new(cb, active_mpvars, theta);
-            self.visit_mrs_paths(&mut visitor)?;
-          }
-
-          if solve_iteration == 0 {
-            let new_theta = self.calculate_theta()?;
-            trace!(?new_theta, sp_obj);
-            // debug_assert_eq!(sp_obj, new_theta.values().sum::<Time>());
-            return Ok(Some(new_theta));
-          } else {
-            return Ok(None);
-          }
+          break sp_obj;
         }
 
         SpStatus::Infeasible => {
@@ -218,14 +213,42 @@ pub trait Subproblem<'a>: Sized {
           #[cfg(debug_assertions)] {
             cb.infeasibilities.lp_iis(&iis);
           }
+          n_constraint_counts.push(iis.constraints().len() as u8);
           let cover = cb.inference_model.cover(active_mpvars, iis.constraints());
-          let lifted_cover = cb.inference_model.lift_cover(&cover, CoverLift{ lookups: cb.lu });
-          cb.enqueue_cut(build_cut_from_lifted_cover(&cb, &lifted_cover), iis.cut_type());
+          iis_covers.push((cover, iis.cut_type()));
         }
       }
+    };
+
+
+    // Feasibility cuts
+    cb.stats.subproblem_cover_sizes(
+      iis_covers.iter()
+        .zip(n_constraint_counts)
+        .map(|((c, _), n_constraints)| (c.len() as u8, n_constraints))
+    );
+
+    iis_covers.sort_unstable_by_key(|(c, _)| c.len());
+
+    for (cover, cut_ty) in iis_covers {
+      let lifted_cover = cb.inference_model.lift_cover(&cover, CoverLift{ lookups: cb.lu });
+      cb.enqueue_cut(build_cut_from_lifted_cover(&cb, &lifted_cover), cut_ty);
     }
 
-    unreachable!()
+    // Optimality cuts
+    if estimate < sp_obj {
+      trace!(?active_mpvars);
+      let mut visitor = CriticalPathVisitor::new(cb, active_mpvars, theta);
+      self.visit_critical_paths(&mut visitor)?;
+    }
+
+    if subproblems_solved == 1 {
+      let new_theta = self.calculate_theta()?;
+      trace!(?new_theta, sp_obj);
+      Ok(Some(new_theta))
+    } else {
+      Ok(None)
+    }
   }
 }
 

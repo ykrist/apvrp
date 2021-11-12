@@ -109,17 +109,17 @@ pub struct Params {
 
   /// Minimum and maximum infeasible chain length at which to add Active Vehicle Fork cuts.
   /// Set MIN > MAX to disable.
-  #[structopt(long, default_value="0,4", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
+  #[structopt(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub av_fork_cuts: std::ops::RangeInclusive<u32>,
 
   /// Minimum and maximum infeasible chain length at which to add Active Vehicle Tournament cuts.
   /// Set MIN > MAX to disable.
-  #[structopt(long, default_value="3,6", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
+  #[structopt(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub av_tournament_cuts: std::ops::RangeInclusive<u32>,
 
   /// Minimum and maximum infeasible chain length at which to add Passive Vehicle Fork cuts.
   /// Set MIN > MAX to disable.
-  #[structopt(long, default_value="0,3", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
+  #[structopt(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub pv_fork_cuts: std::ops::RangeInclusive<u32>,
 
   /// Enable End-time optimality cuts

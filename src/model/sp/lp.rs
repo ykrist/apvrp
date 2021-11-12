@@ -246,7 +246,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
   }
 
   // Find the MRS paths
-  fn visit_mrs_paths(&mut self,visitor: &mut MrsPathVisitor) -> Result<()> {
+  fn visit_critical_paths(&mut self, visitor: &mut CriticalPathVisitor) -> Result<()> {
     todo!()
   }
 }

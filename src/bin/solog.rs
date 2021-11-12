@@ -7,7 +7,7 @@ use daggylp::{InfKind, viz::GraphViz};
 use serde::{Serialize, Deserialize};
 use sawmill::InferenceModel;
 use apvrp::model::mp::MpVar;
-use apvrp::model::sp::{Iis, SpConstr, dag::GraphModel, Subproblem, SpStatus, MrsPathVisitor};
+use apvrp::model::sp::{Iis, SpConstr, dag::GraphModel, Subproblem, SpStatus, CriticalPathVisitor};
 use apvrp::IoContext;
 use apvrp::logging::*;
 

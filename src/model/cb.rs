@@ -125,6 +125,7 @@ pub struct CbStats {
   n_mipsol: u64,
   n_subproblems_global: u64,
   n_subproblems: u64,
+  subproblem_cover_sizes: Vec<SmallVec<[SpSolnIteration; 11]>>, // the SmallVec is 32 bytes total size
 }
 
 impl std::default::Default for CbStats {
@@ -135,8 +136,15 @@ impl std::default::Default for CbStats {
       n_mipsol: 0,
       n_subproblems: 0,
       n_subproblems_global: 0,
+      subproblem_cover_sizes: Vec::new(),
     }
   }
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+pub struct SpSolnIteration {
+  cover_size: u8,
+  n_constraints: u8,
 }
 
 impl CbStats {
@@ -183,6 +191,14 @@ impl CbStats {
     let mut new = CbStats::default();
     new.n_subproblems_global = self.n_subproblems_global + self.n_subproblems;
     std::mem::replace(self, new)
+  }
+
+  pub fn subproblem_cover_sizes(&mut self, sizes: impl IntoIterator<Item=(u8, u8)>) {
+    self.subproblem_cover_sizes.push(
+      sizes.into_iter()
+        .map(|(cover_size, n_constraints)| SpSolnIteration { cover_size, n_constraints })
+        .collect()
+    );
   }
 }
 
