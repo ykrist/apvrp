@@ -318,6 +318,8 @@ impl Lookups {
 
 #[instrument(level = "info", skip(lu))]
 pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpConstr> {
+  // TODO move this to a new submodule called "inference"
+  // TODO use the non-Pv task deadlines/release times
   let mut model = sawmill::InferenceModel::<MpVar, SpConstr>::build();
   let mut included_tasks = Set::default();
 

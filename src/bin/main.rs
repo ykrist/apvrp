@@ -279,20 +279,28 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
     let sol_with_times = sol.solve_for_times(&lookups)?;
     sol_with_times.print_objective_breakdown(&lookups, &obj_weights);
+    let bounds = info.info.last().unwrap().bounds.as_ref().unwrap();
 
-    if matches!(mp.model.status()?, Status::Optimal) {
+    if bounds.lower == bounds.upper {
       if let Some(true_soln) = true_soln {
         let obj = sol.objective.unwrap();
         let true_obj = true_soln.objective.unwrap();
-
         if obj != true_obj {
           true_soln.to_serialisable().to_json_file(exp.get_output_path_prefixed("true_soln.json"))?;
           error!(correct = true_obj, obj, "objective mismatch");
           true_soln.solve_for_times(&lookups)?.print_objective_breakdown(&lookups, &obj_weights);
           mp.fix_solution(&true_soln)?;
+
+          mp.print_constraint_coeff_by_name(&lookups, &true_soln, "LpPath[0|47]")?;
+          mp.print_constraint_coeff_by_name(&lookups, &true_soln, "LpPath[0|73]")?;
+
           infeasibility_analysis(&mut mp)?;
           anyhow::bail!("bugalug");
         }
+      }
+      else if bounds.lower > bounds.upper {
+        error!(?bounds, "invalid bounds");
+        anyhow::bail!("bugalug")
       }
     }
   }

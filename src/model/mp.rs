@@ -407,6 +407,26 @@ pub struct TaskModelMaster {
 
 
 impl TaskModelMaster {
+  pub fn print_constraint_coeff_by_name(&self, lookups: &Lookups, sol: &MpSolution, grb_name: &str) -> anyhow::Result<()> {
+    let c = self.model.get_constr_by_name(grb_name)?.ok_or_else(|| anyhow::anyhow!("no constraint named {} in model", grb_name))?;
+    let coeffs = self.evaluate_constraint(lookups, sol, c)?;
+    info!(?coeffs, constraint=?grb_name);
+    Ok(())
+  }
+
+  pub fn evaluate_constraint(&self,lookups: &Lookups, sol: &MpSolution, c: grb::Constr) -> anyhow::Result<Map<MpVar, f64>> {
+    let mut map = Map::default();
+
+    for var in sol.mp_vars() {
+      let grb_var = self.vars.get_grb_var(lookups, &var);
+      let coeff = self.model.get_coeff(&grb_var, &c)?;
+      if coeff > 0.01 {
+        map.insert(var, coeff);
+      }
+    }
+    Ok(map)
+  }
+
   pub fn relax_integrality(&mut self) -> Result<()> {
     for var in self.vars.binary_vars() {
       self.model.set_obj_attr(attr::VType, var, VarType::Continuous)?
@@ -479,8 +499,8 @@ impl TaskModelMaster {
       }
     }
     if let Some(obj) = sol.objective {
-      self.model.set_obj_attr(attr::UB, &self.vars.obj, obj as f64)?;
-      self.model.set_obj_attr(attr::LB, &self.vars.obj, obj as f64)?;
+      // self.model.set_obj_attr(attr::UB, &self.vars.obj, obj as f64)?;
+      // self.model.set_obj_attr(attr::LB, &self.vars.obj, obj as f64)?;
     }
     Ok(())
   }

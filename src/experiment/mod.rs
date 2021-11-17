@@ -436,10 +436,10 @@ impl Bounds {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaseInfo {
-  phase: String,
-  gurobi: GurobiInfo,
-  bounds: Option<Bounds>,
-  cb: Option<CbStats>,
+  pub phase: String,
+  pub gurobi: GurobiInfo,
+  pub bounds: Option<Bounds>,
+  pub cb: Option<CbStats>,
 }
 
 impl PhaseInfo {
