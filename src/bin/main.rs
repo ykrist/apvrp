@@ -155,7 +155,6 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
-  mp.model.set_obj_attr_batch(attr::Sense, mp.cons.num_av.values().map(|&c| (c, ConstrSense::Equal)))?;
   mp.model.update()?;
   phase_info.push(PhaseInfo::new_init(&mp.model)?);
 
