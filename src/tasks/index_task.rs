@@ -24,6 +24,10 @@ pub enum IdxTask {
 }
 
 impl IdxTask {
+  pub fn is_depot(&self) -> bool {
+    matches!(self, IdxTask::ODepot | IdxTask::DDepot)
+  }
+
   pub fn infer_pv(&self) -> Option<Pv> {
     use IdxTask::*;
     match self {

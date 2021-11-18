@@ -11,3 +11,4 @@ routes.json
 .idea/
 .gdb_history
 archive/
+debug.py

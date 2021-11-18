@@ -12,7 +12,7 @@ function trace_on_fail {
         echo
         echo "------------------------- job failed (capturing trace...) ---------------------------------"
         echo
-        RUST_LOG=trace RUST_BACKTRACE=full target/debug/apvrp --param-name test -q --cpus 1 "$@"
+        RUST_LOG=trace RUST_BACKTRACE=full target/debug/apvrp --param-name test -q --cpus 1  --soln-log --model-file "$@"
     fi
 }
 

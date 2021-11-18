@@ -29,6 +29,7 @@ pub use instances::dataset::apvrp::{
 };
 
 pub use wrapper_types::*;
+
 mod wrapper_types {
   use super::*;
   use serde::{Deserialize, Serialize};
@@ -64,11 +65,10 @@ mod wrapper_types {
   }
 
 
-  new_wrapper_ty!{ Av = RawAv }
-  new_wrapper_ty!{ Avg = RawAv }
-  new_wrapper_ty!{ Pv = RawPv }
-  new_wrapper_ty!{ Req = RawReq }
-
+  new_wrapper_ty! { Av = RawAv }
+  new_wrapper_ty! { Avg = RawAv }
+  new_wrapper_ty! { Pv = RawPv }
+  new_wrapper_ty! { Req = RawReq }
 }
 
 pub use instances::dataset::Dataset;
@@ -107,7 +107,7 @@ impl Data {
 }
 
 
-pub fn map_with_capacity<K,V>(capacity: usize) -> Map<K,V> {
+pub fn map_with_capacity<K, V>(capacity: usize) -> Map<K, V> {
   Map::with_capacity_and_hasher(capacity, fnv::FnvBuildHasher::default())
 }
 
@@ -241,7 +241,7 @@ pub struct Lookups {
   pub data: Data,
   pub sets: Sets,
   pub tasks: Tasks,
-  pub pv_routes: Option<PvRoutes>
+  pub pv_routes: Option<PvRoutes>,
 }
 
 impl Lookups {
@@ -264,6 +264,18 @@ impl Lookups {
     self.pv_routes = Some(PvRoutes::new(&self.sets, &self.data, &self.tasks))
   }
 
+  pub fn iter_yvars<'a>(&'a self) -> impl Iterator<Item=(Avg, Task, Task)> + 'a {
+    self.tasks.compat_with_av.iter().flat_map(move |(&av, av_tasks)|
+      av_tasks.iter()
+        .flat_map(move |t1| self.tasks.succ[t1].iter().map(move |t2| (t1, t2)))
+        .filter(move |(t1, t2)| av_tasks.contains(t2))
+        .map(move |(&t1, &t2)| (av, t1, t2))
+    )
+  }
+
+  // pub fn iter_xvars<'a>(&'a self) -> impl Iterator<Item=MpVar> + 'a {
+  //   todo!()
+  // }
 }
 
 impl AsRef<Data> for Lookups {
@@ -289,19 +301,22 @@ impl AsRef<Data> for Data {
 }
 
 
-
 mod tasks;
+
 pub use tasks::*;
 
 use logging::*;
 
 mod sets;
+
 pub use sets::Sets;
 
 mod utils;
+
 pub use utils::{iter_cycle, Json, IoContext};
 
 mod constants;
+
 pub use constants::*;
 
 
@@ -310,10 +325,13 @@ pub mod preprocess;
 pub mod graph;
 pub mod logging;
 pub mod solution;
+
 use fnv::FnvHashSet;
 use crate::colgen::PvRoutes;
 use anyhow::Context;
 use std::fmt::Display;
+use crate::model::mp::MpVar;
+use crate::model::sp::SpConstr;
 
 pub mod schedule;
 pub mod experiment;
@@ -321,7 +339,7 @@ pub mod test;
 pub mod colgen;
 // TODO tests for encode and decode.
 
-pub const COMMIT_HASH : &'static str = env!("COMMIT_HASH");
+pub const COMMIT_HASH: &'static str = env!("COMMIT_HASH");
 
 
 fn commit_hash() -> Result<String> {

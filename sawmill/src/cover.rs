@@ -22,10 +22,12 @@ impl<'a, A: Clause, C: Constraint> Ctx<'a, A, C> {
       if let Some(pred) = self.model.predecessors.get(n) {
         for p in pred {
           if let Node::Clause(a) = p {
-            return (dist, a)
+            if self.active_clauses.contains(a) {
+              return (dist, a)
+            }
           }
+          queue.push_back(p);
         }
-        queue.extend(pred)
       }
       n = queue.pop_front().expect("BFS queue empty: active constraint with no active predecessor");
     }
@@ -48,7 +50,6 @@ impl<'a, A: Clause, C: Constraint> Ctx<'a, A, C> {
   }
 
   pub fn clauses_implying(&self, c: &C) -> impl Iterator<Item=&A> {
-    tracing::trace!(?c);
     self.model.impliers[c].iter()
   }
 
@@ -110,14 +111,12 @@ impl<A: Clause, C: Constraint> CoverAlgorithm<A, C> for Greedy {
       }
     }
     scores.retain(|a, scr| *scr > 1 );
-    trace!(?scores, ?uncovered_constr);
-
     while !uncovered_constr.is_empty() {
       if let Some((&a, best_score)) = scores.iter().max_by_key(|(a, x)| *x) {
-        debug_assert_ne!(*best_score, 0);
-        if *best_score == 1 {
+        if *best_score <= 1 {
           break
         }
+        trace!(?scores, ?uncovered_constr, chosen_clause=?a);
         scores.remove(a);
 
         let newly_covered: Set<_> = ctx.implied_constraints(a)
@@ -138,7 +137,7 @@ impl<A: Clause, C: Constraint> CoverAlgorithm<A, C> for Greedy {
         break
       }
     }
-
+    trace!(?scores, ?uncovered_constr);
 
     // Post-processing - if all that is left is one-to-one coverings, use the logical distances instead.
     for c in uncovered_constr {
@@ -149,6 +148,11 @@ impl<A: Clause, C: Constraint> CoverAlgorithm<A, C> for Greedy {
       cons.insert(c);
       cover.insert(a.clone(), cons);
     }
+
+    // for c in uncovered_constr {
+    //   let a = ctx.active_clauses_implying(&c).next().unwrap();
+    //   cover.insert(a.clone(), std::iter::once(c).collect());
+    // }
 
     cover
   }

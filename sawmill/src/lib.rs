@@ -57,7 +57,23 @@ impl<A, C> Node<A, C> {
   }
 
   #[inline]
+  pub fn constraint_ref(&self) -> Option<&C> {
+    match self {
+      Node::Constr(c) => Some(c),
+      Node::Clause(_) => None,
+    }
+  }
+
+  #[inline]
   pub fn clause(self) -> Option<A> {
+    match self {
+      Node::Clause(c) => Some(c),
+      Node::Constr(_) => None,
+    }
+  }
+
+  #[inline]
+  pub fn clause_ref(&self) -> Option<&A> {
     match self {
       Node::Clause(c) => Some(c),
       Node::Constr(_) => None,
@@ -73,159 +89,212 @@ impl<A, C> Node<A, C> {
   }
 }
 
-#[derive(Clone, Default)]
-pub struct InferenceModelBuilder<A, C: Constraint> {
-  clauses: Set<A>,
-  constraints: Set<C>,
-  predecessors: Map<Node<A, C>, Set<Node<A, C>>>,
-}
+mod builder {
+  use super::*;
 
-
-impl<A: Clause, C: Constraint> InferenceModelBuilder<A, C> {
-  pub fn constraints(&self) -> &Set<C> { &self.constraints }
-
-  pub fn add_domain_implication(&mut self, condn: A, result: A) {
-    self.clauses.get_or_insert_owned(&condn);
-    self.clauses.get_or_insert_owned(&result);
-    self.predecessors.entry(Node::Clause(result)).or_default().insert(Node::Clause(condn));
+  #[derive(Clone, Default)]
+  pub struct InferenceModelBuilder<A, C: Constraint> {
+    pub(crate) clauses: Set<A>,
+    pub(crate) constraints: Set<C>,
+    pub(crate) predecessors: Map<Node<A, C>, Set<Node<A, C>>>,
   }
 
-  pub fn add_implication(&mut self, clause: A, constraint: C) {
-    self.clauses.get_or_insert_owned(&clause);
-    self.constraints.get_or_insert_owned(&constraint);
-    self.predecessors.entry(Node::Constr(constraint)).or_default().insert(Node::Clause(clause));
+  #[derive(Copy, Clone, Debug)]
+  pub(crate) enum NodeState {
+    Unvisited,
+    Inprogress,
+    Visited,
   }
 
-  pub fn add_constraint_domination(&mut self, stronger: C, weaker: C) {
-    self.constraints.get_or_insert_owned(&stronger);
-    self.constraints.get_or_insert_owned(&weaker);
-    self.predecessors.entry(Node::Constr(weaker)).or_default().insert(Node::Constr(stronger));
+  #[tracing::instrument(skip(implications, successors))]
+  pub(crate) fn dfs_build_flat_implications<'a, A, C>(
+    implications: &'a mut Map<Node<A, C>, Set<Node<A, C>>>,
+    current_node: &Node<A, C>,
+    successors: &Map<Node<A, C>, Set<Node<A, C>>>)
+    where
+      A: Clause,
+      C: Constraint,
+  {
+    if implications.contains_key(current_node) {
+      tracing::trace!(node=?current_node, "previously explored node");
+      return
+    }
+    let mut imp = Set::default();
+    if let Some(succ) = successors.get(current_node) {
+      for n in succ {
+        imp.insert(n.clone());
+        dfs_build_flat_implications(implications, n, successors);
+        imp.extend(implications[n].iter().cloned());
+      }
+    }
+    implications.insert(current_node.clone(), imp);
   }
 
-  #[instrument(level="debug", name="flatten_graph", skip(self))]
-  pub fn finish(self) -> InferenceModel<A, C> {
-    #[derive(Copy, Clone, Debug)]
-    enum NodeState {
-      Unvisited,
-      Inprogress,
-      Visited,
-    }
-    fn dfs_cycle_check<A, C>(
-      current_node: &Node<A, C>,
-      node_state: &mut Map<&Node<A, C>, NodeState>,
-      successors: &Map<Node<A, C>, Set<Node<A, C>>>)
-      where
-        A: Clause,
-        C: Constraint,
-    {
-      match node_state.get_mut(current_node).unwrap() {
-        s @ NodeState::Unvisited => { *s = NodeState::Inprogress; },
-        NodeState::Inprogress => panic!("cycles not yet supported"),
-        NodeState::Visited => return
-      }
-
-      if let Some(succ) = successors.get(current_node) {
-        for n in succ {
-          dfs_cycle_check(n, node_state, successors)
-        }
-      }
-
-      *node_state.get_mut(current_node).unwrap() = NodeState::Visited;
+  pub(crate) fn dfs_cycle_check<A, C>(
+    current_node: &Node<A, C>,
+    node_state: &mut Map<&Node<A, C>, NodeState>,
+    successors: &Map<Node<A, C>, Set<Node<A, C>>>)
+    where
+      A: Clause,
+      C: Constraint,
+  {
+    match node_state.get_mut(current_node).unwrap() {
+      s @ NodeState::Unvisited => { *s = NodeState::Inprogress; },
+      NodeState::Inprogress => panic!("cycles not yet supported"),
+      NodeState::Visited => return
     }
 
-    #[tracing::instrument(skip(implications, successors))]
-    fn dfs_build_flat_implications<'a, A, C>(
-      implications: &'a mut Map<Node<A, C>, Set<Node<A, C>>>,
-      current_node: &Node<A, C>,
-      successors: &Map<Node<A, C>, Set<Node<A, C>>>)
-      where
-        A: Clause,
-        C: Constraint,
-    {
-      if implications.contains_key(current_node) {
-        tracing::trace!(node=?current_node, "previously explored node");
-        return
+    if let Some(succ) = successors.get(current_node) {
+      for n in succ {
+        dfs_cycle_check(n, node_state, successors)
       }
-      let mut imp = Set::default();
-      if let Some(succ) = successors.get(current_node) {
-        for n in succ {
-          imp.insert(n.clone());
-          dfs_build_flat_implications(implications, n, successors);
-          imp.extend(implications[n].iter().cloned());
-        }
-      }
-      implications.insert(current_node.clone(), imp);
     }
 
+    *node_state.get_mut(current_node).unwrap() = NodeState::Visited;
+  }
 
-    let InferenceModelBuilder { clauses, constraints, predecessors } = self;
-    let nodes : Set<_> = clauses.iter().map(|c| Node::Clause(c.clone()))
-      .chain(constraints.iter().map(|c| Node::Constr(c.clone())))
-      .collect();
+  impl<A: Clause, C: Constraint> InferenceModelBuilder<A, C> {
+    pub fn constraints(&self) -> &Set<C> { &self.constraints }
 
-    let successors = {
-      let mut succ: Map<_, Set<_>> = Map::with_capacity_and_hasher(predecessors.len(), Default::default());
-      for (n, pred) in &predecessors {
-        for p in pred {
-          succ.entry(p.clone()).or_default().insert(n.clone());
+    pub fn add_domain_implication(&mut self, condn: A, result: A) {
+      self.clauses.get_or_insert_owned(&condn);
+      self.clauses.get_or_insert_owned(&result);
+      self.predecessors.entry(Node::Clause(result)).or_default().insert(Node::Clause(condn));
+    }
+
+    pub fn add_implication(&mut self, clause: A, constraint: C) {
+      self.clauses.get_or_insert_owned(&clause);
+      self.constraints.get_or_insert_owned(&constraint);
+      self.predecessors.entry(Node::Constr(constraint)).or_default().insert(Node::Clause(clause));
+    }
+
+    pub fn add_constraint_domination(&mut self, stronger: C, weaker: C) {
+      self.constraints.get_or_insert_owned(&stronger);
+      self.constraints.get_or_insert_owned(&weaker);
+      self.predecessors.entry(Node::Constr(weaker)).or_default().insert(Node::Constr(stronger));
+    }
+
+    pub fn add_higher_order(self) -> HighOrderInferenceBuilder<A, C> {
+      HighOrderInferenceBuilder(self.finish())
+    }
+
+    #[instrument(level="debug", name="flatten_graph", skip(self))]
+    pub fn finish(self) -> InferenceModel<A, C> {
+      use builder::*;
+      let InferenceModelBuilder { clauses, constraints, predecessors } = self;
+      let nodes : Set<_> = clauses.iter().map(|c| Node::Clause(c.clone()))
+        .chain(constraints.iter().map(|c| Node::Constr(c.clone())))
+        .collect();
+
+      let successors = {
+        let mut succ: Map<_, Set<_>> = Map::with_capacity_and_hasher(predecessors.len(), Default::default());
+        for (n, pred) in &predecessors {
+          for p in pred {
+            succ.entry(p.clone()).or_default().insert(n.clone());
+          }
         }
-      }
-      succ
-    };
+        succ
+      };
 
-    #[cfg(debug_assertions)] {// check for cycles
-      let mut node_states = nodes.iter().map(|n| (n, NodeState::Unvisited)).collect();
+      #[cfg(debug_assertions)] {// check for cycles
+        let mut node_states = nodes.iter().map(|n| (n, NodeState::Unvisited)).collect();
+        for n in &nodes {
+          dfs_cycle_check(n, &mut node_states, &successors);
+        }
+        debug!("cycle check found no cycles")
+      }
+
+
+      let mut flat_successors = Map::with_capacity_and_hasher(nodes.len(), Default::default());
+
       for n in &nodes {
-        dfs_cycle_check(n, &mut node_states, &successors);
+        let _s = trace_span!("dfs_search", node=?n).entered();
+        dfs_build_flat_implications(&mut flat_successors,n, &successors);
+        trace!("DFS complete");
       }
-      debug!("cycle check found no cycles")
-    }
 
+      let mut dominated_constraints = Map::default();
+      let mut implications = Map::default();
 
-    let mut flat_successors = Map::with_capacity_and_hasher(nodes.len(), Default::default());
-
-    for n in &nodes {
-      let _s = trace_span!("dfs_search", node=?n).entered();
-      dfs_build_flat_implications(&mut flat_successors,n, &successors);
-      trace!("DFS complete");
-    }
-
-    let mut dominated_constraints = Map::default();
-    let mut implications = Map::default();
-
-    for (n, succ) in flat_successors {
-      match n {
-        Node::Clause(a) => {
-          let cons : Set<_> = succ.into_iter().filter_map(Node::constraint).collect();
-          implications.insert(a, cons);
-        },
-        Node::Constr(c) => {
-          let cons : Set<_> = succ.into_iter().map(Node::unwrap_constraint).collect();
-          dominated_constraints.insert(c, cons);
+      for (n, succ) in flat_successors {
+        match n {
+          Node::Clause(a) => {
+            let cons : Set<_> = succ.into_iter().filter_map(Node::constraint).collect();
+            implications.insert(a, cons);
+          },
+          Node::Constr(c) => {
+            let cons : Set<_> = succ.into_iter().map(Node::unwrap_constraint).collect();
+            dominated_constraints.insert(c, cons);
+          }
         }
       }
-    }
 
-    let mut impliers: Map<_, Set<_>> = Map::default();
-    for (a, cons) in &implications {
-      for c in cons {
-        impliers.entry(c.clone())
-          .or_default()
-          .insert(a.clone());
+      let mut impliers: Map<_, Set<_>> = Map::default();
+      for (a, cons) in &implications {
+        for c in cons {
+          impliers.entry(c.clone())
+            .or_default()
+            .insert(a.clone());
+        }
+      }
+      debug!("finished");
+      InferenceModel {
+        predecessors,
+        successors,
+        dominated_constraints,
+        implications,
+        impliers,
       }
     }
-    debug!("finished");
-    InferenceModel {
-      predecessors,
-      successors,
-      dominated_constraints,
-      implications,
-      impliers,
+  }
+
+
+  #[derive(Clone)]
+  pub struct HighOrderInferenceBuilder<A, C>(InferenceModel<A, C>);
+
+  impl<A: Clause, C: Constraint> HighOrderInferenceBuilder<A, C> {
+    pub fn finish(self) -> InferenceModel<A, C> {
+      self.0
+    }
+
+    fn add_implication(&mut self, atom: &A, cons: &C) {
+      trace!(predicate=?atom, ?cons, "add higher order implication");
+      self.0.implications.entry(atom.clone()).or_default().insert(cons.clone());
+      self.0.impliers.get_mut(cons).unwrap().insert(atom.clone());
+      self.0.predecessors.get_mut(&Node::Constr(cons.clone())).unwrap().insert(Node::Clause(atom.clone()));
+      self.0.successors.entry(Node::Clause(atom.clone())).or_default().insert(Node::Constr(cons.clone()));
+    }
+
+    #[instrument(level="debug", skip(self, one_of))]
+    pub fn add_implies_one_of(&mut self, predicate: A, one_of: impl IntoIterator<Item=A>) {
+      let mut one_of = one_of.into_iter();
+
+      let mut constraints = match one_of.find_map(|a| self.0.implications.get(&a)) {
+        Some(s) => s.clone(),
+        None => return
+      };
+
+      if let Some(already_implied) = self.0.implications.get(&predicate) {
+        constraints.retain(|c| !already_implied.contains(c))
+      }
+
+      for cons in one_of.filter_map(|a| self.0.implications.get(&a)) {
+        constraints.retain(|c | cons.contains(c));
+        if constraints.is_empty() { break }
+      }
+
+      for c in &constraints {
+        self.add_implication(&predicate, c);
+      }
+
+      debug!(num_implications=constraints.len());
     }
   }
 }
 
+use builder::{HighOrderInferenceBuilder, InferenceModelBuilder};
 
+#[derive(Clone)]
 pub struct InferenceModel<A, C> {
   predecessors: Map<Node<A, C>, Set<Node<A, C>>>,
   successors: Map<Node<A, C>, Set<Node<A, C>>>,

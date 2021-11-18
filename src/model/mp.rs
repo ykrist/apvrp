@@ -499,8 +499,8 @@ impl TaskModelMaster {
       }
     }
     if let Some(obj) = sol.objective {
-      // self.model.set_obj_attr(attr::UB, &self.vars.obj, obj as f64)?;
-      // self.model.set_obj_attr(attr::LB, &self.vars.obj, obj as f64)?;
+      self.model.set_obj_attr(attr::UB, &self.vars.obj, obj as f64)?;
+      self.model.set_obj_attr(attr::LB, &self.vars.obj, obj as f64)?;
     }
     Ok(())
   }

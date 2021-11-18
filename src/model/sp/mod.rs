@@ -321,7 +321,6 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
   // TODO move this to a new submodule called "inference"
   // TODO use the non-Pv task deadlines/release times
   let mut model = sawmill::InferenceModel::<MpVar, SpConstr>::build();
-  let mut included_tasks = Set::default();
 
   for pv_task in lu.tasks.pvtask_to_task.keys() {
     let t = pv_task.index().into();
@@ -364,42 +363,35 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
       }
       _ => {}
     }
-    included_tasks.insert(t);
   }
 
-  included_tasks.insert(IdxTask::DDepot);
   info!("finished X-variable implications");
 
-  for (&av, av_tasks) in &lu.tasks.compat_with_av {
-    for &task1 in av_tasks {
-      let t1 = task1.index();
-      for &task2 in &lu.tasks.succ[&task1] {
-        let t2 = task2.index();
-        if av_tasks.contains(&task2) && included_tasks.contains(&t1) && included_tasks.contains(&t2) {
-          let y = MpVar::Y(av, t1, t2);
-          model.add_implication(y, SpConstr::Delta(
-            t1,
-            t2,
-            lu.av_task_travel_time(&task1, &task2)
-          ));
+  for (av, task1, task2) in lu.iter_yvars() {
+    if task1.is_depot() { continue }
 
-          let mut p1 = task1.infer_pv();
-          let mut p2 = task2.infer_pv();
+    let (t1, t2) = (task1.index(), task2.index());
+    let y = MpVar::Y(av, t1, t2);
+    model.add_implication(y, SpConstr::Delta(
+      t1,
+      t2,
+      lu.av_task_travel_time(&task1, &task2)
+    ));
 
-          if task1.end == task2.start {
-            p1 = p1.or(p2);
-            p2 = p2.or(p1);
-            debug_assert_eq!(p1, p2)
-          }
+    let mut p1 = task1.infer_pv();
+    let mut p2 = task2.infer_pv();
 
-          if let Some(p1) = p1 {
-            model.add_domain_implication(y, MpVar::X(p1, t1))
-          }
-          if let Some(p2) = p2 {
-            model.add_domain_implication(y, MpVar::X(p2, t2))
-          }
-        }
-      }
+    if task1.end == task2.start {
+      p1 = p1.or(p2);
+      p2 = p2.or(p1);
+      debug_assert_eq!(p1, p2)
+    }
+
+    if let Some(p1) = p1 {
+      model.add_domain_implication(y, MpVar::X(p1, t1))
+    }
+    if let Some(p2) = p2 {
+      model.add_domain_implication(y, MpVar::X(p2, t2))
     }
   }
   info!("finished Y-variable implications");
@@ -445,6 +437,20 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
   }
 
   info!("finished subproblem constraint domination");
+
+  let mut model = model.add_higher_order();
+
+  for (av, t1, t2) in lu.iter_yvars() {
+    let t1 = t1.index();
+    let t2 = t2.index();
+    let y_var = MpVar::Y(av, t1, t2);
+    for t in [t1, t2] {
+      if !t.is_depot() && t.infer_pv().is_none() { // only need to bother with tasks where P can't be inferred.
+        let x_vars = lu.tasks.task_to_pvtasks[&lu.tasks.by_index[&t]].iter().map(|pt| MpVar::X(pt.p, t));
+        model.add_implies_one_of(y_var, x_vars);
+      }
+    }
+  }
   model.finish()
 }
 

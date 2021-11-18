@@ -308,8 +308,10 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
 #[tracing::instrument(level = "error")]
 fn main() -> Result<()> {
+  // FIXME index 14 shows excessive time spent in callback
   apvrp::check_commit_hash()?;
   let exp: experiment::ApvrpExp = handle_slurm_args()?;
+  println!("Running on data index {}", exp.inputs.index);
   exp.write_index_file()?;
   exp.write_parameter_file()?;
   let _g = logging::init_logging(Some(exp.get_output_path(&exp.outputs.trace_log)), !exp.aux_params.quiet)?;
