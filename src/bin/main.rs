@@ -289,10 +289,6 @@ fn run(exp: ApvrpExp) -> Result<()> {
           error!(correct = true_obj, obj, "objective mismatch");
           true_soln.solve_for_times(&lookups)?.print_objective_breakdown(&lookups, &obj_weights);
           mp.fix_solution(&true_soln)?;
-
-          mp.print_constraint_coeff_by_name(&lookups, &true_soln, "LpPath[0|47]")?;
-          mp.print_constraint_coeff_by_name(&lookups, &true_soln, "LpPath[0|73]")?;
-
           infeasibility_analysis(&mut mp)?;
           anyhow::bail!("bugalug");
         }

@@ -10,6 +10,7 @@ use apvrp::model::sp::{SpConstr, dag::GraphModel, Subproblem, SpStatus};
 use apvrp::IoContext;
 use apvrp::logging::*;
 use fnv::FnvHashSet;
+use indicatif::ProgressIterator;
 
 type InferenceModel = sawmill::InferenceModel<MpVar, SpConstr>;
 
@@ -41,7 +42,6 @@ fn get_indices(selections: &[SologSelection], last_index: usize) -> Vec<usize> {
 
   let mut inds : Vec<_> = inds.into_iter().collect();
   inds.sort_unstable();
-  dbg!(&inds);
   inds
 }
 
@@ -153,7 +153,6 @@ impl OutputFiles {
       SolutionSource::TrueSoln => format!("true_{}{}", self.minor_index, suffix),
       SolutionSource::FinalSoln => format!("final_{}{}", self.minor_index, suffix),
     };
-    dbg!(&self.dir, &name);
     self.dir.join(name).into_os_string().into_string().unwrap()
   }
 }
@@ -287,11 +286,18 @@ fn main() -> anyhow::Result<()> {
   }
 
   if !args.selection.is_empty() {
+
+
     let solog = args.index_file.with_file_name(&exp.outputs.solution_log);
     let solog = std::fs::read_to_string(&solog).read_context(&solog)?;
     let lines: Vec<_> = solog.lines().collect();
 
-    for k in get_indices(&args.selection, lines.len() - 1) {
+    let indices = get_indices(&args.selection, lines.len() - 1);
+    let bar = indicatif::ProgressBar::new(indices.len() as u64)
+      .with_message("rendering...")
+      .with_style(indicatif::ProgressStyle::default_bar().template("{msg} {bar} {pos}/{len}"));
+
+    for k in indices.into_iter().progress_with(bar) {
       let sol : SerialisableSolution = serde_json::from_str(lines[k])?;
       let out = OutputFiles::new(&args.index_file, exp.inputs.index, SolutionSource::Solog(k))?;
       process_solution(out, &lookups, &inf_model, sol)?;

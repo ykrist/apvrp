@@ -12,6 +12,7 @@ use tracing::*;
 use grb::prelude::*;
 use crate::model::cb::CutType;
 use sawmill::InferenceModel;
+use std::cmp::max;
 
 pub struct GraphModel<'a> {
   pub lu: &'a Lookups,
@@ -39,6 +40,49 @@ impl<'a> GraphModel<'a> {
       }
     }
     (theta_sum as Weight) < mrs.obj()
+  }
+
+  fn try_reduce_cycle_iis(&self, graph_iis: &daggylp::Iis) -> Iis {
+    let cycle_len = graph_iis.len();
+    let mut edge_constraints = Vec::with_capacity(cycle_len * 2 - 1);
+    edge_constraints.extend(graph_iis.iter_edge_constraints().map(|c| self.edge_constraints[&c].unwrap_delta()));
+
+    debug_assert_eq!(edge_constraints.len(), cycle_len);
+    debug_assert_eq!(
+      edge_constraints.first().unwrap().0,
+      edge_constraints.last().unwrap().1
+    );
+
+    edge_constraints.extend_from_within(..edge_constraints.len()-1);
+
+    for chain_length in 3..(cycle_len-1) {
+      for chain in edge_constraints.windows(chain_length) {
+        let first_task = chain.first().unwrap().0;
+        let last_task = chain.last().unwrap().1;
+        debug_assert_ne!(first_task, last_task);
+
+        let mut time = self.lbs[&first_task];
+
+        for (_, t, d) in chain {
+          time = max(time + d, self.lbs[t]);
+        }
+
+        if time > self.ubs[&last_task] {
+          let mut iis = set_with_capacity(chain.len() + 2);
+          iis.extend(chain.iter().map(|&(t1, t2, d)| SpConstr::Delta(t1, t2, d)));
+          iis.insert(SpConstr::Lb(first_task, self.lbs[&first_task]));
+          iis.insert(SpConstr::Ub(last_task, self.ubs[&last_task]));
+          debug!(path=?chain, cycle=?edge_constraints[..cycle_len], "Found path IIS within cycle IIS");
+          return Iis::Path(iis)
+        }
+      }
+    }
+
+    let iis = edge_constraints.into_iter()
+      .take(cycle_len)
+      .map(|(t1, t2, d)| SpConstr::Delta(t1, t2, d))
+      .collect();
+    Iis::Cycle(iis)
   }
 }
 
@@ -131,12 +175,7 @@ impl<'a> GraphModel<'a> {
         Iis::Path(iis)
       }
 
-      InfKind::Cycle => {
-        let cycle = graph_iis.iter_edge_constraints()
-          .map(|e| self.edge_constraints[&e])
-          .collect();
-        Iis::Cycle(cycle)
-      }
+      InfKind::Cycle => self.try_reduce_cycle_iis(graph_iis)
     }
   }
 }
