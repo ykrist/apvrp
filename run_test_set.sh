@@ -18,4 +18,4 @@ function trace_on_fail {
 
 export -f trace_on_fail
 rm -f logs/test/parameters.json
-parallel -j 6 --halt now,fail=1 trace_on_fail --load-params params/run/debug-dag_38732.json :::: <( python ../../src/apvrp/data_indices.py test )
+parallel -j 6 --halt now,fail=1 trace_on_fail --load-params params/run/debug-dag_38732.json :::: <( python ../../src/apvrp/data_indices.py test_bp | tail -n +2 )
