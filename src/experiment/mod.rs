@@ -369,6 +369,20 @@ pub enum BoundsRecorder {
   PostMip(Bounds),
 }
 
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct Bounds {
+  // FIXME lower bounds should be floats
+  pub lower_root: Cost,
+  pub lower: Cost,
+  pub upper: Cost,
+  pub upper_full_obj: Option<Cost>,
+}
+
+impl Bounds {
+  pub fn new() -> BoundsRecorder { BoundsRecorder::Init }
+}
+
 impl BoundsRecorder {
   pub fn record_root_lb(&mut self, model: &TaskModelMaster) -> Result<()> {
     use BoundsRecorder::*;
@@ -419,18 +433,6 @@ impl BoundsRecorder {
       PostMip(bounds) => bounds
     }
   }
-}
-
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub struct Bounds {
-  pub lower_root: Cost,
-  pub lower: Cost,
-  pub upper: Cost,
-  pub upper_full_obj: Option<Cost>,
-}
-
-impl Bounds {
-  pub fn new() -> BoundsRecorder { BoundsRecorder::Init }
 }
 
 

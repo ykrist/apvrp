@@ -377,7 +377,7 @@ impl MpConstraints {
         Ok((av, c))
       }).collect_ok()?;
 
-    let initial_cuts2: Map<_, _> = vars.theta.iter().map(|(&(a, t), &theta)|{
+    let _initial_cuts2: Map<_, _> = vars.theta.iter().map(|(&(a, t), &theta)|{
         let y = vars.y[&(a, t, lu.tasks.ddepot)];
         let earliest_finish = t.t_release + lu.data.travel_time_to_ddepot(&t);
         let c = model.add_constr(&format!("InitOpt2[{}|{:?}]", a, t), c!(theta >= earliest_finish * y))?;
@@ -446,7 +446,7 @@ impl TaskModelMaster {
   }
 
   pub fn obj_bound(&self) -> Result<Cost> {
-    Ok(self.model.get_attr(attr::ObjBound)?.round() as Cost)
+    Ok(self.model.get_attr(attr::ObjBound)?.ceil() as Cost)
   }
 
   pub fn build(lu: &Lookups) -> Result<Self> {
@@ -466,7 +466,7 @@ impl TaskModelMaster {
       (var, obj_param.tt * lu.data.travel_cost[&(t.start, t.end)])
     ).chain(
       vars.y.iter().map(|((_, t1, t2), &var)| {
-        let mut obj = obj_param.tt * lu.data.travel_cost[&(t1.end, t2.start)];
+        let obj = obj_param.tt * lu.data.travel_cost[&(t1.end, t2.start)];
         (var, obj)
       })
     ).chain(

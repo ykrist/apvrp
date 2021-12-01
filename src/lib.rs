@@ -268,7 +268,7 @@ impl Lookups {
     self.tasks.compat_with_av.iter().flat_map(move |(&av, av_tasks)|
       av_tasks.iter()
         .flat_map(move |t1| self.tasks.succ[t1].iter().map(move |t2| (t1, t2)))
-        .filter(move |(t1, t2)| av_tasks.contains(t2))
+        .filter(move |(_, t2)| av_tasks.contains(t2))
         .map(move |(&t1, &t2)| (av, t1, t2))
     )
   }

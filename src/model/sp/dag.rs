@@ -220,7 +220,6 @@ impl<'a> Subproblem<'a> for GraphModel<'a> {
 
   // Find the critical paths which need an optimality cut
   fn visit_critical_paths(&mut self, visitor: &mut CriticalPathVisitor) -> Result<()> {
-    let model = &mut self.model;
     let lu = self.lu;
     let var_to_task = &self.var_to_task;
     let edge_constraints = &self.edge_constraints;
