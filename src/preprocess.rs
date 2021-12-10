@@ -71,8 +71,8 @@ pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
   let mut compat_active_passive : Map<_, Vec<_>> = map_with_capacity(data.n_active as usize);
 
   for (&pv, avs) in &data.compat_passive_active {
-    let pv = pv - lss.pv_o;
-    for &av in avs {
+    let pv = lss.odepot_to_pv(pv);
+    for av in avs.iter().copied().map(Avg) {
       compat_active_passive.entry(av).or_default().push(pv);
     }
   }
@@ -89,11 +89,10 @@ pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
   for (pvs, mut avs) in grouped_by_pv_compat {
     avs.sort();
     let avg = avs[0];
-    for av in &avs[1..] {
-      compat_active_passive.remove(av).expect("missing AV");
+    for a in &avs[1..] {
+      compat_active_passive.remove(a).expect("missing AV");
     }
-    av_groups.insert(avg, avs);
-
+    av_groups.insert(avg, avs.iter().map(|a| Av(a.0)).collect());
     for pv in pvs {
       compat_passive_active.entry(pv).or_default().push(avg);
     }
@@ -105,11 +104,17 @@ pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
   trace!(av_groups=?&av_groups);
 
   let compat_req_passive : Map<_, Vec<_>> = data.compat_req_passive.iter()
-    .map(|(&raw_req, raw_pvs)| (raw_req - lss.req_p, raw_pvs.iter().map(|&p| p - lss.pv_o).collect()))
+    .map(|(&raw_req, raw_pvs)| (
+      lss.pickup_to_req(raw_req),
+      raw_pvs.iter().map(|&p| lss.odepot_to_pv(p)).collect())
+    )
     .collect();
 
   let compat_passive_req : Map<_, Vec<_>> = data.compat_passive_req.iter()
-    .map(|(&raw_pv, raw_reqs)| (raw_pv - lss.pv_o, raw_reqs.iter().map(|&r| r - lss.req_p).collect()))
+    .map(|(&raw_pv, raw_reqs)| (
+      lss.odepot_to_pv(raw_pv),
+      raw_reqs.iter().map(|&r| lss.pickup_to_req(r)).collect())
+    )
     .collect();
 
   let travel_time = decode_locpair_keys(&lss, &data.travel_time);

@@ -38,7 +38,7 @@ pub struct TimingSubproblem<'a> {
   pub task_to_var: Map<IdxTask, Var>,
   pub constraint_map: Map<SpConstr, Constr>,
   pub constraint_map_inv: Map<Constr, SpConstr>,
-  pub obj_tasks: SmallVec<[IdxTask; NUM_AV_UB]>,
+  pub obj_tasks: Map<IdxTask, Avg>,
   pub model: Model,
   pub lu: &'a Lookups,
 }
@@ -102,7 +102,7 @@ impl<'a> TimingSubproblem<'a> {
     }
 
     let obj_tasks = sol.sp_objective_tasks();
-    model.set_objective(obj_tasks.iter().map(|t| task_to_var[t]).grb_sum(), Minimize)?;
+    model.set_objective(obj_tasks.keys().map(|t| task_to_var[t]).grb_sum(), Minimize)?;
 
     let var_to_task = utils::inverse_map(&task_to_var);
     let constraint_map_inv = utils::inverse_map(&constraint_map);
@@ -118,7 +118,7 @@ impl<'a> TimingSubproblem<'a> {
   }
 
 
-  pub fn build(lu: &'a Lookups, constraints: &Set<SpConstr>, obj_tasks: SmallVec<[IdxTask; NUM_AV_UB]>) -> Result<TimingSubproblem<'a>> {
+  pub fn build(lu: &'a Lookups, constraints: &Set<SpConstr>, obj_tasks: Map<IdxTask, Avg>) -> Result<TimingSubproblem<'a>> {
     let _span = error_span!("sp_build").entered();
 
     let mut var_to_task = Map::default();
@@ -150,7 +150,7 @@ impl<'a> TimingSubproblem<'a> {
       constraint_map_inv.insert(grb_c, *c);
     }
 
-    let obj = obj_tasks.iter().map(|t| task_to_var[t]).grb_sum();
+    let obj = obj_tasks.keys().map(|t| task_to_var[t]).grb_sum();
 
     model.update()?;
     trace!(obj=?obj.with_names(&model));
@@ -202,17 +202,18 @@ impl<'a> TimingSubproblem<'a> {
 }
 
 impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
-  type Optimal = ();
-  type Infeasible = ();
+  fn calculate_theta(&mut self) -> Result<ThetaVals> {
+    todo!()
+  }
 
-  fn solve(&mut self) -> Result<SpStatus<(), ()>> {
+  fn solve(&mut self) -> Result<SpStatus> {
     self.model.optimize()?;
     match self.model.status()? {
       Status::Optimal => {
         let obj_val = self.model.get_attr(attr::ObjVal)?.round() as Time;
-        Ok(SpStatus::Optimal(obj_val, ()))
+        Ok(SpStatus::Optimal(obj_val))
       }
-      Status::Infeasible => Ok(SpStatus::Infeasible(())),
+      Status::Infeasible => Ok(SpStatus::Infeasible),
       other => {
         let err = CbError::Status(other);
         error!(status=?other, "{}", err);
@@ -222,7 +223,7 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
   }
 
   #[instrument(level = "trace", skip(self))]
-  fn extract_and_remove_iis(&mut self, _: ()) -> Result<Iis> {
+  fn extract_and_remove_iis(&mut self) -> Result<Iis> {
     self.model.compute_iis()?;
 
     let iis: Set<_> = self.iis_constraints()?.collect();
@@ -244,49 +245,8 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     }
   }
 
-  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, _theta: &Map<(Avg, Task), Time>, _: ()) -> Result<()> {
-    let sp_obj = self.model.get_attr(attr::ObjVal)?;
-    let _s = trace_span!("optimality_cut", obj=%sp_obj).entered();
-    let mut lhs = Expr::default();
-
-    let mut num_edge_constraints = 0i32;
-    let mut num_lbs = 0i32;
-    for cons in self.mrs_constraints()? {
-      match cons {
-        SpConstr::Lb(t, lb) => {
-          num_lbs += 1;
-          cb.mp_vars.x_sum_similar_tasks_lb(self.lu, &t, lb).sum_into(&mut lhs)
-        }
-        SpConstr::Delta(t1, t2, _) => {
-          num_edge_constraints += 1;
-          cb.mp_vars.max_weight_edge_sum(
-            self.lu,
-            self.lu.tasks.by_index[&t1],
-            self.lu.tasks.by_index[&t2],
-          ).sum_into(&mut lhs);
-        }
-        SpConstr::Ub(..) => {
-          error!(?cons, "UB constraint in MRS");
-          panic!("bugalug")
-        }
-      }
-      trace!(?cons, "MRS constraint");
-    }
-
-    self.obj_tasks.iter()
-      .flat_map(|t| cb.mp_vars.y_sum_av(cb.lu, self.lu.tasks.by_index[t], cb.lu.tasks.ddepot))
-      .sum_into(&mut lhs);
-
-    let num_obj_tasks = self.obj_tasks.len() as i32;
-    trace!(num_lbs, num_edge_constraints, num_obj_tasks);
-    lhs = sp_obj * (1 - num_lbs - num_edge_constraints - num_obj_tasks + lhs);
-
-    let rhs = self.lu.sets.avs()
-      .cartesian_product(&self.obj_tasks)
-      .filter_map(|(a, t)| cb.mp_vars.theta.get(&(a, self.lu.tasks.by_index[t])))
-      .grb_sum();
-
-    cb.enqueue_cut(c!(lhs <= rhs), CutType::LpOpt);
-    Ok(())
+  // Find the MRS paths
+  fn visit_critical_paths(&mut self, _visitor: &mut CriticalPathVisitor) -> Result<()> {
+    todo!()
   }
 }

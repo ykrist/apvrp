@@ -409,7 +409,7 @@ impl PvTasks {
         let t_release = data.pv_req_start_time[&(pv, rp.req())];
         let tt = data.travel_time[&(rp, rd)];
         let t_deadline = data.pv_req_end_time[&(pv, rp.req())]; // FIXME: use latest_arrivals here
-        trace!(pv, ?rp, t_release, tt, t_deadline);
+        trace!(pv=pv.0, ?rp, t_release, tt, t_deadline);
         if t_release + tt <= t_deadline {
           let task = PvTask::new(
             TaskType::Request,
@@ -646,7 +646,7 @@ impl Tasks {
     let all_non_depot = &all[..all.len() - 2];
     let pvtask_to_similar_pvtask = aggregate_similar_pvtasks(&pvtasks.all);
 
-    let compat_with_av: Map<_, _> = sets.avs()
+    let compat_with_av: Map<_, _> = sets.av_groups()
       .map(|av| {
         let pvs = &data.compat_active_passive[&av];
         let compat_passive_vehicles: Set<_> = pvs.iter().copied().collect();

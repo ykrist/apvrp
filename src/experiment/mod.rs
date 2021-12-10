@@ -109,17 +109,17 @@ pub struct Params {
 
   /// Minimum and maximum infeasible chain length at which to add Active Vehicle Fork cuts.
   /// Set MIN > MAX to disable.
-  #[structopt(long, default_value="0,4", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
+  #[structopt(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub av_fork_cuts: std::ops::RangeInclusive<u32>,
 
   /// Minimum and maximum infeasible chain length at which to add Active Vehicle Tournament cuts.
   /// Set MIN > MAX to disable.
-  #[structopt(long, default_value="3,6", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
+  #[structopt(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub av_tournament_cuts: std::ops::RangeInclusive<u32>,
 
   /// Minimum and maximum infeasible chain length at which to add Passive Vehicle Fork cuts.
   /// Set MIN > MAX to disable.
-  #[structopt(long, default_value="0,3", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
+  #[structopt(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub pv_fork_cuts: std::ops::RangeInclusive<u32>,
 
   /// Enable End-time optimality cuts
@@ -369,6 +369,20 @@ pub enum BoundsRecorder {
   PostMip(Bounds),
 }
 
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+pub struct Bounds {
+  // FIXME lower bounds should be floats
+  pub lower_root: Cost,
+  pub lower: Cost,
+  pub upper: Cost,
+  pub upper_full_obj: Option<Cost>,
+}
+
+impl Bounds {
+  pub fn new() -> BoundsRecorder { BoundsRecorder::Init }
+}
+
 impl BoundsRecorder {
   pub fn record_root_lb(&mut self, model: &TaskModelMaster) -> Result<()> {
     use BoundsRecorder::*;
@@ -421,25 +435,13 @@ impl BoundsRecorder {
   }
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub struct Bounds {
-  pub lower_root: Cost,
-  pub lower: Cost,
-  pub upper: Cost,
-  pub upper_full_obj: Option<Cost>,
-}
-
-impl Bounds {
-  pub fn new() -> BoundsRecorder { BoundsRecorder::Init }
-}
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaseInfo {
-  phase: String,
-  gurobi: GurobiInfo,
-  bounds: Option<Bounds>,
-  cb: Option<CbStats>,
+  pub phase: String,
+  pub gurobi: GurobiInfo,
+  pub bounds: Option<Bounds>,
+  pub cb: Option<CbStats>,
 }
 
 impl PhaseInfo {

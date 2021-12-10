@@ -17,9 +17,9 @@ struct Args {
 #[derive(Serialize, Clone, Debug)]
 struct Output {
   index: usize,
-  n_req: Req,
-  n_pv: Pv,
-  n_av: Av,
+  n_req: RawReq,
+  n_pv: RawPv,
+  n_av: RawAv,
 }
 
 impl Output {

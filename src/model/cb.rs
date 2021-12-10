@@ -123,7 +123,9 @@ pub struct CbStats {
   n_cuts: CutCountArray,
   n_cuts_total: u64,
   n_mipsol: u64,
+  n_subproblems_global: u64,
   n_subproblems: u64,
+  subproblem_cover_sizes: Vec<SmallVec<[SpSolnIteration; 11]>>, // the SmallVec is 32 bytes total size
 }
 
 impl std::default::Default for CbStats {
@@ -133,8 +135,16 @@ impl std::default::Default for CbStats {
       n_cuts_total: 0,
       n_mipsol: 0,
       n_subproblems: 0,
+      n_subproblems_global: 0,
+      subproblem_cover_sizes: Vec::new(),
     }
   }
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+pub struct SpSolnIteration {
+  cover_size: u8,
+  n_constraints: u8,
 }
 
 impl CbStats {
@@ -174,7 +184,21 @@ impl CbStats {
   }
 
   pub fn inc_n_sp(&mut self) -> u64 {
-    Self::inc_and_return_old(&mut self.n_subproblems)
+    Self::inc_and_return_old(&mut self.n_subproblems) + self.n_subproblems_global
+  }
+
+  pub fn finish_phase(&mut self) -> Self {
+    let mut new = CbStats::default();
+    new.n_subproblems_global = self.n_subproblems_global + self.n_subproblems;
+    std::mem::replace(self, new)
+  }
+
+  pub fn subproblem_cover_sizes(&mut self, sizes: impl IntoIterator<Item=(u8, u8)>) {
+    self.subproblem_cover_sizes.push(
+      sizes.into_iter()
+        .map(|(cover_size, n_constraints)| SpSolnIteration { cover_size, n_constraints })
+        .collect()
+    );
   }
 }
 
@@ -186,14 +210,14 @@ pub struct InfeasibilityTracker {
 
 impl InfeasibilityTracker {
   pub fn av_cycle(&mut self, lu: &Lookups, cycle: &AvCycle) {
-    let mut sorted_cycle : Vec<_> = cycle.sp_constraints(lu).collect();
+    let mut sorted_cycle: Vec<_> = cycle.sp_constraints(lu).collect();
     sorted_cycle.sort_unstable();
     let count = self.cycles.entry(sorted_cycle).or_insert(0);
     InfeasibilityTracker::check_and_inc_count(count, cycle);
   }
 
   pub fn lp_iis(&mut self, iis: &Iis) {
-    let mut cons : Vec<_> = iis.constraints().iter().copied().collect();
+    let mut cons: Vec<_> = iis.constraints().iter().copied().collect();
     cons.sort_unstable();
     let count = match iis {
       Iis::Path(_) => self.paths.entry(cons).or_insert(0),
@@ -203,7 +227,7 @@ impl InfeasibilityTracker {
   }
 
   #[inline(always)]
-  fn check_and_inc_count<T: Debug>(count : &mut usize, iis: T) {
+  fn check_and_inc_count<T: Debug>(count: &mut usize, iis: T) {
     if *count > 100 {
       error!(?count, ?iis, "IIS is not being cut off");
       panic!("bugalug")
@@ -221,6 +245,7 @@ pub struct CachedCut {
   expr: IneqExpr,
 }
 
+pub type ThetaVals = Map<(Avg, Task), Time>;
 
 pub struct Cb<'a> {
   pub mp_obj: ObjWeights,
@@ -246,7 +271,7 @@ pub struct Cb<'a> {
   #[cfg(debug_assertions)]
   pub error: Option<CbError>,
 
-  pub cached_solution: Option<MpSolution>,
+  pub cached_solution: Option<(MpSolution, ThetaVals)>,
 }
 
 impl<'a> Cb<'a> {
@@ -294,10 +319,6 @@ impl<'a> Cb<'a> {
     })
   }
 
-  pub fn reset_stats(&mut self) -> CbStats {
-    std::mem::replace(&mut self.stats, CbStats::default())
-  }
-
 
   #[cfg(debug_assertions)]
   fn cut_check(&self, cut: &IneqExpr, ty: &CutType) {
@@ -307,7 +328,6 @@ impl<'a> Cb<'a> {
       error!("cut is not violated!");
       panic!("bugalug");
     }
-
 
     if !ty.is_opt_cut() {
       let coeff_error = || {
@@ -411,7 +431,7 @@ impl<'a> Cb<'a> {
 
     let rhs_sum = chain.legal_before(self.lu)
       .flat_map(|t| {
-        self.lu.sets.avs().filter_map(move |av| y.get(&(av, t, first_task)).copied())
+        self.lu.sets.av_groups().filter_map(move |av| y.get(&(av, t, first_task)).copied())
       })
       .grb_sum();
 
@@ -431,7 +451,7 @@ impl<'a> Cb<'a> {
 
     let rhs_sum = chain.legal_after(self.lu)
       .flat_map(|t2| {
-        self.lu.sets.avs().filter_map(move |av| y.get(&(av, last_task, t2)).copied())
+        self.lu.sets.av_groups().filter_map(move |av| y.get(&(av, last_task, t2)).copied())
       })
       .grb_sum();
 
@@ -675,7 +695,7 @@ impl<'a> Cb<'a> {
   }
 
 
-  fn separate_av_cuts(&mut self, theta: &Map<(Av, Task), Time>, routes: &[AvRoute], cycles: &[AvCycle]) -> Result<()> {
+  fn separate_av_cuts(&mut self, theta: &Map<(Avg, Task), Time>, routes: &[AvRoute], cycles: &[AvCycle]) -> Result<()> {
     if self.params.cycle_cuts {
       for cycle in cycles {
         if let Some(chain) = self.illegal_av_chain_in_cycle(&cycle) {
@@ -745,41 +765,35 @@ impl<'a> Cb<'a> {
     Ok(construct_pv_routes(task_pairs))
   }
 
-  fn av_travel_time_obj_component(&self, sol: &MpSolution, sp_obj: Time) -> Cost {
-    debug_assert!(sol.pv_cycles.is_empty());
-    debug_assert!(sol.av_cycles.is_empty());
-    let av_tt = sp_obj + sol.av_routes.iter()
-      .map(|r| self.lu.data.travel_time_to_ddepot(r.theta_task()))
-      .sum::<Time>();
-    av_tt * self.mp_obj.av_finish_time
-  }
-
-  #[instrument(level="info", name="save_sol", skip(self, sol))]
-  fn update_cached_solution(&mut self, mut sol: MpSolution, obj: Cost) -> bool {
+  #[instrument(level = "info", name = "save_sol", skip(self, sol))]
+  fn update_cached_solution(&mut self, mut sol: MpSolution, obj: Cost, theta: ThetaVals) -> bool {
     match self.cached_solution.as_ref() {
-      Some(sp) => {
+      Some((sp, _)) => {
         let saved_obj = sp.objective.unwrap();
         if saved_obj < obj {
           info!(saved_obj, "solution discarded: previously cached solution is better");
-          return false
+          return false;
         }
       }
       None => {}
     }
     sol.objective = Some(obj);
-    self.cached_solution = Some(sol);
+    self.cached_solution = Some((sol, theta));
     info!("saved new solution for final phase");
     true
   }
 
-  fn suggest_solution(&self, ctx: &MIPNodeCtx, sol: &MpSolution) -> Result<()> {
+  fn suggest_solution(&self, ctx: &MIPNodeCtx, sol: &MpSolution, theta: &ThetaVals) -> Result<()> {
     debug_assert!(sol.av_cycles.is_empty());
     debug_assert!(sol.pv_cycles.is_empty());
     let xvars = sol.pv_routes.iter().flat_map(|r| r.iter().map(|t| self.mp_vars.x[t]));
     let yvars = sol.av_routes.iter().flat_map(|r| r.iter_y_vars().map(|key| self.mp_vars.y[&key]));
-    let grb_soln = xvars.chain(yvars).map(|var| (var, 1.0));
+
+    let grb_soln = xvars.chain(yvars).map(|var| (var, 1.0))
+      .chain(theta.iter().map(|(key, val)| (self.mp_vars.theta[key], *val as f64)));
+
     #[allow(unused_variables)]
-    let obj = ctx.set_solution(grb_soln)?;
+      let obj = ctx.set_solution(grb_soln)?;
 
     #[cfg(debug_assertions)]
     match obj.map(|o| o.round() as Cost) {
@@ -788,6 +802,7 @@ impl<'a> Cb<'a> {
         panic!("bugalug");
       }
       Some(obj) => {
+        debug!(grb_obj = obj, stored_obj = sol.objective.unwrap());
         if obj > sol.objective.unwrap() {
           error!(gurobi_obj = obj, "Gurobi-computed objective implies dodgy optimality cuts");
           panic!("bugalug");
@@ -837,15 +852,15 @@ impl<'a> Callback for Cb<'a> {
               serde_json::to_writer(&mut *sol_log, &sol.to_serialisable())?; // need to re-borrow here
               write!(sol_log, "\n")?;
             }
-            let active_vars : Set<_> = sol.mp_vars().collect();
+            let active_vars: Set<_> = sol.mp_vars().collect();
             let mut active_sp_cons = self.inference_model.implied_constraints(&active_vars);
             self.inference_model.remove_dominated_constraints(&mut active_sp_cons);
 
 
-            trace!(?theta);
+            debug!(?theta);
             let estimate: Time = theta.values().sum();
             tracing::span::Span::current().record("estimate", &estimate);
-            let sp_obj = match self.params.sp {
+            let correct_theta = match self.params.sp {
               SpSolverKind::Dag => {
                 let mut sp = dag::GraphModel::build(self.lu, &active_sp_cons, sol.sp_objective_tasks());
                 sp.solve_subproblem_and_add_cuts(self, &active_vars, &theta, estimate)?
@@ -856,10 +871,18 @@ impl<'a> Callback for Cb<'a> {
               }
             };
 
-            if matches!(self.phase, Phase::NoAvTTCost) {
-              if let Some(sp_obj) = sp_obj {
-                let obj = ctx.obj()?.round() as Cost + self.av_travel_time_obj_component(&sol, sp_obj);
-                self.update_cached_solution(sol, obj);
+            if let Some(theta) = correct_theta {
+              let sp_obj: Time = theta.values().sum();
+              if sp_obj == estimate {
+                info!("estimate is correct!")
+              } else if estimate > sp_obj {
+                warn!(sp_obj, "estimate is too large")
+              }
+
+
+              if matches!(self.phase, Phase::NoAvTTCost) {
+                let obj = ctx.obj()?.round() as Cost + sp_obj;
+                self.update_cached_solution(sol, obj, theta);
               }
             }
           }
@@ -871,13 +894,13 @@ impl<'a> Callback for Cb<'a> {
       }
 
       Where::MIPNode(ctx) if self.phase.is_final() => {
-        if let Some(sol) = &self.cached_solution {
+        if let Some((sol, theta)) = &self.cached_solution {
           let inc_obj = ctx.obj_best()?.round() as Time;
           let saved_obj = sol.objective.unwrap();
           let _s = error_span!("post_sol", inc_obj, saved_obj).entered();
 
           if saved_obj < inc_obj {
-            self.suggest_solution(&ctx, sol)?;
+            self.suggest_solution(&ctx, sol, theta)?;
           } else {
             info!("ditching saved solution: incumbent is better or equal");
             self.cached_solution = None;

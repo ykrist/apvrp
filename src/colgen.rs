@@ -19,7 +19,7 @@ impl PvRoutes {
     let mut by_pvtask : Map<PvTask, Vec<usize>> = map_with_capacity(tasks.pvtask_to_task.len());
 
     for pv in sets.pvs() {
-      let _s = error_span!("pvcg", pv).entered();
+      let _s = error_span!("pvcg", pv=pv.0).entered();
       let pv_routes = RouteGenerator::new(data, tasks, pv).generate_routes();
       info!(count=pv_routes.len(), "generated routes for PV");
       for r in pv_routes {

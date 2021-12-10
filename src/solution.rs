@@ -85,12 +85,12 @@ mod route {
   #[derive(Debug, Clone, Eq, PartialEq)]
   pub struct AvRoute {
     tasks: Vec<Task>,
-    av: Av,
+    av: Avg,
   }
 
 
   impl AvRoute {
-    pub fn new(av: Av, tasks: Vec<Task>) -> Self {
+    pub fn new(av: Avg, tasks: Vec<Task>) -> Self {
       debug_assert_matches!(tasks.first().unwrap().ty, TaskType::ODepot);
       debug_assert_matches!(tasks.last().unwrap().ty, TaskType::DDepot);
       AvRoute { av, tasks }
@@ -110,11 +110,11 @@ mod route {
   #[derive(Debug, Clone, Eq, PartialEq)]
   pub struct AvCycle {
     tasks: Vec<Task>,
-    av: Av,
+    av: Avg,
   }
 
   impl AvCycle {
-    pub fn new(av: Av, tasks: Vec<Task>) -> Self {
+    pub fn new(av: Avg, tasks: Vec<Task>) -> Self {
       debug_assert_eq!(tasks.first().unwrap(), tasks.last().unwrap());
       AvCycle { av, tasks }
     }
@@ -140,7 +140,7 @@ mod route {
       }
 
       impl $ty {
-        pub fn av(&self) -> Av { self.av }
+        pub fn av(&self) -> Avg { self.av }
 
         pub fn into_inner(self) -> Vec<Task> { self.tasks }
 
@@ -152,7 +152,7 @@ mod route {
           self.tasks.iter().copied().tuple_windows()
         }
 
-        pub fn iter_y_vars<'a>(&'a self) -> impl Iterator<Item=(Av, Task, Task)> + 'a {
+        pub fn iter_y_vars<'a>(&'a self) -> impl Iterator<Item=(Avg, Task, Task)> + 'a {
           self.iter_edges_owned().map(move |(t1, t2)| (self.av, t1, t2))
         }
       }
@@ -177,13 +177,13 @@ pub fn iter_solution_log(p: impl AsRef<Path>) -> Result<impl Iterator<Item=Seria
 
 /// Given a list of task pairs (from the Y variables), construct routes for an Active Vehicle class, plus any cycles which occur.
 #[tracing::instrument(level = "debug", skip(task_pairs))]
-pub fn construct_av_routes(task_pairs: impl IntoIterator<Item=(Av, Task, Task)>) -> (Vec<AvRoute>, Vec<AvCycle>) {
+pub fn construct_av_routes(task_pairs: impl IntoIterator<Item=(Avg, Task, Task)>) -> (Vec<AvRoute>, Vec<AvCycle>) {
   use crate::graph::DecomposableDigraph;
 
   #[derive(Copy, Clone, Hash, Eq, PartialEq)]
   struct AvTask {
     task: Task,
-    av: Av,
+    av: Avg,
   }
 
   impl Debug for AvTask {
@@ -244,7 +244,7 @@ pub fn construct_av_routes(task_pairs: impl IntoIterator<Item=(Av, Task, Task)>)
     let mut odepot_arcs = SmallVec::new();
     let mut succ = Map::default();
     for (av, t1, t2) in task_pairs {
-      trace!(av, ?t1, ?t2);
+      trace!(av=av.0, ?t1, ?t2);
       let t1 = AvTask { task: t1, av };
       let t2 = AvTask { task: t2, av };
 
@@ -261,7 +261,7 @@ pub fn construct_av_routes(task_pairs: impl IntoIterator<Item=(Av, Task, Task)>)
   let (paths, cycles) = graph.decompose_paths_cycles();
 
   #[inline]
-  fn path_nodes(arcs: Vec<(AvTask, AvTask)>) -> (Av, Vec<Task>) {
+  fn path_nodes(arcs: Vec<(AvTask, AvTask)>) -> (Avg, Vec<Task>) {
     let first_arc = arcs[0];
     let AvTask { av, task } = first_arc.0;
     let path = std::iter::once(task)
@@ -470,9 +470,9 @@ impl MpSolution {
     }
   }
 
-  pub fn sp_objective_tasks(&self) -> SmallVec<[IdxTask; crate::constants::NUM_AV_UB]> {
+  pub fn sp_objective_tasks(&self) -> Map<IdxTask, Avg> {
     self.av_routes.iter()
-      .map(|r| r[r.len() - 2].index())
+      .map(|r| (r[r.len() - 2].index(), r.av()))
       .collect()
   }
 }
@@ -537,7 +537,6 @@ impl SpSolution {
     let data = data.as_ref();
 
     let mut theta_costs = 0;
-    let mut theta_y = 0;
     let mut y_travel_costs = 0;
     let mut x_travel_costs = 0;
 
@@ -551,18 +550,13 @@ impl SpSolution {
       for (t1, t2) in route.iter_edges() {
         y_travel_costs += data.travel_cost[&(t1.end, t2.start)];
       }
-      let t = route.theta_task();
-      let time = times[times.len() - 2];
+      let time = times[times.len() - 1];
       theta_costs += time;
-      let to_depot = data.travel_time[&(t.start, t.end)] + data.travel_time[&(t.end, Loc::Ad)];
-      theta_y += to_depot;
-      debug_assert_eq!(time + to_depot, *times.last().unwrap())
     }
 
     println!("\nObjective terms:");
     println!("Component   Unweighted    Weighted");
     println!("    Theta     {:8}    {:8}", theta_costs, obj.av_finish_time * theta_costs);
-    println!("     Y TT     {:8}    {:8}", theta_y, obj.av_finish_time * theta_y);
     println!("   X Cost     {:8}    {:8}", x_travel_costs, obj.tt * x_travel_costs);
     println!("   Y Cost     {:8}    {:8}", y_travel_costs, obj.tt * y_travel_costs);
   }
@@ -681,7 +675,7 @@ mod debugging {
       let start = lss.decode(self.start);
       let end = lss.decode(self.end);
       let p =
-        if self.p < 0 { None } else { Some(self.p as Pv) };
+        if self.p < 0 { None } else { Some(Pv(self.p as RawPv)) };
 
       let sht = match start {
         Loc::Ao => unimplemented!(),
@@ -716,7 +710,7 @@ mod debugging {
 
     let mut av_routes = Vec::new();
     for (av, routes) in &soln.av_routes {
-      let av: Avg = av.parse().context("parsing AV")?;
+      let av = av.parse::<RawAv>().context("parsing AV").map(Avg)?;
       for route in routes {
         let mut r = Vec::with_capacity(route.len() + 2);
         r.push(tasks.odepot);

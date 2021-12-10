@@ -99,12 +99,7 @@ fn evalutate_full_objective(
 
   let mut subproblem = sp::dag::GraphModel::build(&lookups, &sp_cons, sol.sp_objective_tasks());
   let sp_obj: Time = subproblem.solve_for_obj()?;
-  let y_obj_tt: Time = subproblem.second_last_tasks
-    .iter()
-    .map(|t| lookups.data.travel_time_to_ddepot(&lookups.tasks.by_index[t]))
-    .sum();
-
-  let true_cost = mp.obj_val()? + (sp_obj + y_obj_tt) as Cost * obj_weights.av_finish_time;
+  let true_cost = mp.obj_val()? + sp_obj as Cost * obj_weights.av_finish_time;
   Ok(true_cost)
 }
 
@@ -160,7 +155,6 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
   mp.model.update()?;
   mp.model.write("master_problem.lp")?;
-  mp.model.set_obj_attr_batch(attr::Sense, mp.cons.num_av.values().map(|&c| (c, ConstrSense::Equal)))?;
   mp.model.update()?;
   phase_info.push(PhaseInfo::new_init(&mp.model)?);
 
@@ -179,6 +173,14 @@ fn run(exp: ApvrpExp) -> Result<()> {
     mp.model.update()?;
     debug_assert_eq!(mp.model.get_attr(attr::IsMIP)?, 0);
     mp.model.optimize()?;
+
+    #[cfg(debug_assertions)]
+    if let Status::Infeasible = mp.model.status()? {
+      callback.flush_cut_cache(&mut mp.model)?;
+      infeasibility_analysis(&mut mp)?;
+      anyhow::bail!("bugalug");
+    }
+
     bounds.record_root_lb(&mp)?;
     mp.enforce_integrality()?;
 
@@ -228,7 +230,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
       callback.phase.name(),
       &mp.model,
       bounds.finish(),
-      callback.reset_stats(),
+      callback.stats.finish_phase(),
     )?);
 
     callback.flush_cut_cache(&mut mp.model)?;
@@ -243,7 +245,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
       }
       Phase::NoAvTTCost => {
         if optimal {
-          println!("-------------------------------------------------------------------------------------------------egg");
+          println!("-------------------------------------------------------------------------------------------------");
           #[cfg(debug_assertions)] {
             if callback.cached_solution.is_none() {
               error!("solved to optimality but no solution has been saved");
@@ -276,12 +278,12 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
     let sol_with_times = sol.solve_for_times(&lookups)?;
     sol_with_times.print_objective_breakdown(&lookups, &obj_weights);
+    let bounds = info.info.last().unwrap().bounds.as_ref().unwrap();
 
-    if matches!(mp.model.status()?, Status::Optimal) {
+    if bounds.lower == bounds.upper {
       if let Some(true_soln) = true_soln {
         let obj = sol.objective.unwrap();
         let true_obj = true_soln.objective.unwrap();
-
         if obj != true_obj {
           true_soln.to_serialisable().to_json_file(exp.get_output_path_prefixed("true_soln.json"))?;
           error!(correct = true_obj, obj, "objective mismatch");
@@ -291,6 +293,10 @@ fn run(exp: ApvrpExp) -> Result<()> {
           anyhow::bail!("bugalug");
         }
       }
+      else if bounds.lower > bounds.upper {
+        error!(?bounds, "invalid bounds");
+        anyhow::bail!("bugalug")
+      }
     }
   }
   Ok(())
@@ -298,8 +304,10 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
 #[tracing::instrument(level = "error")]
 fn main() -> Result<()> {
+  // FIXME index 14 shows excessive time spent in callback
   apvrp::check_commit_hash()?;
   let exp: experiment::ApvrpExp = handle_slurm_args()?;
+  println!("Running on data index {}", exp.inputs.index);
   exp.write_index_file()?;
   exp.write_parameter_file()?;
   let _g = logging::init_logging(Some(exp.get_output_path(&exp.outputs.trace_log)), !exp.aux_params.quiet)?;

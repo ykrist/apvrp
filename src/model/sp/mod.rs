@@ -13,6 +13,9 @@ use IdxTask::*;
 use crate::utils::{iter_pairs, VarIterExt, PeekableExt};
 use daggylp::Weight;
 use sawmill::lift::LiftedCover;
+use sawmill::cover::Cover;
+use sawmill::InferenceModel;
+use crate::model::cb::ThetaVals;
 
 pub mod lp;
 pub mod dag;
@@ -48,63 +51,204 @@ pub enum SpConstr {
   Delta(IdxTask, IdxTask, Time),
 }
 
-
-#[derive(Debug)]
-pub enum SpStatus<O, I> {
-  Optimal(Time, O),
-  Infeasible(I),
+impl SpConstr {
+  #[track_caller]
+  #[inline(always)]
+  pub fn unwrap_delta(self) -> (IdxTask, IdxTask, Time) {
+    match self {
+      SpConstr::Delta(t1, t2, d) => (t1, t2, d),
+      _ => panic!("unwrap on a non-Delta constraint")
+    }
+  }
 }
 
-impl<O, I> SpStatus<O, I> {
+#[derive(Debug)]
+pub enum SpStatus {
+  Optimal(Time),
+  Infeasible,
+}
+
+impl SpStatus {
   fn is_optimal(&self) -> bool {
     matches!(self, SpStatus::Optimal(..))
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct MrsPath {
+  objective: Time,
+  lower_bound: Time,
+  /// n tasks (excluding the DDepot task), in order
+  tasks: Vec<Task>,
+  /// n edge constraints (including the task-to-DDepot edge)
+  edge_constraints: Vec<SpConstr>,
+}
+
+pub struct CriticalPathVisitor<'a, 'b> {
+  theta_estimate: &'a Map<(Avg, Task), Time>,
+  task_to_avg: Map<IdxTask, Avg>,
+  active_mp_vars: &'a Set<MpVar>,
+  cb: &'a mut cb::Cb<'b>
+}
+
+impl<'a, 'b> CriticalPathVisitor<'a, 'b> {
+  fn new(cb: &'a mut cb::Cb<'b>, active_mp_vars: &'a Set<MpVar>, theta: &'a Map<(Avg, Task), Time>) -> Self {
+    let task_to_avg = active_mp_vars.iter().filter_map(|v| match v {
+      MpVar::Y(a, t, td) if td == &IdxTask::DDepot => Some((*t, *a)),
+      _ => None,
+    }).collect();
+    trace!(?theta);
+    CriticalPathVisitor {
+      theta_estimate: theta,
+      active_mp_vars,
+      task_to_avg,
+      cb
+    }
+  }
+
+  #[inline(always)]
+  fn optimality_cut_required(&self, t: Task, true_obj: Time) -> bool {
+    let a = self.active_vehicle(&t.index());
+    trace!(a=a.0, ?t, true_obj);
+    self.theta_estimate.get(&(a, t)).copied().unwrap_or(0) < true_obj
+  }
+
+  #[inline(always)]
+  pub fn active_vehicle(&self, t: &IdxTask) -> Avg {
+    trace!(?t);
+    self.task_to_avg[t]
+  }
+
+  pub fn add_optimality_cut(&mut self, mrs_path: MrsPath) {
+    #[inline]
+    fn subpath_objective(lbs: &[Time], delta: &[Time]) -> Time {
+      debug_assert_eq!(lbs.len(), delta.len());
+      let mut time = lbs[0] + delta[0];
+      for (&lb, &d) in lbs[1..].iter().zip(&delta[1..]) {
+        time = std::cmp::max(time, lb) + d;
+      }
+      time
+    }
+
+    debug_assert_eq!(mrs_path.tasks.len(), mrs_path.edge_constraints.len());
+
+    let last_task = *mrs_path.tasks.last().unwrap();
+    let a = self.active_vehicle(&last_task.index());
+
+    let implied_lbs: Vec<_> = mrs_path.tasks.iter().map(|t| t.t_release).collect();
+    let edge_weights: Vec<_> = mrs_path.edge_constraints.iter().map(|c| {
+      let (_, _, d) = c.unwrap_delta();
+      d
+    }).collect();
+
+    let mut constraint_set: Set<_> = mrs_path.edge_constraints.iter().copied().collect();
+    constraint_set.insert(SpConstr::Lb(mrs_path.tasks[0].index(), mrs_path.lower_bound));
+
+    let cover = self.cb.inference_model.cover(self.active_mp_vars, &constraint_set);
+
+    let mut lhs = Expr::default();
+
+    for (var, constrs) in cover {
+      let grb_var = self.cb.mp_vars.get_grb_var(self.cb.lu, &var);
+      if constrs.contains(mrs_path.edge_constraints.last().unwrap()) {
+        lhs +=  grb_var * mrs_path.objective;
+        continue
+      }
+      let start_idx = match constrs.iter()
+        .filter_map(|c| mrs_path.edge_constraints.iter().rposition(|x| c == x))
+        .max() {
+        None => {
+          debug_assert_eq!(constrs.len(), 1);
+          0
+        },
+        Some(k) => k + 1,
+      };
+
+      let new_obj = subpath_objective(&implied_lbs[start_idx..], &edge_weights[start_idx..]);
+      let coeff = new_obj - mrs_path.objective;
+      trace!(?var, ?constrs, new_obj, coeff);
+      debug_assert!(new_obj <= mrs_path.objective);
+      lhs += (1 - grb_var) * coeff;
+    }
+
+    self.cb.enqueue_cut(c!( lhs <= self.cb.mp_vars.theta[&(a, last_task)] ), CutType::LpOpt);
+  }
+
+}
+
+
 pub trait Subproblem<'a>: Sized {
-  // Additional information obtained when solving the subproblem to optimality
-  type Optimal;
-  // Additional information obtained when proving the subproblem to be infeasible
-  type Infeasible;
 
   // Solve the subproblem and return status
-  fn solve(&mut self) -> Result<SpStatus<Self::Optimal, Self::Infeasible>>;
-  // Find and remove one or more IIS when infeasible
-  fn extract_and_remove_iis(&mut self, i: Self::Infeasible) -> Result<Iis>;
-  // Find and remove one or more MRS when optimal
-  fn add_optimality_cuts(&mut self, cb: &mut cb::Cb, theta: &Map<(Avg, Task), Time>, o: Self::Optimal) -> Result<()>;
+  fn solve(&mut self) -> Result<SpStatus>;
 
-  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, active_mpvars: &Set<MpVar>, theta: &Map<(Avg, Task), Time>, estimate: Time) -> Result<Option<Time>> {
+  fn calculate_theta(&mut self) -> Result<ThetaVals>;
+
+  // Find and remove one or more IIS when infeasible
+  fn extract_and_remove_iis(&mut self) -> Result<Iis>;
+
+  // Find the MRS paths
+  fn visit_critical_paths(&mut self, visitor: &mut CriticalPathVisitor) -> Result<()>;
+
+  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, active_mpvars: &Set<MpVar>, theta: &Map<(Avg, Task), Time>, estimate: Time) -> Result<Option<Map<(Avg, Task), Time>>> {
     // TODO: stop early once the IIS covers start getting too big
     //  Can use cb.params, will need find the size of the cover before constructing the constraint
 
-    for solve in 0.. {
+    let mut iis_covers = Vec::new();
+    let mut n_constraint_counts = SmallVec::<[u8; 15]>::new();
+    let mut subproblems_solved = 0u32;
+
+    let sp_obj = loop {
+      let _s = debug_span!("solve_loop", iter=subproblems_solved).entered();
+      subproblems_solved += 1;
+
       match self.solve()? {
-        SpStatus::Optimal(sp_obj, o) => {
-          if estimate < sp_obj {
-            self.add_optimality_cuts(cb, theta, o)?;
-          }
-          if solve == 0 {
-            return Ok(Some(sp_obj));
-          } else {
-            return Ok(None);
-          }
+        SpStatus::Optimal(sp_obj) => {
+          break sp_obj;
         }
 
-        SpStatus::Infeasible(i) => {
-          let iis = self.extract_and_remove_iis(i)?;
+        SpStatus::Infeasible => {
+          let iis = self.extract_and_remove_iis()?;
           trace!(?iis);
           #[cfg(debug_assertions)] {
             cb.infeasibilities.lp_iis(&iis);
           }
+          n_constraint_counts.push(iis.constraints().len() as u8);
           let cover = cb.inference_model.cover(active_mpvars, iis.constraints());
-          let lifted_cover = cb.inference_model.lift_cover(&cover, CoverLift{ lookups: cb.lu });
-          cb.enqueue_cut(build_cut_from_lifted_cover(&cb, &lifted_cover), iis.cut_type());
+          iis_covers.push((cover, iis.cut_type()));
         }
       }
+    };
+
+
+    // Feasibility cuts
+    cb.stats.subproblem_cover_sizes(
+      iis_covers.iter()
+        .zip(n_constraint_counts)
+        .map(|((c, _), n_constraints)| (c.len() as u8, n_constraints))
+    );
+
+    iis_covers.sort_unstable_by_key(|(c, _)| c.len());
+
+    for (cover, cut_ty) in iis_covers {
+      let lifted_cover = cb.inference_model.lift_cover(&cover, CoverLift{ lookups: cb.lu });
+      cb.enqueue_cut(build_cut_from_lifted_cover(&cb, &lifted_cover), cut_ty);
     }
 
-    unreachable!()
+    // Optimality cuts
+    if estimate < sp_obj {
+      trace!(?active_mpvars);
+      let mut visitor = CriticalPathVisitor::new(cb, active_mpvars, theta);
+      self.visit_critical_paths(&mut visitor)?;
+    }
+
+    if subproblems_solved == 1 {
+      let new_theta = self.calculate_theta()?;
+      trace!(?new_theta, sp_obj);
+      Ok(Some(new_theta))
+    } else {
+      Ok(None)
+    }
   }
 }
 
@@ -174,8 +318,9 @@ impl Lookups {
 
 #[instrument(level = "info", skip(lu))]
 pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpConstr> {
+  // TODO move this to a new submodule called "inference"
+  // TODO use the non-Pv task deadlines/release times
   let mut model = sawmill::InferenceModel::<MpVar, SpConstr>::build();
-  let mut included_tasks = Set::default();
 
   for pv_task in lu.tasks.pvtask_to_task.keys() {
     let t = pv_task.index().into();
@@ -218,39 +363,35 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
       }
       _ => {}
     }
-    included_tasks.insert(t);
   }
+
   info!("finished X-variable implications");
-  for (&av, av_tasks) in &lu.tasks.compat_with_av {
-    for &task1 in av_tasks {
-      let t1 = task1.index();
-      for &task2 in &lu.tasks.succ[&task1] {
-        let t2 = task2.index();
-        if av_tasks.contains(&task2) && included_tasks.contains(&t1) && included_tasks.contains(&t2) {
-          let y = MpVar::Y(av, t1, t2);
-          model.add_implication(y, SpConstr::Delta(
-            t1,
-            t2,
-            lu.av_task_travel_time(&task1, &task2)
-          ));
 
-          let mut p1 = task1.infer_pv();
-          let mut p2 = task2.infer_pv();
+  for (av, task1, task2) in lu.iter_yvars() {
+    if task1.is_depot() { continue }
 
-          if task1.end == task2.start {
-            p1 = p1.or(p2);
-            p2 = p2.or(p1);
-            debug_assert_eq!(p1, p2)
-          }
+    let (t1, t2) = (task1.index(), task2.index());
+    let y = MpVar::Y(av, t1, t2);
+    model.add_implication(y, SpConstr::Delta(
+      t1,
+      t2,
+      lu.av_task_travel_time(&task1, &task2)
+    ));
 
-          if let Some(p1) = p1 {
-            model.add_domain_implication(y, MpVar::X(p1, t1))
-          }
-          if let Some(p2) = p2 {
-            model.add_domain_implication(y, MpVar::X(p2, t2))
-          }
-        }
-      }
+    let mut p1 = task1.infer_pv();
+    let mut p2 = task2.infer_pv();
+
+    if task1.end == task2.start {
+      p1 = p1.or(p2);
+      p2 = p2.or(p1);
+      debug_assert_eq!(p1, p2)
+    }
+
+    if let Some(p1) = p1 {
+      model.add_domain_implication(y, MpVar::X(p1, t1))
+    }
+    if let Some(p2) = p2 {
+      model.add_domain_implication(y, MpVar::X(p2, t2))
     }
   }
   info!("finished Y-variable implications");
@@ -296,6 +437,20 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
   }
 
   info!("finished subproblem constraint domination");
+
+  let mut model = model.add_higher_order();
+
+  for (av, t1, t2) in lu.iter_yvars() {
+    let t1 = t1.index();
+    let t2 = t2.index();
+    let y_var = MpVar::Y(av, t1, t2);
+    for t in [t1, t2] {
+      if !t.is_depot() && t.infer_pv().is_none() { // only need to bother with tasks where P can't be inferred.
+        let x_vars = lu.tasks.task_to_pvtasks[&lu.tasks.by_index[&t]].iter().map(|pt| MpVar::X(pt.p, t));
+        model.add_implies_one_of(y_var, x_vars);
+      }
+    }
+  }
   model.finish()
 }
 
@@ -321,7 +476,7 @@ impl sawmill::lift::Lift<MpVar, SpConstr> for CoverLift<'_> {
         }
       }
       &MpVar::Y(a, t1, t2) => {
-        for b in self.lookups.sets.avs() {
+        for b in self.lookups.sets.av_groups() {
           if a != b {
             ctx.add_checked(MpVar::Y(b, t1, t2));
           }
