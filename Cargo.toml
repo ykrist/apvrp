@@ -14,8 +14,8 @@ fnv = "^1.0"
 serde = { version= "^1.0", features = ["derive"] }
 serde_json = "^1.0"
 tracing =  {version = "^0.1",  features = ["max_level_trace", "release_max_level_off"]}
-tracing-subscriber = { version = "^0.2", features = ["json"] }
-tracing-appender = "^0.1"
+tracing-subscriber = { version = "^0.3", features = ["json", "env-filter"] }
+tracing-appender = "^0.2"
 variant_count = "^1.1"
 prettytable-rs = "^0.8"
 slurm-harray = { path = "./slurm-utils-rs" }
