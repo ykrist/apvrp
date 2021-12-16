@@ -1,9 +1,9 @@
-use structopt::StructOpt;
 use apvrp::experiment::Inputs;
 use apvrp::*;
-use serde::{Serialize};
-use std::fmt::Display;
 use prettytable::*;
+use serde::Serialize;
+use std::fmt::Display;
+use structopt::StructOpt;
 
 #[derive(StructOpt)]
 struct Args {
@@ -11,7 +11,7 @@ struct Args {
   #[structopt(long)]
   json: bool,
   #[structopt(flatten)]
-  input: Inputs
+  input: Inputs,
 }
 
 #[derive(Serialize, Clone, Debug)]

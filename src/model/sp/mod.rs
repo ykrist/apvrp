@@ -1,24 +1,24 @@
-use crate::*;
-use crate::solution::MpSolution;
+use super::mp::MpVar;
 use super::{cb, cb::CutType};
-use smallvec::SmallVec;
+use crate::logging::*;
+use crate::model::{edge_constr_kind, EdgeConstrKind};
+use crate::solution::MpSolution;
+use crate::*;
 use grb::constr::IneqExpr;
 use grb::prelude::*;
-use crate::logging::*;
-use crate::model::{EdgeConstrKind, edge_constr_kind};
-use super::mp::MpVar;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use IdxTask::*;
 
-use crate::utils::{iter_pairs, VarIterExt, PeekableExt};
-use daggylp::Weight;
-use sawmill::lift::LiftedCover;
-use sawmill::cover::Cover;
-use sawmill::InferenceModel;
 use crate::model::cb::ThetaVals;
+use crate::utils::{iter_pairs, PeekableExt, VarIterExt};
+use daggylp::Weight;
+use sawmill::cover::Cover;
+use sawmill::lift::LiftedCover;
+use sawmill::InferenceModel;
 
-pub mod lp;
 pub mod dag;
+pub mod lp;
 
 #[derive(Debug, Clone)]
 pub enum Iis {
@@ -43,7 +43,6 @@ impl Iis {
   }
 }
 
-
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq, Serialize, Deserialize, PartialOrd, Ord)]
 pub enum SpConstr {
   Lb(IdxTask, Time),
@@ -57,7 +56,7 @@ impl SpConstr {
   pub fn unwrap_delta(self) -> (IdxTask, IdxTask, Time) {
     match self {
       SpConstr::Delta(t1, t2, d) => (t1, t2, d),
-      _ => panic!("unwrap on a non-Delta constraint")
+      _ => panic!("unwrap on a non-Delta constraint"),
     }
   }
 }
@@ -88,28 +87,35 @@ pub struct CriticalPathVisitor<'a, 'b> {
   theta_estimate: &'a Map<(Avg, Task), Time>,
   task_to_avg: Map<IdxTask, Avg>,
   active_mp_vars: &'a Set<MpVar>,
-  cb: &'a mut cb::Cb<'b>
+  cb: &'a mut cb::Cb<'b>,
 }
 
 impl<'a, 'b> CriticalPathVisitor<'a, 'b> {
-  fn new(cb: &'a mut cb::Cb<'b>, active_mp_vars: &'a Set<MpVar>, theta: &'a Map<(Avg, Task), Time>) -> Self {
-    let task_to_avg = active_mp_vars.iter().filter_map(|v| match v {
-      MpVar::Y(a, t, td) if td == &IdxTask::DDepot => Some((*t, *a)),
-      _ => None,
-    }).collect();
+  fn new(
+    cb: &'a mut cb::Cb<'b>,
+    active_mp_vars: &'a Set<MpVar>,
+    theta: &'a Map<(Avg, Task), Time>,
+  ) -> Self {
+    let task_to_avg = active_mp_vars
+      .iter()
+      .filter_map(|v| match v {
+        MpVar::Y(a, t, td) if td == &IdxTask::DDepot => Some((*t, *a)),
+        _ => None,
+      })
+      .collect();
     trace!(?theta);
     CriticalPathVisitor {
       theta_estimate: theta,
       active_mp_vars,
       task_to_avg,
-      cb
+      cb,
     }
   }
 
   #[inline(always)]
   fn optimality_cut_required(&self, t: Task, true_obj: Time) -> bool {
     let a = self.active_vehicle(&t.index());
-    trace!(a=a.0, ?t, true_obj);
+    trace!(a = a.0, ?t, true_obj);
     self.theta_estimate.get(&(a, t)).copied().unwrap_or(0) < true_obj
   }
 
@@ -136,31 +142,43 @@ impl<'a, 'b> CriticalPathVisitor<'a, 'b> {
     let a = self.active_vehicle(&last_task.index());
 
     let implied_lbs: Vec<_> = mrs_path.tasks.iter().map(|t| t.t_release).collect();
-    let edge_weights: Vec<_> = mrs_path.edge_constraints.iter().map(|c| {
-      let (_, _, d) = c.unwrap_delta();
-      d
-    }).collect();
+    let edge_weights: Vec<_> = mrs_path
+      .edge_constraints
+      .iter()
+      .map(|c| {
+        let (_, _, d) = c.unwrap_delta();
+        d
+      })
+      .collect();
 
     let mut constraint_set: Set<_> = mrs_path.edge_constraints.iter().copied().collect();
-    constraint_set.insert(SpConstr::Lb(mrs_path.tasks[0].index(), mrs_path.lower_bound));
+    constraint_set.insert(SpConstr::Lb(
+      mrs_path.tasks[0].index(),
+      mrs_path.lower_bound,
+    ));
 
-    let cover = self.cb.inference_model.cover(self.active_mp_vars, &constraint_set);
+    let cover = self
+      .cb
+      .inference_model
+      .cover(self.active_mp_vars, &constraint_set);
 
     let mut lhs = Expr::default();
 
     for (var, constrs) in cover {
       let grb_var = self.cb.mp_vars.get_grb_var(self.cb.lu, &var);
       if constrs.contains(mrs_path.edge_constraints.last().unwrap()) {
-        lhs +=  grb_var * mrs_path.objective;
-        continue
+        lhs += grb_var * mrs_path.objective;
+        continue;
       }
-      let start_idx = match constrs.iter()
+      let start_idx = match constrs
+        .iter()
         .filter_map(|c| mrs_path.edge_constraints.iter().rposition(|x| c == x))
-        .max() {
+        .max()
+      {
         None => {
           debug_assert_eq!(constrs.len(), 1);
           0
-        },
+        }
         Some(k) => k + 1,
       };
 
@@ -171,14 +189,14 @@ impl<'a, 'b> CriticalPathVisitor<'a, 'b> {
       lhs += (1 - grb_var) * coeff;
     }
 
-    self.cb.enqueue_cut(c!( lhs <= self.cb.mp_vars.theta[&(a, last_task)] ), CutType::LpOpt);
+    self.cb.enqueue_cut(
+      c!(lhs <= self.cb.mp_vars.theta[&(a, last_task)]),
+      CutType::LpOpt,
+    );
   }
-
 }
 
-
 pub trait Subproblem<'a>: Sized {
-
   // Solve the subproblem and return status
   fn solve(&mut self) -> Result<SpStatus>;
 
@@ -190,7 +208,13 @@ pub trait Subproblem<'a>: Sized {
   // Find the MRS paths
   fn visit_critical_paths(&mut self, visitor: &mut CriticalPathVisitor) -> Result<()>;
 
-  fn solve_subproblem_and_add_cuts(&mut self, cb: &mut cb::Cb, active_mpvars: &Set<MpVar>, theta: &Map<(Avg, Task), Time>, estimate: Time) -> Result<Option<Map<(Avg, Task), Time>>> {
+  fn solve_subproblem_and_add_cuts(
+    &mut self,
+    cb: &mut cb::Cb,
+    active_mpvars: &Set<MpVar>,
+    theta: &Map<(Avg, Task), Time>,
+    estimate: Time,
+  ) -> Result<Option<Map<(Avg, Task), Time>>> {
     // TODO: stop early once the IIS covers start getting too big
     //  Can use cb.params, will need find the size of the cover before constructing the constraint
 
@@ -199,7 +223,7 @@ pub trait Subproblem<'a>: Sized {
     let mut subproblems_solved = 0u32;
 
     let sp_obj = loop {
-      let _s = debug_span!("solve_loop", iter=subproblems_solved).entered();
+      let _s = debug_span!("solve_loop", iter = subproblems_solved).entered();
       subproblems_solved += 1;
 
       match self.solve()? {
@@ -210,7 +234,8 @@ pub trait Subproblem<'a>: Sized {
         SpStatus::Infeasible => {
           let iis = self.extract_and_remove_iis()?;
           trace!(?iis);
-          #[cfg(debug_assertions)] {
+          #[cfg(debug_assertions)]
+          {
             cb.infeasibilities.lp_iis(&iis);
           }
           n_constraint_counts.push(iis.constraints().len() as u8);
@@ -220,18 +245,20 @@ pub trait Subproblem<'a>: Sized {
       }
     };
 
-
     // Feasibility cuts
     cb.stats.subproblem_cover_sizes(
-      iis_covers.iter()
+      iis_covers
+        .iter()
         .zip(n_constraint_counts)
-        .map(|((c, _), n_constraints)| (c.len() as u8, n_constraints))
+        .map(|((c, _), n_constraints)| (c.len() as u8, n_constraints)),
     );
 
     iis_covers.sort_unstable_by_key(|(c, _)| c.len());
 
     for (cover, cut_ty) in iis_covers {
-      let lifted_cover = cb.inference_model.lift_cover(&cover, CoverLift{ lookups: cb.lu });
+      let lifted_cover = cb
+        .inference_model
+        .lift_cover(&cover, CoverLift { lookups: cb.lu });
       cb.enqueue_cut(build_cut_from_lifted_cover(&cb, &lifted_cover), cut_ty);
     }
 
@@ -252,22 +279,27 @@ pub trait Subproblem<'a>: Sized {
   }
 }
 
-pub fn build_cut_from_lifted_cover(cb: &cb::Cb, lifted_cover: &LiftedCover<MpVar, SpConstr>) -> IneqExpr {
+pub fn build_cut_from_lifted_cover(
+  cb: &cb::Cb,
+  lifted_cover: &LiftedCover<MpVar, SpConstr>,
+) -> IneqExpr {
   let rhs = lifted_cover.len() - 1;
   let mut lhs = Expr::default();
   for (vars, _) in lifted_cover {
-    vars.iter().map(|v| match v {
-      &MpVar::X(p, t) => cb.mp_vars.x[&cb.lu.tasks.by_index_pv[&IdxPvTask::from((p, t))]],
-      MpVar::Y(av, t1, t2) => {
-        let t1 = cb.lu.tasks.by_index[t1];
-        let t2 = cb.lu.tasks.by_index[t2];
-        cb.mp_vars.y[&(*av, t1, t2)]
-      },
-    })
+    vars
+      .iter()
+      .map(|v| match v {
+        &MpVar::X(p, t) => cb.mp_vars.x[&cb.lu.tasks.by_index_pv[&IdxPvTask::from((p, t))]],
+        MpVar::Y(av, t1, t2) => {
+          let t1 = cb.lu.tasks.by_index[t1];
+          let t2 = cb.lu.tasks.by_index[t2];
+          cb.mp_vars.y[&(*av, t1, t2)]
+        }
+      })
       .sum_into(&mut lhs)
   }
   trace!(lhs=?lhs.with_names(&cb.var_names), iis_size=lifted_cover.len(), "generate auto cut");
-  c!( lhs <= rhs)
+  c!(lhs <= rhs)
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -276,7 +308,9 @@ enum XEdgeConstraint<'a> {
   Unloading(&'a PvTask, &'a PvTask),
 }
 
-fn iter_edge_constraints<'a>(pv_route: &'a [PvTask]) -> impl Iterator<Item=XEdgeConstraint<'a>> + 'a {
+fn iter_edge_constraints<'a>(
+  pv_route: &'a [PvTask],
+) -> impl Iterator<Item = XEdgeConstraint<'a>> + 'a {
   iter_pairs(pv_route).filter_map(|(t1, t2)| {
     if matches!(&t2.ty, TaskType::Request) {
       debug_assert_matches!(&t1.ty, TaskType::Start | TaskType::Transfer);
@@ -291,20 +325,28 @@ fn iter_edge_constraints<'a>(pv_route: &'a [PvTask]) -> impl Iterator<Item=XEdge
 }
 
 impl MpSolution {
-  fn iter_sp_vars<'a>(&'a self) -> impl Iterator<Item=&'a PvTask> + 'a {
-    self.pv_cycles.iter().flat_map(|c| c.unique_tasks())
+  fn iter_sp_vars<'a>(&'a self) -> impl Iterator<Item = &'a PvTask> + 'a {
+    self
+      .pv_cycles
+      .iter()
+      .flat_map(|c| c.unique_tasks())
       .chain(self.pv_routes.iter().flat_map(|r| r.iter()))
   }
 
-  fn iter_sp_x_edges<'a>(&'a self) -> impl Iterator<Item=XEdgeConstraint> + 'a {
+  fn iter_sp_x_edges<'a>(&'a self) -> impl Iterator<Item = XEdgeConstraint> + 'a {
     // Need to pass closures to flat_map for deref coercion to work
-    self.pv_routes.iter()
+    self
+      .pv_routes
+      .iter()
       .flat_map(|r| iter_edge_constraints(r))
       .chain(self.pv_cycles.iter().flat_map(|c| iter_edge_constraints(c)))
   }
 
-  fn iter_sp_y_edges<'a>(&'a self) -> impl Iterator<Item=(&'a Task, &'a Task)> + 'a {
-    self.av_routes.iter().flat_map(|r| iter_pairs(r.without_depots()))
+  fn iter_sp_y_edges<'a>(&'a self) -> impl Iterator<Item = (&'a Task, &'a Task)> + 'a {
+    self
+      .av_routes
+      .iter()
+      .flat_map(|r| iter_pairs(r.without_depots()))
       .chain(self.av_cycles.iter().flat_map(|c| c.iter_edges()))
   }
 }
@@ -333,9 +375,7 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
         model.add_domain_implication(x, MpVar::X(p, Request(r2)));
       }
       Direct(_) | Request(_) => {}
-      End(p, r) | Start(p, r) => {
-        model.add_domain_implication(x, MpVar::X(p, Request(r)))
-      }
+      End(p, r) | Start(p, r) => model.add_domain_implication(x, MpVar::X(p, Request(r))),
       ODepot | DDepot => unreachable!(),
     }
 
@@ -344,22 +384,24 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
 
     match t {
       Transfer(r, _) | End(_, r) => {
-        model.add_implication(x, SpConstr::Delta(
-          Request(r),
-          t,
-          lu.data.travel_time[&(Loc::ReqP(r), Loc::ReqD(r))] + lu.data.srv_time[&Loc::ReqD(r)],
-        ));
+        model.add_implication(
+          x,
+          SpConstr::Delta(
+            Request(r),
+            t,
+            lu.data.travel_time[&(Loc::ReqP(r), Loc::ReqD(r))] + lu.data.srv_time[&Loc::ReqD(r)],
+          ),
+        );
       }
       _ => {}
     }
 
     match t {
       Transfer(_, r) | Start(_, r) => {
-        model.add_implication(x, SpConstr::Delta(
-          t,
-          Request(r),
-          pv_task.tt + lu.data.srv_time[&Loc::ReqP(r)],
-        ));
+        model.add_implication(
+          x,
+          SpConstr::Delta(t, Request(r), pv_task.tt + lu.data.srv_time[&Loc::ReqP(r)]),
+        );
       }
       _ => {}
     }
@@ -368,15 +410,16 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
   info!("finished X-variable implications");
 
   for (av, task1, task2) in lu.iter_yvars() {
-    if task1.is_depot() { continue }
+    if task1.is_depot() {
+      continue;
+    }
 
     let (t1, t2) = (task1.index(), task2.index());
     let y = MpVar::Y(av, t1, t2);
-    model.add_implication(y, SpConstr::Delta(
-      t1,
-      t2,
-      lu.av_task_travel_time(&task1, &task2)
-    ));
+    model.add_implication(
+      y,
+      SpConstr::Delta(t1, t2, lu.av_task_travel_time(&task1, &task2)),
+    );
 
     let mut p1 = task1.infer_pv();
     let mut p2 = task2.infer_pv();
@@ -414,7 +457,6 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
     groups.entry(g).or_default().push((time, c));
   }
 
-
   info!(total_subproblem_constraints = constraints.len());
   for (group, mut elems) in groups {
     let _s = trace_span!("constr_dom", ?group).entered();
@@ -445,15 +487,17 @@ pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpC
     let t2 = t2.index();
     let y_var = MpVar::Y(av, t1, t2);
     for t in [t1, t2] {
-      if !t.is_depot() && t.infer_pv().is_none() { // only need to bother with tasks where P can't be inferred.
-        let x_vars = lu.tasks.task_to_pvtasks[&lu.tasks.by_index[&t]].iter().map(|pt| MpVar::X(pt.p, t));
+      if !t.is_depot() && t.infer_pv().is_none() {
+        // only need to bother with tasks where P can't be inferred.
+        let x_vars = lu.tasks.task_to_pvtasks[&lu.tasks.by_index[&t]]
+          .iter()
+          .map(|pt| MpVar::X(pt.p, t));
         model.add_implies_one_of(y_var, x_vars);
       }
     }
   }
   model.finish()
 }
-
 
 pub struct CoverLift<'a> {
   lookups: &'a Lookups,
@@ -466,7 +510,12 @@ impl<'a> CoverLift<'a> {
 }
 
 impl sawmill::lift::Lift<MpVar, SpConstr> for CoverLift<'_> {
-  fn visit_candidate_siblings(&mut self, ctx: &mut sawmill::lift::Ctx<MpVar, SpConstr>, var: &MpVar, _cons: &Set<SpConstr>) {
+  fn visit_candidate_siblings(
+    &mut self,
+    ctx: &mut sawmill::lift::Ctx<MpVar, SpConstr>,
+    var: &MpVar,
+    _cons: &Set<SpConstr>,
+  ) {
     match var {
       &MpVar::X(p, t) => {
         for q in self.lookups.sets.pvs() {
@@ -489,15 +538,19 @@ impl sawmill::lift::Lift<MpVar, SpConstr> for CoverLift<'_> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::path::Path;
   use crate::experiment::ApvrpExp;
-  use slurm_harray::Experiment;
   use crate::solution::iter_solution_log;
+  use crate::test::*;
   use crate::utils::IoContext;
   use anyhow::Context;
-  use crate::test::*;
+  use slurm_harray::Experiment;
+  use std::path::Path;
 
-  fn compare_one(lu: &Lookups, sp_constraints: &Set<SpConstr>, obj_tasks: SmallVec<[IdxTask; NUM_AV_UB]>) -> Result<()> {
+  fn compare_one(
+    lu: &Lookups,
+    sp_constraints: &Set<SpConstr>,
+    obj_tasks: SmallVec<[IdxTask; NUM_AV_UB]>,
+  ) -> Result<()> {
     let mut dagmodel = dag::GraphModel::build(lu, sp_constraints, obj_tasks.clone());
     let mut lpmodel = lp::TimingSubproblem::build(lu, sp_constraints, obj_tasks)?;
 
@@ -515,7 +568,11 @@ mod tests {
         if !lp_result.is_optimal() {
           lpmodel.debug_infeasibility()?;
         }
-        anyhow::bail!("status mismatch:\nDAG = {:?}\n LP = {:?}", dag_result, lp_result)
+        anyhow::bail!(
+          "status mismatch:\nDAG = {:?}\n LP = {:?}",
+          dag_result,
+          lp_result
+        )
       }
     }
     Ok(())
@@ -526,13 +583,16 @@ mod tests {
     println!("{:?}", &exp.inputs);
     let lu = Lookups::load_data_and_build(exp.inputs.index)?;
     let inf_model = build_inference_graph(&lu);
-    let sol_log = index_file.as_ref().with_file_name(&exp.outputs.solution_log);
+    let sol_log = index_file
+      .as_ref()
+      .with_file_name(&exp.outputs.solution_log);
     for (k, solution) in iter_solution_log(&sol_log)?.enumerate() {
       let sol = solution.to_solution(&lu);
-      let mp_vars : Set<_> = sol.mp_vars().collect();
+      let mp_vars: Set<_> = sol.mp_vars().collect();
       let mut sp_constraints = inf_model.implied_constraints(&mp_vars);
       inf_model.remove_dominated_constraints(&mut sp_constraints);
-      compare_one(&lu, &sp_constraints, sol.sp_objective_tasks()).with_context(|| format!("Failed for solution #{} of {:?}", k, &sol_log))?
+      compare_one(&lu, &sp_constraints, sol.sp_objective_tasks())
+        .with_context(|| format!("Failed for solution #{} of {:?}", k, &sol_log))?
     }
     Ok(())
   }
@@ -540,7 +600,11 @@ mod tests {
   #[test]
   fn compare_subproblem_methods() -> Result<()> {
     crate::logging::init_test_logging();
-    let mut patt = crate::test::test_data_dir().join("subproblems").into_os_string().into_string().unwrap();
+    let mut patt = crate::test::test_data_dir()
+      .join("subproblems")
+      .into_os_string()
+      .into_string()
+      .unwrap();
     patt.push_str("/*index.json");
     for p in glob::glob(&patt)? {
       compare_for_instance(p?)?
@@ -548,4 +612,3 @@ mod tests {
     Ok(())
   }
 }
-

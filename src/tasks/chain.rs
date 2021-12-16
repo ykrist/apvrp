@@ -1,5 +1,5 @@
 use crate::*;
-use tracing::{trace_span, trace};
+use tracing::{trace, trace_span};
 
 /// Returns `true` if chain does not visit the same two locations more than once.
 /// Returns `false` otherwise.
@@ -37,7 +37,6 @@ pub fn pv_chain_cover_pred(chain: &[PvTask]) -> bool {
 pub fn av_chain_full(data: &Data, chain: &[Task]) -> bool {
   schedule::check_av_route(data, chain) && av_chain_cover_pred(chain)
 }
-
 
 struct LocsVisitedByChain {
   before: Set<Loc>,
@@ -97,23 +96,21 @@ fn cover_check_impl<T: LocPair>(chain: &[T]) -> Option<Set<Loc>> {
 
 fn av_precedence_check(chain: &[Task], locs_visited_by_chain: Set<Loc>) -> bool {
   use TaskType::*;
-  let mut lv = LocsVisitedByChain { before: Set::default(), after: Set::default(), during: locs_visited_by_chain };
+  let mut lv = LocsVisitedByChain {
+    before: Set::default(),
+    after: Set::default(),
+    during: locs_visited_by_chain,
+  };
 
   for t in chain {
     let precedence_is_consistent = match t.ty {
-      ODepot | Direct | DDepot | Request => { true }
+      ODepot | Direct | DDepot | Request => true,
 
-      Start =>
-        lv.implied_after(t.start.dest())
-          && lv.implied_after(t.end.dest()),
+      Start => lv.implied_after(t.start.dest()) && lv.implied_after(t.end.dest()),
 
-      End =>
-        lv.implied_before(t.start.origin())
-          && lv.implied_before(t.end.origin()),
+      End => lv.implied_before(t.start.origin()) && lv.implied_before(t.end.origin()),
 
-      Transfer =>
-          lv.implied_before(t.start.origin())
-          && lv.implied_after(t.end.dest())
+      Transfer => lv.implied_before(t.start.origin()) && lv.implied_after(t.end.dest()),
     };
     if !precedence_is_consistent {
       trace!("precedence violation");
@@ -125,29 +122,28 @@ fn av_precedence_check(chain: &[Task], locs_visited_by_chain: Set<Loc>) -> bool 
 
 fn pv_precedence_check(chain: &[PvTask], locs_visited_by_chain: Set<Loc>) -> bool {
   use TaskType::*;
-  let mut lv = LocsVisitedByChain { before: Set::default(), after: Set::default(), during: locs_visited_by_chain };
+  let mut lv = LocsVisitedByChain {
+    before: Set::default(),
+    after: Set::default(),
+    during: locs_visited_by_chain,
+  };
 
   for t in chain {
     let precedence_is_consistent = match t.ty {
-      ODepot | Direct | DDepot => { true }
+      ODepot | Direct | DDepot => true,
 
-      Start =>
-        lv.implied_after(t.start.dest())
-          && lv.implied_after(t.end.dest()),
+      Start => lv.implied_after(t.start.dest()) && lv.implied_after(t.end.dest()),
 
-      End =>
-        lv.implied_before(t.start.origin())
-          && lv.implied_before(t.end.origin()),
+      End => lv.implied_before(t.start.origin()) && lv.implied_before(t.end.origin()),
 
-      Request =>
-        lv.implied_before(Loc::Po(t.p))
-          && lv.implied_after(Loc::Pd(t.p)),
+      Request => lv.implied_before(Loc::Po(t.p)) && lv.implied_after(Loc::Pd(t.p)),
 
-      Transfer =>
+      Transfer => {
         lv.implied_before(Loc::Po(t.p))
           && lv.implied_before(t.start.origin())
           && lv.implied_after(t.end.dest())
-          && lv.implied_after(Loc::Pd(t.p)),
+          && lv.implied_after(Loc::Pd(t.p))
+      }
     };
     if !precedence_is_consistent {
       trace!("precedence violation");
@@ -171,18 +167,18 @@ impl ChainExt for &[Task] {
     AvLegalEndsIter::new_before(self, lu)
   }
 
-  fn legal_after<'a>(&self,  lu: &'a Lookups) -> Self::Iter<'a> {
+  fn legal_after<'a>(&self, lu: &'a Lookups) -> Self::Iter<'a> {
     AvLegalEndsIter::new_after(self, lu)
   }
 }
 impl ChainExt for &[PvTask] {
   type Iter<'a> = PvLegalEndsIter<'a>;
 
-  fn legal_before<'a>(&self,  lu: &'a Lookups) -> Self::Iter<'a> {
+  fn legal_before<'a>(&self, lu: &'a Lookups) -> Self::Iter<'a> {
     PvLegalEndsIter::new_before(self, lu)
   }
 
-  fn legal_after<'a>(&self,  lu: &'a Lookups) -> Self::Iter<'a> {
+  fn legal_after<'a>(&self, lu: &'a Lookups) -> Self::Iter<'a> {
     PvLegalEndsIter::new_after(self, lu)
   }
 }
@@ -216,8 +212,13 @@ impl<'a> AvLegalEndsIter<'a> {
     let mut chain_template = Vec::with_capacity(chain.len() + 1);
     chain_template.extend_from_slice(chain);
     chain_template.push(lu.tasks.ddepot); // placeholder
-    // replace_idx is a valid index since Vec is non-empty
-    AvLegalEndsIter { replace_idx: chain_template.len() - 1, chain_template, candidate_iter, lu }
+                                          // replace_idx is a valid index since Vec is non-empty
+    AvLegalEndsIter {
+      replace_idx: chain_template.len() - 1,
+      chain_template,
+      candidate_iter,
+      lu,
+    }
   }
 
   pub fn new_before(chain: &[Task], lu: &'a Lookups) -> Self {
@@ -226,7 +227,12 @@ impl<'a> AvLegalEndsIter<'a> {
     chain_template.push(lu.tasks.odepot); // placeholder
     chain_template.extend_from_slice(chain);
     // replace_idx is a valid index since Vec is non-empty
-    AvLegalEndsIter { replace_idx: 0, chain_template, candidate_iter, lu }
+    AvLegalEndsIter {
+      replace_idx: 0,
+      chain_template,
+      candidate_iter,
+      lu,
+    }
   }
 }
 
@@ -234,13 +240,13 @@ impl Iterator for AvLegalEndsIter<'_> {
   type Item = Task;
 
   fn next(&mut self) -> Option<Task> {
-    let _s = trace_span!("av_legal_end_next", replace_idx=self.replace_idx).entered();
+    let _s = trace_span!("av_legal_end_next", replace_idx = self.replace_idx).entered();
     while let Some(&task) = self.candidate_iter.next() {
       // Safety: replace_idx is a valid index because it is never modified, and is valid in the constructors.
       let task_to_replace = unsafe { self.chain_template.get_unchecked_mut(self.replace_idx) };
       *task_to_replace = task;
       if av_chain_full(&self.lu.data, &self.chain_template) {
-        return Some(task)
+        return Some(task);
       } else {
         trace!(?task, "illegal");
       }
@@ -249,14 +255,12 @@ impl Iterator for AvLegalEndsIter<'_> {
   }
 }
 
-
 pub struct PvLegalEndsIter<'a> {
   replace_idx: usize,
   chain_template: Vec<PvTask>,
   candidate_iter: std::slice::Iter<'a, PvTask>,
   lu: &'a Lookups,
 }
-
 
 impl<'a> PvLegalEndsIter<'a> {
   pub fn new_after(chain: &[PvTask], lu: &'a Lookups) -> Self {
@@ -265,8 +269,13 @@ impl<'a> PvLegalEndsIter<'a> {
     let mut chain_template = Vec::with_capacity(chain.len() + 1);
     chain_template.extend_from_slice(chain);
     chain_template.push(*last_task); // placeholder
-    // replace_idx is a valid index since Vec is non-empty
-    PvLegalEndsIter { replace_idx: chain_template.len() - 1, chain_template, candidate_iter, lu }
+                                     // replace_idx is a valid index since Vec is non-empty
+    PvLegalEndsIter {
+      replace_idx: chain_template.len() - 1,
+      chain_template,
+      candidate_iter,
+      lu,
+    }
   }
 
   pub fn new_before(chain: &[PvTask], lu: &'a Lookups) -> Self {
@@ -276,22 +285,26 @@ impl<'a> PvLegalEndsIter<'a> {
     chain_template.push(*first_task); // placeholder
     chain_template.extend_from_slice(chain);
     // replace_idx is a valid index since Vec is non-empty
-    PvLegalEndsIter { replace_idx: 0, chain_template, candidate_iter, lu }
+    PvLegalEndsIter {
+      replace_idx: 0,
+      chain_template,
+      candidate_iter,
+      lu,
+    }
   }
 }
-
 
 impl Iterator for PvLegalEndsIter<'_> {
   type Item = PvTask;
 
   fn next(&mut self) -> Option<Self::Item> {
-    let _s = trace_span!("pv_legal_end_next", replace_idx=self.replace_idx).entered();
+    let _s = trace_span!("pv_legal_end_next", replace_idx = self.replace_idx).entered();
     while let Some(&task) = self.candidate_iter.next() {
       // Safety: replace_idx is a valid index because it is never modified, and is valid in the constructors.
       let task_to_replace = unsafe { self.chain_template.get_unchecked_mut(self.replace_idx) };
       *task_to_replace = task;
       if pv_chain_full(&self.lu.data, &self.chain_template) {
-        return Some(task)
+        return Some(task);
       }
     }
     None

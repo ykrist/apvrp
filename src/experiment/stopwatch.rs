@@ -1,5 +1,5 @@
-use std::time::{Instant, Duration};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 enum State {
@@ -31,9 +31,7 @@ impl Stopwatch {
   pub fn stop(&mut self) {
     let old_state = std::mem::replace(&mut self.state, State::Stopped);
     match old_state {
-      State::Running(name, start) => {
-        self.laps.push((name, start.elapsed().as_millis()))
-      }
+      State::Running(name, start) => self.laps.push((name, start.elapsed().as_millis())),
       State::Stopped => panic!("Stopwatch is already stopped"),
     }
   }
@@ -44,9 +42,9 @@ impl Stopwatch {
     let old_state = std::mem::replace(&mut self.state, new_state);
 
     match old_state {
-      State::Running(name, start_t) => {
-        self.laps.push((name, t.duration_since(start_t).as_millis()))
-      }
+      State::Running(name, start_t) => self
+        .laps
+        .push((name, t.duration_since(start_t).as_millis())),
       State::Stopped => panic!("Stopwatch is stopped"),
     }
   }
@@ -73,12 +71,15 @@ impl Stopwatch {
 
 pub struct Deadline {
   start_time: Instant,
-  total_time: Duration
+  total_time: Duration,
 }
 
 impl Deadline {
   pub fn start(time_limit: Duration) -> Self {
-    Deadline{ start_time: Instant::now(), total_time: time_limit }
+    Deadline {
+      start_time: Instant::now(),
+      total_time: time_limit,
+    }
   }
   pub fn sec_remaining(&self) -> f64 {
     (self.total_time - self.start_time.elapsed()).as_secs_f64()
@@ -88,7 +89,6 @@ impl Deadline {
     self.start_time.elapsed() >= self.total_time
   }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -146,7 +146,6 @@ mod tests {
     assert_eq!(&laps[0].0, "lap0");
     assert_eq!(&laps[1].0, "lap1");
   }
-
 
   #[test]
   #[should_panic]

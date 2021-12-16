@@ -22,7 +22,7 @@ fn av_forward_step(t: &mut Time, data: &Data, t1: &Task, t2: &Task) {
   *t = max(arrival, t2.t_release);
 }
 
-#[tracing::instrument(level="trace", skip(data))]
+#[tracing::instrument(level = "trace", skip(data))]
 pub fn check_pv_route(data: impl AsRef<Data>, tasks: &[PvTask]) -> bool {
   let data = data.as_ref();
   let mut t = tasks[0].t_release;
@@ -54,7 +54,10 @@ pub fn pv_route(data: impl AsRef<Data>, tasks: &[PvTask]) -> Vec<Time> {
 
 pub fn av_route(data: impl AsRef<Data>, tasks: &[Task]) -> Vec<Time> {
   let data = data.as_ref();
-  let mut t = max(tasks[0].t_release, data.travel_time[&(Loc::Ao, tasks[0].start)]);
+  let mut t = max(
+    tasks[0].t_release,
+    data.travel_time[&(Loc::Ao, tasks[0].start)],
+  );
 
   let mut schedule = Vec::with_capacity(tasks.len());
   schedule.push(t);
@@ -67,21 +70,23 @@ pub fn av_route(data: impl AsRef<Data>, tasks: &[Task]) -> Vec<Time> {
   schedule
 }
 
-
 /// Computes an underestimate of the earliest time this AV route can be back at the depot.  Expects `tasks[0] != ODp` and that
 /// the last task is `DDp`
 pub fn av_route_finish_time(data: impl AsRef<Data>, tasks: &[Task]) -> Time {
   let data = data.as_ref();
   debug_assert_ne!(tasks.last().unwrap().ty, TaskType::DDepot);
   debug_assert_ne!(tasks.first().unwrap().ty, TaskType::ODepot);
-  let mut t = max(tasks[0].t_release, data.travel_time[&(Loc::Ao, tasks[0].start)]);
+  let mut t = max(
+    tasks[0].t_release,
+    data.travel_time[&(Loc::Ao, tasks[0].start)],
+  );
   for (t1, t2) in tasks.iter().tuple_windows() {
     av_forward_step(&mut t, data, t1, t2);
   }
   t
 }
 
-#[tracing::instrument(level="trace", skip(data))]
+#[tracing::instrument(level = "trace", skip(data))]
 pub fn check_av_route(data: impl AsRef<Data>, tasks: &[Task]) -> bool {
   let data = data.as_ref();
   let mut t = tasks[0].t_release;
@@ -95,4 +100,3 @@ pub fn check_av_route(data: impl AsRef<Data>, tasks: &[Task]) -> bool {
   }
   true
 }
-

@@ -1,15 +1,16 @@
 use crate::Map;
+use std::fmt::Debug;
 use std::hash::Hash;
+use std::mem::take;
 use std::ops::Sub;
 use std::rc::Rc;
-use std::fmt::Debug;
-use tracing::{error_span, trace, info, debug};
-use std::mem::take;
+use tracing::{debug, error_span, info, trace};
 
 #[inline]
 fn min_weights<W: Copy + PartialOrd>(weights: &[W]) -> W {
-  *weights.iter()
-    .min_by(|a,b| a.partial_cmp(b).expect("unorderable (NaN?) weights found"))
+  *weights
+    .iter()
+    .min_by(|a, b| a.partial_cmp(b).expect("unorderable (NaN?) weights found"))
     .unwrap()
 }
 
@@ -17,7 +18,7 @@ pub trait DecomposableDigraph<N, A, W>: Sized
 where
   N: Clone + Hash + Eq + Debug + 'static,
   A: Clone + 'static,
-  W: Sub + Copy + PartialOrd
+  W: Sub + Copy + PartialOrd,
 {
   fn is_sink(&self, node: &N) -> bool;
 
@@ -66,7 +67,6 @@ where
           }
           cycles.push((cycle, cycle_weight));
 
-
           if cyc_idx > 0 {
             // backtrack to just before the start of the cycle.
             for n in node_order.drain((cyc_idx + 1)..) {
@@ -78,8 +78,6 @@ where
             // we may have remove all arcs here, so start again from scratch
             break;
           }
-
-
         } else if self.is_sink(&next_node) {
           // path complete
           debug!(?node_order, "path found");
@@ -104,9 +102,7 @@ where
 
     (paths, cycles)
   }
-
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -117,41 +113,49 @@ mod tests {
     struct EmptyGraph;
 
     impl DecomposableDigraph<(), (), f64> for EmptyGraph {
-      fn is_sink(&self, _: &()) -> bool { unreachable!() }
-      fn next_start(&self) -> Option<()> { None }
-      fn next_outgoing_arc(&self, node: &()) -> ((), (), f64) { unreachable!() }
-      fn subtract_arc(&mut self, arc: &(), weight: f64) { unreachable!() }
+      fn is_sink(&self, _: &()) -> bool {
+        unreachable!()
+      }
+      fn next_start(&self) -> Option<()> {
+        None
+      }
+      fn next_outgoing_arc(&self, node: &()) -> ((), (), f64) {
+        unreachable!()
+      }
+      fn subtract_arc(&mut self, arc: &(), weight: f64) {
+        unreachable!()
+      }
     }
 
     let (paths, cycles) = EmptyGraph.decompose_paths_cycles();
     assert_eq!(paths.len(), 0);
     assert_eq!(cycles.len(), 0);
-
   }
 
   #[test]
   fn single_path() {
-
     struct Graph(Map<(usize, usize), f64>);
 
     impl DecomposableDigraph<usize, (usize, usize), f64> for Graph {
-      fn is_sink(&self, node: &usize) -> bool { *node == 42 }
+      fn is_sink(&self, node: &usize) -> bool {
+        *node == 42
+      }
 
       fn next_start(&self) -> Option<usize> {
         let mut fallback = None;
-        for &(i,j) in self.0.keys() {
+        for &(i, j) in self.0.keys() {
           if i == 0 {
-            return Some(0)
+            return Some(0);
           }
           fallback = Some(i)
-        };
+        }
         fallback
       }
 
       fn next_outgoing_arc(&self, node: &usize) -> ((usize, usize), usize, f64) {
-        for (&(i,j), &w) in &self.0 {
+        for (&(i, j), &w) in &self.0 {
           if &i == node {
-            return ((i,j), j, w)
+            return ((i, j), j, w);
           }
         }
         println!("{:?}", self.0);
@@ -167,21 +171,18 @@ mod tests {
           self.0.remove(arc);
         }
       }
-
     }
 
     let graph = {
       let mut g = Map::default();
-      g.insert((0,1), 1.0);
-      g.insert((1,2), 1.0);
-      g.insert((2,42), 1.0);
+      g.insert((0, 1), 1.0);
+      g.insert((1, 2), 1.0);
+      g.insert((2, 42), 1.0);
       Graph(g)
     };
 
     let (paths, cycles) = graph.decompose_paths_cycles();
-    assert_eq!(paths, vec![(vec![(0,1), (1,2), (2,42)], 1.0)]);
+    assert_eq!(paths, vec![(vec![(0, 1), (1, 2), (2, 42)], 1.0)]);
     assert_eq!(cycles.len(), 0);
   }
-
-
 }

@@ -1,21 +1,21 @@
-use slurm_harray::*;
-use std::time::Duration;
-use serde::{Deserialize, Serialize};
+use crate::model::cb::{CbStats, CutType};
+use crate::model::mp::TaskModelMaster;
+use crate::{Cost, Map, Time};
 use anyhow::{Context, Result};
 use grb::prelude::*;
-use std::str::FromStr;
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use slurm_harray::*;
 use std::ops::RangeInclusive;
-use crate::{Map, Time, Cost};
-use crate::model::cb::{CutType, CbStats};
-use crate::model::mp::TaskModelMaster;
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::time::Duration;
 
 mod stopwatch;
 pub use stopwatch::{Deadline, Stopwatch};
 
 #[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct Inputs {
-  pub index: usize
+  pub index: usize,
 }
 
 impl IdStr for Inputs {
@@ -27,7 +27,7 @@ impl IdStr for Inputs {
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum SpSolverKind {
   Dag,
-  Lp
+  Lp,
 }
 
 impl_arg_enum! { SpSolverKind;
@@ -53,13 +53,13 @@ pub struct AuxParams {
   pub soln_log: bool,
 
   /// Disable trace logging to STDOUT.
-  #[structopt(long, short="q")]
+  #[structopt(long, short = "q")]
   pub quiet: bool,
 
   /// Save the final model of the master problem (with all lazy constraints included) to
   /// an LP file.
   #[structopt(long)]
-  pub model_file: bool
+  pub model_file: bool,
 }
 
 impl Default for AuxParams {
@@ -77,8 +77,8 @@ fn cl_parse_range(s: &str) -> Result<RangeInclusive<u32>> {
   let ctx_msg = || format!("unable to parse string `{}`, expected `integer,integer`", s);
   let err = || anyhow::Error::msg(ctx_msg());
 
-  let a : u32 = tok.next().ok_or_else(err)?.parse().with_context(ctx_msg)?;
-  let b : u32 = tok.next().ok_or_else(err)?.parse().with_context(ctx_msg)?;
+  let a: u32 = tok.next().ok_or_else(err)?.parse().with_context(ctx_msg)?;
+  let b: u32 = tok.next().ok_or_else(err)?.parse().with_context(ctx_msg)?;
   if tok.next().is_some() {
     Err(err())
   } else {
@@ -89,13 +89,13 @@ fn cl_parse_range(s: &str) -> Result<RangeInclusive<u32>> {
 #[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
 pub struct Params {
   /// Give a time limit in second
-  #[structopt(long, short, default_value="7200", value_name="seconds")]
+  #[structopt(long, short, default_value = "7200", value_name = "seconds")]
   pub timelimit: u64,
 
   /// Number of threads to use
   #[structopt(long)]
-  #[cfg_attr(debug_assertions, structopt(default_value="1"))]
-  #[cfg_attr(not(debug_assertions), structopt(default_value="4"))]
+  #[cfg_attr(debug_assertions, structopt(default_value = "1"))]
+  #[cfg_attr(not(debug_assertions), structopt(default_value = "4"))]
   pub cpus: u32,
 
   /// Use the supplied string as a parameter name, instead of generating one from
@@ -140,7 +140,7 @@ pub struct Params {
   /// Enable Passive Vehicle Column Generation: generate all Passive Vehicle routes a-priori and use route-based variables
   /// to eliminate the need for Passive Vehicle feasibility cuts.
   #[structopt(long)]
-  pub pvcg: bool
+  pub pvcg: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -160,11 +160,11 @@ fn parse_gurobi_param(s: &str) -> Result<(String, GurobiParamVal)> {
   }
 
   if let Ok(val) = val.parse::<i32>() {
-    return Ok((key.to_string(), GurobiParamVal::Int(val)))
+    return Ok((key.to_string(), GurobiParamVal::Int(val)));
   }
 
   if let Ok(val) = val.parse::<f64>() {
-    return Ok((key.to_string(), GurobiParamVal::Dbl(val)))
+    return Ok((key.to_string(), GurobiParamVal::Dbl(val)));
   }
 
   anyhow::bail!("value must be integer or double (string attr not supported)")
@@ -172,14 +172,15 @@ fn parse_gurobi_param(s: &str) -> Result<(String, GurobiParamVal)> {
 
 impl IdStr for Params {
   fn id_str(&self) -> String {
-    self.param_name.clone()
-      .unwrap_or_else(|| {
-        #[cfg(debug_assertions)] {
-          String::from("debug")
-        }
-        #[cfg(not(debug_assertions))] {
-          id_from_serialised(self)
-        }
+    self.param_name.clone().unwrap_or_else(|| {
+      #[cfg(debug_assertions)]
+      {
+        String::from("debug")
+      }
+      #[cfg(not(debug_assertions))]
+      {
+        id_from_serialised(self)
+      }
     })
   }
 }
@@ -197,7 +198,7 @@ impl NewOutput for Outputs {
   type AuxParams = AuxParams;
 
   fn new(inputs: &Inputs, _params: &Params, _aux_params: &AuxParams) -> Self {
-    Outputs{
+    Outputs {
       solution_log: format!("{}-sollog.ndjson", inputs.index).into(),
       trace_log: format!("{}-log.msgpack", inputs.index).into(),
       info: format!("{}-info.json", inputs.index).into(),
@@ -232,7 +233,12 @@ impl Experiment for ApvrpExp {
     concat!(env!("CARGO_MANIFEST_DIR"), "/logs/").into()
   }
 
-  fn post_parse(prof: SlurmProfile, _inputs: &Self::Inputs, params: &mut Self::Parameters, aux_params: &mut Self::AuxParameters) {
+  fn post_parse(
+    prof: SlurmProfile,
+    _inputs: &Self::Inputs,
+    params: &mut Self::Parameters,
+    aux_params: &mut Self::AuxParameters,
+  ) {
     params.gurobi.sort_by_cached_key(|(s, _)| s.clone());
     if params.param_name.is_none() {
       params.param_name = Some(params.id_str())
@@ -242,39 +248,37 @@ impl Experiment for ApvrpExp {
       SlurmProfile::Test => {
         s.push_str("-test");
         params.timelimit = scale_time(params.timelimit, 1.5);
-      },
+      }
       SlurmProfile::Trace => {
         s.push_str("-trace");
         aux_params.soln_log = true;
         params.timelimit = scale_time(params.timelimit, 2.5);
-      },
-      _ => {},
+      }
+      _ => {}
     }
   }
 }
 
 mod instance_groups {
   use std::ops::Range;
-  pub const A_TW25 : Range<usize> = 0..20;
-  pub const A_TW50 : Range<usize> = 20..40;
-  pub const A_TW100 : Range<usize> = 40..60;
-  pub const A_TW200 : Range<usize> = 60..80;
+  pub const A_TW25: Range<usize> = 0..20;
+  pub const A_TW50: Range<usize> = 20..40;
+  pub const A_TW100: Range<usize> = 40..60;
+  pub const A_TW200: Range<usize> = 60..80;
 
-  pub const B_TW25 : Range<usize> = 80..100;
-  pub const B_TW50 : Range<usize> = 100..120;
-  pub const B_TW100 : Range<usize> = 120..140;
-  pub const B_TW200 : Range<usize> = 140..160;
+  pub const B_TW25: Range<usize> = 80..100;
+  pub const B_TW50: Range<usize> = 100..120;
+  pub const B_TW100: Range<usize> = 120..140;
+  pub const B_TW200: Range<usize> = 140..160;
 
-  pub const MK : Range<usize> = 160..190;
+  pub const MK: Range<usize> = 160..190;
 }
 
 impl ResourcePolicy for ApvrpExp {
   fn time(&self) -> Duration {
     use instance_groups::*;
     let i = self.inputs.index;
-    let timelimit = if A_TW25.contains(&i)
-      || A_TW50.contains(&i)
-      || A_TW100.contains(&i) {
+    let timelimit = if A_TW25.contains(&i) || A_TW50.contains(&i) || A_TW100.contains(&i) {
       Duration::from_secs(300)
     } else {
       Duration::from_secs(self.parameters.timelimit + 300)
@@ -286,11 +290,8 @@ impl ResourcePolicy for ApvrpExp {
     use instance_groups::*;
     let i = self.inputs.index;
 
-    if A_TW25.contains(&i)
-      || A_TW50.contains(&i)
-      || A_TW100.contains(&i)
-      || A_TW200.contains(&i) {
-      return MemoryAmount::from_gb(4)
+    if A_TW25.contains(&i) || A_TW50.contains(&i) || A_TW100.contains(&i) || A_TW200.contains(&i) {
+      return MemoryAmount::from_gb(4);
     }
 
     MemoryAmount::from_gb(8)
@@ -312,19 +313,18 @@ impl ResourcePolicy for ApvrpExp {
     use std::fmt::Write;
     let mut s = self.parameters.param_name.clone();
     if let Some(s) = s.as_mut() {
-       if self.profile == SlurmProfile::Trace {
-         write!(s, "-{}", self.inputs.index).unwrap();
-       }
+      if self.profile == SlurmProfile::Trace {
+        write!(s, "-{}", self.inputs.index).unwrap();
+      }
     }
     s
   }
 
   fn constraint(&self) -> Option<String> {
     match self.profile {
-      SlurmProfile::Default =>Some("R640".to_string()),
+      SlurmProfile::Default => Some("R640".to_string()),
       _ => None,
     }
-
   }
 }
 
@@ -343,7 +343,7 @@ impl GurobiInfo {
   pub fn from_model(model: &grb::Model) -> Result<Self> {
     // don't care about the value, only the bit-pattern
     let fingerprint = model.get_attr(attr::Fingerprint)?;
-    let fingerprint = unsafe{ std::mem::transmute(fingerprint) };
+    let fingerprint = unsafe { std::mem::transmute(fingerprint) };
     let num_vars = model.get_attr(attr::NumVars)? as u32;
     let num_cons = model.get_attr(attr::NumConstrs)? as u32;
     let status = model.status()? as i32;
@@ -369,7 +369,6 @@ pub enum BoundsRecorder {
   PostMip(Bounds),
 }
 
-
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct Bounds {
   // FIXME lower bounds should be floats
@@ -380,7 +379,9 @@ pub struct Bounds {
 }
 
 impl Bounds {
-  pub fn new() -> BoundsRecorder { BoundsRecorder::Init }
+  pub fn new() -> BoundsRecorder {
+    BoundsRecorder::Init
+  }
 }
 
 impl BoundsRecorder {
@@ -400,7 +401,7 @@ impl BoundsRecorder {
     match self {
       Init => panic!("record root LB first"),
       PostMip(..) => panic!("already recorded!"),
-      PostLp(root_lb)=> {
+      PostLp(root_lb) => {
         let bounds = Bounds {
           lower: model.obj_bound()?,
           upper: model.obj_val()?,
@@ -417,7 +418,7 @@ impl BoundsRecorder {
     use BoundsRecorder::*;
     match self {
       Init | PostLp(..) => panic!("record final UB and LB first"),
-      PostMip(Bounds{ upper_full_obj, .. })=> {
+      PostMip(Bounds { upper_full_obj, .. }) => {
         if upper_full_obj.is_some() {
           panic!("already recorded!")
         }
@@ -430,11 +431,10 @@ impl BoundsRecorder {
     use BoundsRecorder::*;
     match self {
       Init | PostLp(..) => panic!("record final UB and LB first"),
-      PostMip(bounds) => bounds
+      PostMip(bounds) => bounds,
     }
   }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaseInfo {
@@ -454,16 +454,17 @@ impl PhaseInfo {
     })
   }
 
-  pub fn new_post_mip(name: String,
-                      model: &grb::Model,
-                      bounds: Bounds,
-                      cb_stats: CbStats,
+  pub fn new_post_mip(
+    name: String,
+    model: &grb::Model,
+    bounds: Bounds,
+    cb_stats: CbStats,
   ) -> Result<Self> {
     Ok(PhaseInfo {
       phase: name,
       gurobi: GurobiInfo::from_model(model).context("failed to gather Gurobi info")?,
       bounds: Some(bounds),
-      cb: Some(cb_stats)
+      cb: Some(cb_stats),
     })
   }
 }
@@ -484,4 +485,3 @@ impl Info {
     }
   }
 }
-

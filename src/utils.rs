@@ -1,30 +1,31 @@
-use itertools::Itertools;
-use grb::expr::{Expr, LinExpr, QuadExpr};
-use grb::constr::IneqExpr;
-use grb::{attr, Var};
-use std::fmt;
-use std::fmt::{Write, Debug};
-use std::collections::HashMap;
-use std::hash::{Hash, BuildHasher};
-use std::cell::{RefCell, Ref};
-use std::rc::Rc;
-use std::path::{Path, PathBuf};
-use std::iter::{Peekable, FromIterator};
-use std::ops::AddAssign;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use anyhow::Context;
 use crate::Map;
+use anyhow::Context;
+use grb::constr::IneqExpr;
+use grb::expr::{Expr, LinExpr, QuadExpr};
+use grb::{attr, Var};
+use itertools::Itertools;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use std::cell::{Ref, RefCell};
+use std::collections::HashMap;
+use std::fmt;
+use std::fmt::{Debug, Write};
+use std::hash::{BuildHasher, Hash};
+use std::iter::{FromIterator, Peekable};
+use std::ops::AddAssign;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
-pub fn iter_cycle<'a, T>(vals: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> + 'a {
+pub fn iter_cycle<'a, T>(vals: &'a [T]) -> impl Iterator<Item = (&'a T, &'a T)> + 'a {
   let n = vals.len();
   assert!(n >= 2);
   let last = unsafe { vals.get_unchecked(n - 1) };
   let first = unsafe { vals.get_unchecked(0) };
-  vals.iter().tuple_windows()
+  vals
+    .iter()
+    .tuple_windows()
     .chain(std::iter::once((last, first)))
 }
-
 
 pub trait PermuteSliceClone {
   type Item;
@@ -37,12 +38,12 @@ unsafe fn map_window2<T>(window: &[T]) -> (&T, &T) {
   (window.get_unchecked(0), window.get_unchecked(1))
 }
 
-pub fn iter_pairs<'a, T>(slice: &'a [T]) -> impl Iterator<Item=(&'a T, &'a T)> {
-  slice.windows(2)
-    .map(|pair| (
-      unsafe { pair.get_unchecked(0) },
-      unsafe { pair.get_unchecked(1) },
-    ))
+pub fn iter_pairs<'a, T>(slice: &'a [T]) -> impl Iterator<Item = (&'a T, &'a T)> {
+  slice.windows(2).map(|pair| {
+    (unsafe { pair.get_unchecked(0) }, unsafe {
+      pair.get_unchecked(1)
+    })
+  })
 }
 
 impl<T: Clone + Debug> PermuteSliceClone for &[T] {
@@ -60,17 +61,21 @@ pub struct Permutator<T> {
   perm0: bool,
 }
 
-
 impl<T: Debug> Permutator<T> {
   pub fn new(objects: Vec<T>) -> Permutator<T> {
     let n = objects.len();
     let c = if n > 1 { vec![0; n - 1] } else { vec![] };
-    Permutator { objects: Rc::new(objects), k: n, c, i: 1, perm0: false }
+    Permutator {
+      objects: Rc::new(objects),
+      k: n,
+      c,
+      i: 1,
+      perm0: false,
+    }
   }
 
   pub fn finish(self) -> Vec<T> {
-    Rc::try_unwrap(self.objects)
-      .expect("All refs must be dropped first")
+    Rc::try_unwrap(self.objects).expect("All refs must be dropped first")
   }
 }
 
@@ -109,24 +114,27 @@ impl<T: Debug + Clone> Iterator for Permutator<T> {
 }
 
 pub fn factorial(n: usize) -> usize {
-  if n <= 1 { 1 } else { n * factorial(n - 1) }
+  if n <= 1 {
+    1
+  } else {
+    n * factorial(n - 1)
+  }
 }
 
 pub trait HashMapExt<K, V> {
   fn retain_ok<F, E>(&mut self, filter: F) -> std::result::Result<(), E>
-    where
-      F: FnMut(&K, &mut V) -> std::result::Result<bool, E>;
+  where
+    F: FnMut(&K, &mut V) -> std::result::Result<bool, E>;
 }
 
-
 impl<K, V, S> HashMapExt<K, V> for HashMap<K, V, S>
-  where
-    K: Hash + Eq,
-    S: BuildHasher,
+where
+  K: Hash + Eq,
+  S: BuildHasher,
 {
   fn retain_ok<F, E>(&mut self, mut f: F) -> std::result::Result<(), E>
-    where
-      F: FnMut(&K, &mut V) -> std::result::Result<bool, E>
+  where
+    F: FnMut(&K, &mut V) -> std::result::Result<bool, E>,
   {
     let mut ret = Ok(());
 
@@ -156,9 +164,9 @@ pub trait VarIterExt {
 }
 
 impl<I, T> VarIterExt for I
-  where
-    I: Iterator<Item=T>,
-    Expr: AddAssign<T>,
+where
+  I: Iterator<Item = T>,
+  Expr: AddAssign<T>,
 {
   fn sum_into(self, expr: &mut Expr) {
     for elem in self {
@@ -177,13 +185,15 @@ impl<I, T> VarIterExt for I
 }
 
 pub trait PeekableExt: Iterator {
-  fn for_each_except_last<F>(self, f: F) -> Option<Self::Item> where F: FnMut(Self::Item);
+  fn for_each_except_last<F>(self, f: F) -> Option<Self::Item>
+  where
+    F: FnMut(Self::Item);
 }
 
 impl<I: Iterator> PeekableExt for Peekable<I> {
   fn for_each_except_last<F>(mut self, mut f: F) -> Option<Self::Item>
-    where
-      F: FnMut(Self::Item)
+  where
+    F: FnMut(Self::Item),
   {
     while let Some(item) = self.next() {
       if self.peek().is_none() {
@@ -196,17 +206,13 @@ impl<I: Iterator> PeekableExt for Peekable<I> {
   }
 }
 
-pub trait CollectExt<T>: Iterator<Item=anyhow::Result<T>> + Sized
-{
+pub trait CollectExt<T>: Iterator<Item = anyhow::Result<T>> + Sized {
   fn collect_ok<B: FromIterator<T>>(self) -> anyhow::Result<B> {
     self.collect()
   }
 }
 
-impl<I, T> CollectExt<T> for I
-  where
-    I: Iterator<Item=anyhow::Result<T>> + Sized,
-{}
+impl<I, T> CollectExt<T> for I where I: Iterator<Item = anyhow::Result<T>> + Sized {}
 
 pub trait Json: Serialize + DeserializeOwned {
   fn from_json_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
@@ -221,19 +227,16 @@ pub trait Json: Serialize + DeserializeOwned {
   }
 }
 
-
 pub fn inverse_map<K, V, S>(m: &HashMap<K, V, S>) -> HashMap<V, K, S>
-  where
-    K: Hash + Eq + Clone,
-    V: Hash + Eq + Clone,
-    S: BuildHasher + Default,
+where
+  K: Hash + Eq + Clone,
+  V: Hash + Eq + Clone,
+  S: BuildHasher + Default,
 {
   m.iter().map(|(k, v)| (v.clone(), k.clone())).collect()
 }
 
-
 impl<T: Serialize + DeserializeOwned> Json for T {}
-
 
 #[cfg(test)]
 pub(crate) fn test_data_file(filename: &str) -> PathBuf {
@@ -245,15 +248,14 @@ pub(crate) fn test_data_file(filename: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use grb::prelude::*;
-  use anyhow::Result;
   use crate::Loc;
+  use anyhow::Result;
+  use grb::prelude::*;
 
   #[test]
   fn loc_size() {
     assert_eq!(std::mem::size_of::<Loc>(), 4);
   }
-
 
   #[test]
   fn permutations() {
@@ -267,7 +269,6 @@ mod tests {
     check_permutations(7);
     check_permutations(8);
   }
-
 
   fn check_permutations(n: usize) {
     use std::collections::HashSet;
@@ -291,7 +292,6 @@ mod tests {
     permutator.finish();
   }
 
-
   #[test]
   #[should_panic]
   fn permutator_finish_fail() {
@@ -299,7 +299,6 @@ mod tests {
     let q = permutator.next();
     permutator.finish();
   }
-
 
   #[test]
   #[should_panic]
@@ -320,7 +319,7 @@ mod tests {
 
 pub trait IoContext<T, E>: Context<T, E> + Sized {
   fn read_context(self, p: impl AsRef<Path>) -> anyhow::Result<T> {
-    self.with_context(|| format!( "Failed to read file {:?}", p.as_ref()))
+    self.with_context(|| format!("Failed to read file {:?}", p.as_ref()))
   }
 
   fn write_context(self, p: impl AsRef<Path>) -> anyhow::Result<T> {

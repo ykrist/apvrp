@@ -1,23 +1,23 @@
-use structopt::*;
-use std::path::{PathBuf, Path};
-use apvrp::*;
-use apvrp::solution::{MpSolution, SerialisableSolution};
-use slurm_harray::Experiment;
-use daggylp::{InfKind, viz::GraphViz};
-use serde::{Serialize, Deserialize};
-use apvrp::model::mp::MpVar;
-use apvrp::model::sp::{SpConstr, dag::GraphModel, Subproblem, SpStatus};
-use apvrp::IoContext;
 use apvrp::logging::*;
+use apvrp::model::mp::MpVar;
+use apvrp::model::sp::{dag::GraphModel, SpConstr, SpStatus, Subproblem};
+use apvrp::solution::{MpSolution, SerialisableSolution};
+use apvrp::IoContext;
+use apvrp::*;
+use daggylp::{viz::GraphViz, InfKind};
 use fnv::FnvHashSet;
 use indicatif::ProgressIterator;
+use serde::{Deserialize, Serialize};
+use slurm_harray::Experiment;
+use std::path::{Path, PathBuf};
+use structopt::*;
 
 type InferenceModel = sawmill::InferenceModel<MpVar, SpConstr>;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum SologSelection {
   Single(usize),
-  RangeInclusive{ start: usize, end: usize },
+  RangeInclusive { start: usize, end: usize },
   StartFrom(usize),
   UpTo(usize),
   All,
@@ -26,54 +26,63 @@ enum SologSelection {
 fn get_indices(selections: &[SologSelection], last_index: usize) -> Vec<usize> {
   use SologSelection::*;
   if selections.contains(&All) {
-    return (0..=last_index).collect()
+    return (0..=last_index).collect();
   }
   let mut inds = FnvHashSet::default();
 
   for &s in selections {
     match s {
-      Single(i) => { inds.insert(i); },
-      UpTo(i) => { inds.extend(0..=i); },
-      RangeInclusive {start, end } => inds.extend(start..=end),
+      Single(i) => {
+        inds.insert(i);
+      }
+      UpTo(i) => {
+        inds.extend(0..=i);
+      }
+      RangeInclusive { start, end } => inds.extend(start..=end),
       StartFrom(i) => inds.extend(i..=last_index),
       All => unreachable!(),
     }
   }
 
-  let mut inds : Vec<_> = inds.into_iter().collect();
+  let mut inds: Vec<_> = inds.into_iter().collect();
   inds.sort_unstable();
   inds
 }
 
 fn parse_selection_range(s: &str) -> anyhow::Result<SologSelection> {
   use SologSelection::*;
-  const ERROR_MSG: &'static str = "Range patterns must be of the form A-B, A- or -B where A and B are non-negative integers.";
+  const ERROR_MSG: &'static str =
+    "Range patterns must be of the form A-B, A- or -B where A and B are non-negative integers.";
 
   if let Ok(i) = s.parse::<usize>() {
-    return Ok(Single(i))
+    return Ok(Single(i));
   }
 
   if s == "-" {
-    return Ok(All)
+    return Ok(All);
   }
 
   let mut components = s.split('-');
-  let start = components.next().ok_or_else(|| anyhow::anyhow!(ERROR_MSG))?;
-  let end = components.next().ok_or_else(|| anyhow::anyhow!(ERROR_MSG))?;
+  let start = components
+    .next()
+    .ok_or_else(|| anyhow::anyhow!(ERROR_MSG))?;
+  let end = components
+    .next()
+    .ok_or_else(|| anyhow::anyhow!(ERROR_MSG))?;
   if !components.next().is_none() {
     anyhow::bail!(ERROR_MSG);
   }
 
   let selection = if start.is_empty() {
-    let end : usize = end.parse()?;
+    let end: usize = end.parse()?;
     UpTo(end)
   } else if end.is_empty() {
     let start: usize = start.parse()?;
     StartFrom(start)
   } else {
-    let start : usize = start.parse()?;
-    let end : usize = end.parse()?;
-    RangeInclusive {start, end }
+    let start: usize = start.parse()?;
+    let end: usize = end.parse()?;
+    RangeInclusive { start, end }
   };
   Ok(selection)
 }
@@ -86,10 +95,10 @@ struct Args {
   #[structopt(short="s", long="select", parse(try_from_str=parse_selection_range))]
   selection: Vec<SologSelection>,
   /// View the final solution.  Assumes a '*-soln.json' file
-  #[structopt(short="f", long="final")]
+  #[structopt(short = "f", long = "final")]
   final_soln: bool,
   /// View the final solution.  Asssumes a '*-true_soln.json' file
-  #[structopt(short="t", long="true")]
+  #[structopt(short = "t", long = "true")]
   true_soln: bool,
 }
 
@@ -110,9 +119,8 @@ struct SolutionInformation {
 enum SolutionSource {
   Solog(usize),
   TrueSoln,
-  FinalSoln
+  FinalSoln,
 }
-
 
 struct OutputFiles {
   dir: PathBuf,
@@ -121,14 +129,18 @@ struct OutputFiles {
 }
 
 impl OutputFiles {
-  pub fn new(index_file: impl AsRef<Path>, index: usize, source: SolutionSource) -> anyhow::Result<Self> {
+  pub fn new(
+    index_file: impl AsRef<Path>,
+    index: usize,
+    source: SolutionSource,
+  ) -> anyhow::Result<Self> {
     let mut dir = index_file.as_ref().parent().unwrap().to_path_buf();
 
     match source {
       SolutionSource::Solog(i) => {
         dir.push(format!("{}-subproblems", index));
         dir.push(i.to_string());
-      },
+      }
       SolutionSource::FinalSoln | SolutionSource::TrueSoln => {
         dir.push(format!("{}-soln", index));
       }
@@ -170,13 +182,18 @@ fn sawmill_graph(
   let cover = constraints.map(|constraints| {
     if !constraints.is_subset(&active_cons) {
       let diff = constraints.difference(&active_cons).collect::<Set<_>>();
-      std::fs::write("dump.json", serde_json::to_string(&inf_model.constraints().collect::<Vec<_>>()).unwrap()).unwrap();
+      std::fs::write(
+        "dump.json",
+        serde_json::to_string(&inf_model.constraints().collect::<Vec<_>>()).unwrap(),
+      )
+      .unwrap();
       panic!("inactive iis constraints: {:?}", diff);
     }
     inf_model.cover(&active_vars, &constraints)
   });
 
-  let mut viz = inf_model.viz()
+  let mut viz = inf_model
+    .viz()
     .active_clauses(&active_vars)
     .active_constraints(&active_cons);
 
@@ -188,13 +205,14 @@ fn sawmill_graph(
   Ok(())
 }
 
-fn process_solution(mut out: OutputFiles,
-                    lookups: &Lookups,
-                    inf_model: &InferenceModel,
-                    sol: SerialisableSolution,
+fn process_solution(
+  mut out: OutputFiles,
+  lookups: &Lookups,
+  inf_model: &InferenceModel,
+  sol: SerialisableSolution,
 ) -> anyhow::Result<()> {
   let sol = sol.to_solution(&lookups);
-  let mp_vars : Set<_> = sol.mp_vars().collect();
+  let mp_vars: Set<_> = sol.mp_vars().collect();
   let sp_cons = {
     let mut s = inf_model.implied_constraints(&mp_vars);
     inf_model.remove_dominated_constraints(&mut s);
@@ -221,29 +239,29 @@ fn process_solution(mut out: OutputFiles,
       }
     };
 
-    let info = SolutionInformation {
-      dag_status: status
-    };
+    let info = SolutionInformation { dag_status: status };
 
     std::fs::write(
       out.get_filepath(".json"),
       serde_json::to_string_pretty(&info)?,
     )?;
 
-    let var_names = |var: daggylp::Var| {
-      match graph.var_to_task.get(&var) {
-        Some(t) => format!("{:?}", t),
-        None => "ODepot".to_string()
-      }
+    let var_names = |var: daggylp::Var| match graph.var_to_task.get(&var) {
+      Some(t) => format!("{:?}", t),
+      None => "ODepot".to_string(),
     };
 
     let filename = out.get_filepath("-sp.svg");
-    graph.model.viz()
-      .fmt_vars(&var_names)
-      .render(&filename)?;
+    graph.model.viz().fmt_vars(&var_names).render(&filename)?;
     info!(%filename, "wrote");
 
-    sawmill_graph(&out, lookups, inf_model, &sol, iis.as_ref().map(|i| i.constraints()))?;
+    sawmill_graph(
+      &out,
+      lookups,
+      inf_model,
+      &sol,
+      iis.as_ref().map(|i| i.constraints()),
+    )?;
     if iis.is_none() {
       break;
     }
@@ -252,10 +270,15 @@ fn process_solution(mut out: OutputFiles,
   Ok(())
 }
 
-fn process_single_file(lookups: &Lookups, inf_model: &InferenceModel, solution_file: impl AsRef<Path>, out: OutputFiles) -> anyhow::Result<()> {
+fn process_single_file(
+  lookups: &Lookups,
+  inf_model: &InferenceModel,
+  solution_file: impl AsRef<Path>,
+  out: OutputFiles,
+) -> anyhow::Result<()> {
   let solution_file = solution_file.as_ref();
   let contents = std::fs::read_to_string(solution_file).read_context(solution_file)?;
-  let sol : SerialisableSolution = serde_json::from_str(&contents)?;
+  let sol: SerialisableSolution = serde_json::from_str(&contents)?;
   process_solution(out, lookups, inf_model, sol)?;
   Ok(())
 }
@@ -274,20 +297,26 @@ fn main() -> anyhow::Result<()> {
   let inf_model = apvrp::model::sp::build_inference_graph(&lookups);
 
   if args.final_soln {
-    let out = OutputFiles::new(&args.index_file, exp.inputs.index, SolutionSource::FinalSoln)?;
-    let solution_file = args.index_file.with_file_name(format!("{}-soln.json", exp.inputs.index));
+    let out = OutputFiles::new(
+      &args.index_file,
+      exp.inputs.index,
+      SolutionSource::FinalSoln,
+    )?;
+    let solution_file = args
+      .index_file
+      .with_file_name(format!("{}-soln.json", exp.inputs.index));
     process_single_file(&lookups, &inf_model, solution_file, out)?;
   }
 
   if args.true_soln {
     let out = OutputFiles::new(&args.index_file, exp.inputs.index, SolutionSource::TrueSoln)?;
-    let solution_file = args.index_file.with_file_name(format!("{}-true_soln.json", exp.inputs.index));
+    let solution_file = args
+      .index_file
+      .with_file_name(format!("{}-true_soln.json", exp.inputs.index));
     process_single_file(&lookups, &inf_model, solution_file, out)?;
   }
 
   if !args.selection.is_empty() {
-
-
     let solog = args.index_file.with_file_name(&exp.outputs.solution_log);
     let solog = std::fs::read_to_string(&solog).read_context(&solog)?;
     let lines: Vec<_> = solog.lines().collect();
@@ -298,7 +327,7 @@ fn main() -> anyhow::Result<()> {
       .with_style(indicatif::ProgressStyle::default_bar().template("{msg} {bar} {pos}/{len}"));
 
     for k in indices.into_iter().progress_with(bar) {
-      let sol : SerialisableSolution = serde_json::from_str(lines[k])?;
+      let sol: SerialisableSolution = serde_json::from_str(lines[k])?;
       let out = OutputFiles::new(&args.index_file, exp.inputs.index, SolutionSource::Solog(k))?;
       process_solution(out, &lookups, &inf_model, sol)?;
     }

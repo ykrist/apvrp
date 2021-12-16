@@ -3,32 +3,38 @@ use instances::dataset::apvrp::ApvrpInstance;
 use tracing::{info, info_span, trace};
 
 /// For each Passive Vehicle-Request pair, computes the earliest time we can *leave* the pickup of the request.
-#[tracing::instrument(level = "trace", skip(compat_req_passive, travel_time, srv_time, start_time))]
+#[tracing::instrument(
+  level = "trace",
+  skip(compat_req_passive, travel_time, srv_time, start_time)
+)]
 fn earliest_departures(
   compat_req_passive: &Map<Req, Vec<Pv>>,
   travel_time: &Map<(Loc, Loc), Time>,
   srv_time: &Map<Loc, Time>,
   start_time: &Map<Loc, Time>,
 ) -> Map<(Pv, Req), Time> {
-  compat_req_passive.iter()
+  compat_req_passive
+    .iter()
     .flat_map(|(&r, pvs)| {
-      pvs.iter()
-        .map(move |&p| {
-          let rp = Loc::ReqP(r);
-          let po = Loc::Po(p);
-          trace!(?rp, ?po);
-          let t = std::cmp::max(
-            start_time[&rp],
-            travel_time[&(Loc::Ao, po)] + travel_time[&(po, rp)] + srv_time[&rp],
-          );
-          ((p, r), t)
-        })
+      pvs.iter().map(move |&p| {
+        let rp = Loc::ReqP(r);
+        let po = Loc::Po(p);
+        trace!(?rp, ?po);
+        let t = std::cmp::max(
+          start_time[&rp],
+          travel_time[&(Loc::Ao, po)] + travel_time[&(po, rp)] + srv_time[&rp],
+        );
+        ((p, r), t)
+      })
     })
     .collect()
 }
 
 /// For each Passive Vehicle-Request pair, computes the arrive time we can *arrive* at the delivery of the request.
-#[tracing::instrument(level = "trace", skip(compat_req_passive, travel_time, srv_time, end_time))]
+#[tracing::instrument(
+  level = "trace",
+  skip(compat_req_passive, travel_time, srv_time, end_time)
+)]
 fn latest_arrivals(
   compat_req_passive: &Map<Req, Vec<Pv>>,
   travel_time: &Map<(Loc, Loc), Time>,
@@ -36,39 +42,44 @@ fn latest_arrivals(
   end_time: &Map<Loc, Time>,
   tmax: Time,
 ) -> Map<(Pv, Req), Time> {
-  compat_req_passive.iter()
+  compat_req_passive
+    .iter()
     .flat_map(|(&r, pvs)| {
-      pvs.iter()
-        .map(move |&p| {
-          let rd = Loc::ReqD(r);
-          let pd = Loc::Pd(p);
-          trace!(?rd, ?pd);
-          let t = std::cmp::min(
-            end_time[&rd],
-            tmax - travel_time[&(rd, pd)] -  travel_time[&(pd, Loc::Ad)]
-          ) - srv_time[&rd];
-          ((p, r), t)
-        })
+      pvs.iter().map(move |&p| {
+        let rd = Loc::ReqD(r);
+        let pd = Loc::Pd(p);
+        trace!(?rd, ?pd);
+        let t = std::cmp::min(
+          end_time[&rd],
+          tmax - travel_time[&(rd, pd)] - travel_time[&(pd, Loc::Ad)],
+        ) - srv_time[&rd];
+        ((p, r), t)
+      })
     })
     .collect()
 }
 
 fn decode_loc_keys<V: Copy>(lss: &LocSetStarts, map: &Map<RawLoc, V>) -> Map<Loc, V> {
-  map.iter()
+  map
+    .iter()
     .map(|(key, val)| (lss.decode(*key), *val))
     .collect()
 }
 
-fn decode_locpair_keys<V: Copy>(lss: &LocSetStarts, map: &Map<(RawLoc, RawLoc), V>) -> Map<(Loc, Loc), V> {
-  map.iter()
-    .map(|(&(i,j), &val)| ((lss.decode(i),lss.decode(j)), val))
+fn decode_locpair_keys<V: Copy>(
+  lss: &LocSetStarts,
+  map: &Map<(RawLoc, RawLoc), V>,
+) -> Map<(Loc, Loc), V> {
+  map
+    .iter()
+    .map(|(&(i, j), &val)| ((lss.decode(i), lss.decode(j)), val))
     .collect()
 }
 
 /// Group active vehicles into groups based on PV-AV compatibilities.
 #[tracing::instrument(skip(data), fields(?data.id))]
 pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
-  let mut compat_active_passive : Map<_, Vec<_>> = map_with_capacity(data.n_active as usize);
+  let mut compat_active_passive: Map<_, Vec<_>> = map_with_capacity(data.n_active as usize);
 
   for (&pv, avs) in &data.compat_passive_active {
     let pv = lss.odepot_to_pv(pv);
@@ -80,11 +91,14 @@ pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
   let mut grouped_by_pv_compat: Map<_, Vec<_>> = map_with_capacity(data.n_active as usize);
   for (&av, pvs) in compat_active_passive.iter_mut() {
     pvs.sort();
-    grouped_by_pv_compat.entry(pvs.clone()).or_default().push(av);
+    grouped_by_pv_compat
+      .entry(pvs.clone())
+      .or_default()
+      .push(av);
   }
 
   let mut av_groups = map_with_capacity(grouped_by_pv_compat.len());
-  let mut compat_passive_active : Map<_, Vec<_>> = map_with_capacity(data.n_passive as usize);
+  let mut compat_passive_active: Map<_, Vec<_>> = map_with_capacity(data.n_passive as usize);
 
   for (pvs, mut avs) in grouped_by_pv_compat {
     avs.sort();
@@ -103,18 +117,26 @@ pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
   }
   trace!(av_groups=?&av_groups);
 
-  let compat_req_passive : Map<_, Vec<_>> = data.compat_req_passive.iter()
-    .map(|(&raw_req, raw_pvs)| (
-      lss.pickup_to_req(raw_req),
-      raw_pvs.iter().map(|&p| lss.odepot_to_pv(p)).collect())
-    )
+  let compat_req_passive: Map<_, Vec<_>> = data
+    .compat_req_passive
+    .iter()
+    .map(|(&raw_req, raw_pvs)| {
+      (
+        lss.pickup_to_req(raw_req),
+        raw_pvs.iter().map(|&p| lss.odepot_to_pv(p)).collect(),
+      )
+    })
     .collect();
 
-  let compat_passive_req : Map<_, Vec<_>> = data.compat_passive_req.iter()
-    .map(|(&raw_pv, raw_reqs)| (
-      lss.odepot_to_pv(raw_pv),
-      raw_reqs.iter().map(|&r| lss.pickup_to_req(r)).collect())
-    )
+  let compat_passive_req: Map<_, Vec<_>> = data
+    .compat_passive_req
+    .iter()
+    .map(|(&raw_pv, raw_reqs)| {
+      (
+        lss.odepot_to_pv(raw_pv),
+        raw_reqs.iter().map(|&r| lss.pickup_to_req(r)).collect(),
+      )
+    })
     .collect();
 
   let travel_time = decode_locpair_keys(&lss, &data.travel_time);
@@ -122,19 +144,15 @@ pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
   let start_time = decode_loc_keys(&lss, &data.start_time);
   let end_time = decode_loc_keys(&lss, &data.end_time);
 
-  let pv_req_start_time = earliest_departures(
-    &compat_req_passive,
-    &travel_time,
-    &srv_time,
-    &start_time
-  );
+  let pv_req_start_time =
+    earliest_departures(&compat_req_passive, &travel_time, &srv_time, &start_time);
 
   let pv_req_end_time = latest_arrivals(
     &compat_req_passive,
     &travel_time,
     &srv_time,
     &end_time,
-    data.tmax
+    data.tmax,
   );
 
   Data {
@@ -155,7 +173,7 @@ pub fn av_grouping(data: ApvrpInstance, lss: &LocSetStarts) -> Data {
     pv_req_end_time,
     travel_cost: decode_locpair_keys(&lss, &data.travel_cost),
     travel_time,
-    av_groups
+    av_groups,
   }
 }
 
@@ -168,13 +186,18 @@ pub fn pv_req_timing_compat(data: &mut ApvrpInstance) {
 
     for &rp in &*reqs {
       let rd = rp + data.n_req;
-      if data.travel_time[&(data.odepot, po)] +
-        data.travel_time[&(po, rp)] +
-        data.srv_time[&rp] +
-        data.travel_time[&(rp, rd)] +
-        data.srv_time[&rd] <= data.end_time[&rd] {
+      if data.travel_time[&(data.odepot, po)]
+        + data.travel_time[&(po, rp)]
+        + data.srv_time[&rp]
+        + data.travel_time[&(rp, rd)]
+        + data.srv_time[&rd]
+        <= data.end_time[&rd]
+      {
         new_reqs.push(rp);
-        compat_req_passive.entry(rp).or_insert_with(Vec::new).push(po);
+        compat_req_passive
+          .entry(rp)
+          .or_insert_with(Vec::new)
+          .push(po);
       }
     }
     *reqs = new_reqs;
@@ -189,6 +212,10 @@ pub fn full_pipeline(mut data: ApvrpInstance) -> Data {
   preprocess::pv_req_timing_compat(&mut data);
   let lss = LocSetStarts::new(data.n_passive, data.n_req);
   let data = preprocess::av_grouping(data, &lss);
-  info!(num_av_groups = data.av_groups.len(), num_av = data.n_active, "preprocessing finished");
+  info!(
+    num_av_groups = data.av_groups.len(),
+    num_av = data.n_active,
+    "preprocessing finished"
+  );
   data
 }

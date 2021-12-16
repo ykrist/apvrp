@@ -1,23 +1,23 @@
-use grb::prelude::*;
+use anyhow::Context;
+use daggylp::Weight;
 use fnv::FnvHashSet;
 use grb::constr::IneqExpr;
-use tracing::*;
+use grb::prelude::*;
 use itertools::Itertools;
-use std::collections::{HashSet, HashMap};
-use std::hash::{Hash, BuildHasher};
 use smallvec::SmallVec;
-use anyhow::Context;
-use std::path::Path;
-use std::io::BufWriter;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use daggylp::Weight;
+use std::hash::{BuildHasher, Hash};
+use std::io::BufWriter;
+use std::path::Path;
+use tracing::*;
 
-use crate::*;
-use crate::tasks::TaskId;
+use crate::model::cb::{Cb, CbError, CutType};
 use crate::model::mp::MpVars;
 use crate::solution::*;
-use crate::model::cb::{CutType, Cb, CbError};
+use crate::tasks::TaskId;
 use crate::utils::{HashMapExt, IoContext};
+use crate::*;
 
 use super::*;
 
@@ -31,7 +31,6 @@ thread_local! {
     e.start().context(ctx_msg).unwrap()
   };
 }
-
 
 pub struct TimingSubproblem<'a> {
   pub var_to_task: Map<Var, IdxTask>,
@@ -59,11 +58,7 @@ impl<'a> TimingSubproblem<'a> {
       let lb = pvt.subproblem_lb();
       let ub = pvt.subproblem_ub();
 
-      trace!(
-        lb,
-        ub,
-        ?t, ?pvt, "bounds"
-      );
+      trace!(lb, ub, ?t, ?pvt, "bounds");
 
       let grb_c = model.add_constr("", c!(task_to_var[&t] >= lb))?;
       constraint_map.insert(SpConstr::Lb(t, lb), grb_c);
@@ -86,7 +81,6 @@ impl<'a> TimingSubproblem<'a> {
       let d = pt1.tt + lu.data.srv_time[&pt1.end];
       let t1 = lu.tasks.pvtask_to_task[pt1].index();
       let t2 = lu.tasks.pvtask_to_task[pt2].index();
-
 
       let grb_c = model.add_constr("", c!(task_to_var[&t1] + d <= task_to_var[&t2]))?;
       constraint_map.insert(SpConstr::Delta(t1, t2, d), grb_c);
@@ -117,8 +111,11 @@ impl<'a> TimingSubproblem<'a> {
     })
   }
 
-
-  pub fn build(lu: &'a Lookups, constraints: &Set<SpConstr>, obj_tasks: Map<IdxTask, Avg>) -> Result<TimingSubproblem<'a>> {
+  pub fn build(
+    lu: &'a Lookups,
+    constraints: &Set<SpConstr>,
+    obj_tasks: Map<IdxTask, Avg>,
+  ) -> Result<TimingSubproblem<'a>> {
     let _span = error_span!("sp_build").entered();
 
     let mut var_to_task = Map::default();
@@ -128,9 +125,9 @@ impl<'a> TimingSubproblem<'a> {
     for c in constraints {
       if let SpConstr::Lb(t, _) = c {
         #[cfg(debug_assertions)]
-          let var = add_ctsvar!(model, name: &format!("T[{:?}]", t))?;
+        let var = add_ctsvar!(model, name: &format!("T[{:?}]", t))?;
         #[cfg(not(debug_assertions))]
-          let var = add_ctsvar!(model)?;
+        let var = add_ctsvar!(model)?;
         var_to_task.insert(var, *t);
       }
     }
@@ -167,28 +164,42 @@ impl<'a> TimingSubproblem<'a> {
     })
   }
 
-  pub fn iis_constraints<'b>(&'b self) -> Result<impl Iterator<Item=SpConstr> + 'b> {
+  pub fn iis_constraints<'b>(&'b self) -> Result<impl Iterator<Item = SpConstr> + 'b> {
     let model_cons = self.model.get_constrs()?;
-    let iis_constr = self.model.get_obj_attr_batch(grb::prelude::attr::IISConstr, model_cons.iter().copied())?;
-    Ok(iis_constr.into_iter().zip(model_cons).filter_map(move |(is_iis, grb_c)| {
-      if is_iis > 0 {
-        Some(self.constraint_map_inv[grb_c])
-      } else {
-        None
-      }
-    }))
+    let iis_constr = self
+      .model
+      .get_obj_attr_batch(grb::prelude::attr::IISConstr, model_cons.iter().copied())?;
+    Ok(
+      iis_constr
+        .into_iter()
+        .zip(model_cons)
+        .filter_map(move |(is_iis, grb_c)| {
+          if is_iis > 0 {
+            Some(self.constraint_map_inv[grb_c])
+          } else {
+            None
+          }
+        }),
+    )
   }
 
-  pub fn mrs_constraints<'b>(&'b self) -> Result<impl Iterator<Item=SpConstr> + 'b> {
+  pub fn mrs_constraints<'b>(&'b self) -> Result<impl Iterator<Item = SpConstr> + 'b> {
     let model_cons = self.model.get_constrs()?;
-    let iis_constr = self.model.get_obj_attr_batch(grb::prelude::attr::Pi, model_cons.iter().copied())?;
-    Ok(iis_constr.into_iter().zip(model_cons).filter_map(move |(dual, grb_c)| {
-      if dual.abs() > 0.1 {
-        Some(self.constraint_map_inv[grb_c])
-      } else {
-        None
-      }
-    }))
+    let iis_constr = self
+      .model
+      .get_obj_attr_batch(grb::prelude::attr::Pi, model_cons.iter().copied())?;
+    Ok(
+      iis_constr
+        .into_iter()
+        .zip(model_cons)
+        .filter_map(move |(dual, grb_c)| {
+          if dual.abs() > 0.1 {
+            Some(self.constraint_map_inv[grb_c])
+          } else {
+            None
+          }
+        }),
+    )
   }
 
   #[instrument(level = "error", name = "debug_iis", skip(self))]
@@ -230,9 +241,15 @@ impl<'a> Subproblem<'a> for TimingSubproblem<'a> {
     trace!(?iis);
 
     for c in &iis {
-      let grb_c = self.constraint_map.remove(c).expect("IIS constraint missing from constraint_map");
+      let grb_c = self
+        .constraint_map
+        .remove(c)
+        .expect("IIS constraint missing from constraint_map");
       self.constraint_map_inv.remove(&grb_c).unwrap();
-      self.model.remove(grb_c).context("removing IIS constraint from Gurobi model")?;
+      self
+        .model
+        .remove(grb_c)
+        .context("removing IIS constraint from Gurobi model")?;
     }
 
     match iis.iter().filter(|c| matches!(c, SpConstr::Lb(..))).count() {

@@ -1,35 +1,38 @@
-use crate::*;
-use crate::tasks::{TaskId, chain::{ChainExt}};
-use crate::solution::*;
-use grb::prelude::*;
-use grb::callback::{Callback, Where, CbResult, MIPSolCtx, MIPNodeCtx};
-use fnv::FnvHashSet;
 use super::{sp::*, Phase};
+use crate::solution::*;
+use crate::tasks::{chain::ChainExt, TaskId};
 use crate::utils::PermuteSliceClone;
+use crate::*;
+use fnv::FnvHashSet;
+use grb::callback::{Callback, CbResult, MIPNodeCtx, MIPSolCtx, Where};
+use grb::prelude::*;
 
 use crate::logging::*;
-use std::fmt;
-use grb::constr::IneqExpr;
-use variant_count::VariantCount;
+use crate::model::mp::{MpVar, ObjWeights};
 use anyhow::Context;
-use std::hash::Hash;
-use std::env::var;
-use std::collections::{HashSet, HashMap};
-use std::io::Write;
-use experiment::{Params, SpSolverKind, CycleHandling};
-use slurm_harray::{Experiment};
-use serde::{Serialize, Deserialize};
-use smallvec::SmallVec;
-use crate::model::mp::{ObjWeights, MpVar};
+use experiment::{CycleHandling, Params, SpSolverKind};
+use grb::constr::IneqExpr;
 use sawmill::InferenceModel;
+use serde::{Deserialize, Serialize};
+use slurm_harray::Experiment;
+use smallvec::SmallVec;
+use std::collections::{HashMap, HashSet};
+use std::env::var;
+use std::fmt;
 use std::fmt::Debug;
-
+use std::hash::Hash;
+use std::io::Write;
+use variant_count::VariantCount;
 
 #[derive(Debug, Clone)]
 pub enum CbError {
   Assertion,
   // InvalidBendersCut{ estimate: Cost, obj: Cost, solution: Solution },
-  InvalidBendersCut { estimate: Cost, obj: Cost, solution: () },
+  InvalidBendersCut {
+    estimate: Cost,
+    obj: Cost,
+    solution: (),
+  },
   Status(grb::Status),
   Other(String),
 }
@@ -40,8 +43,10 @@ impl fmt::Display for CbError {
     match self {
       CbError::Status(s) => f.write_fmt(format_args!("unexpected status: {:?}", s))?,
       CbError::Assertion => f.write_str("an assertion failed")?,
-      CbError::InvalidBendersCut { estimate, obj, .. } =>
-        f.write_fmt(format_args!("invalid Benders estimate ( estimate = {} > {} = obj )", estimate, obj))?,
+      CbError::InvalidBendersCut { estimate, obj, .. } => f.write_fmt(format_args!(
+        "invalid Benders estimate ( estimate = {} > {} = obj )",
+        estimate, obj
+      ))?,
       CbError::Other(s) => f.write_str(s)?,
     }
     Ok(())
@@ -49,7 +54,6 @@ impl fmt::Display for CbError {
 }
 
 impl std::error::Error for CbError {}
-
 
 #[derive(VariantCount, Copy, Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 #[repr(usize)]
@@ -75,16 +79,14 @@ pub enum CutType {
 
 type CutCountArray = [u64; CutType::VARIANT_COUNT];
 
-fn iter_cut_counts<'a>(arr: &'a CutCountArray) -> impl Iterator<Item=(CutType, u64)> + 'a {
-  arr.iter()
-    .enumerate()
-    .map(|(cut_ty, &cnt)| {
-      // Safety: We know the discriminant of `CutType` is always a valid index because the only
-      // way to create a CbStats struct is to call `default()`, which allocates a `Vec` of length
-      // equal to the number of variants.
-      let cut_ty: CutType = unsafe { std::mem::transmute(cut_ty) };
-      (cut_ty, cnt)
-    })
+fn iter_cut_counts<'a>(arr: &'a CutCountArray) -> impl Iterator<Item = (CutType, u64)> + 'a {
+  arr.iter().enumerate().map(|(cut_ty, &cnt)| {
+    // Safety: We know the discriminant of `CutType` is always a valid index because the only
+    // way to create a CbStats struct is to call `default()`, which allocates a `Vec` of length
+    // equal to the number of variants.
+    let cut_ty: CutType = unsafe { std::mem::transmute(cut_ty) };
+    (cut_ty, cnt)
+  })
 }
 
 impl CutType {
@@ -95,8 +97,8 @@ impl CutType {
 
 mod cb_stats_serde {
   use super::*;
-  use serde::{Serializer, Deserializer};
   use serde::ser::SerializeMap;
+  use serde::{Deserializer, Serializer};
 
   pub fn serialize<S: Serializer>(arr: &CutCountArray, s: S) -> Result<S::Ok, S::Error> {
     let mut m = s.serialize_map(Some(arr.len()))?;
@@ -151,13 +153,15 @@ impl CbStats {
   #[inline]
   pub fn inc_cut_count(&mut self, cut_ty: CutType, inc: u64) -> u64 {
     #[cfg(debug_assertions)]
-      let val = self.n_cuts.get_mut(cut_ty as usize)
+    let val = self
+      .n_cuts
+      .get_mut(cut_ty as usize)
       .expect("vec should be large enough: will cause UB in release builds!");
 
     // Safety: We know the discriminant of `CutType` is always a valid index because the only
     // way to create a CbStats struct is to call `default()`, which allocates a `Vec` large enough.
     #[cfg(not(debug_assertions))]
-      let val = unsafe { self.n_cuts.get_unchecked_mut(cut_ty as usize) };
+    let val = unsafe { self.n_cuts.get_unchecked_mut(cut_ty as usize) };
 
     let old_val = *val;
     *val += inc;
@@ -165,7 +169,7 @@ impl CbStats {
     old_val
   }
 
-  pub fn get_cut_counts<'a>(&'a self) -> impl Iterator<Item=(CutType, u64)> + 'a {
+  pub fn get_cut_counts<'a>(&'a self) -> impl Iterator<Item = (CutType, u64)> + 'a {
     iter_cut_counts(&self.n_cuts)
   }
 
@@ -193,11 +197,15 @@ impl CbStats {
     std::mem::replace(self, new)
   }
 
-  pub fn subproblem_cover_sizes(&mut self, sizes: impl IntoIterator<Item=(u8, u8)>) {
+  pub fn subproblem_cover_sizes(&mut self, sizes: impl IntoIterator<Item = (u8, u8)>) {
     self.subproblem_cover_sizes.push(
-      sizes.into_iter()
-        .map(|(cover_size, n_constraints)| SpSolnIteration { cover_size, n_constraints })
-        .collect()
+      sizes
+        .into_iter()
+        .map(|(cover_size, n_constraints)| SpSolnIteration {
+          cover_size,
+          n_constraints,
+        })
+        .collect(),
     );
   }
 }
@@ -275,27 +283,35 @@ pub struct Cb<'a> {
 }
 
 impl<'a> Cb<'a> {
-  pub fn new(lu: &'a Lookups,
-             exp: &'a experiment::ApvrpExp,
-             mp: &super::mp::TaskModelMaster,
-             inf_model: &'a InferenceModel<MpVar, SpConstr>,
-             initial_phase: Phase,
-             obj: ObjWeights) -> Result<Self> {
+  pub fn new(
+    lu: &'a Lookups,
+    exp: &'a experiment::ApvrpExp,
+    mp: &super::mp::TaskModelMaster,
+    inf_model: &'a InferenceModel<MpVar, SpConstr>,
+    initial_phase: Phase,
+    obj: ObjWeights,
+  ) -> Result<Self> {
     let stats = CbStats::default();
     let var_names: Map<_, _> = {
       let vars = mp.model.get_vars()?;
-      let names = mp.model.get_obj_attr_batch(attr::VarName, vars.iter().copied())?;
-      vars.iter().copied()
-        .zip(names)
-        .collect()
+      let names = mp
+        .model
+        .get_obj_attr_batch(attr::VarName, vars.iter().copied())?;
+      vars.iter().copied().zip(names).collect()
     };
 
     let sol_log = if exp.aux_params.soln_log {
       let log = exp.get_output_path(&exp.outputs.solution_log);
-      let log = std::fs::OpenOptions::new().write(true).truncate(true).create(true).open(log)?;
+      let log = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .open(log)?;
       let log = std::io::BufWriter::new(log);
       Some(log)
-    } else { None };
+    } else {
+      None
+    };
 
     Ok(Cb {
       lu,
@@ -319,7 +335,6 @@ impl<'a> Cb<'a> {
     })
   }
 
-
   #[cfg(debug_assertions)]
   fn cut_check(&self, cut: &IneqExpr, ty: &CutType) {
     let (lhs, rhs) = cut.evaluate(&self.var_vals);
@@ -335,10 +350,11 @@ impl<'a> Cb<'a> {
         panic!("bugalug");
       };
       match &cut.lhs {
-        Expr::Linear(l) =>
+        Expr::Linear(l) => {
           if !l.iter_terms().all(|(_, &coeff)| (coeff - 1.0).abs() < 1e-6) {
             coeff_error()
           }
+        }
         Expr::Term(coeff, _) => {
           if (coeff - 1.0).abs() > 1e-6 {
             coeff_error()
@@ -348,7 +364,12 @@ impl<'a> Cb<'a> {
       }
     }
 
-    if self.params.pvcg && matches!(ty, CutType::PvCycle | CutType::PvChainInfork | CutType::PvChainOutfork) {
+    if self.params.pvcg
+      && matches!(
+        ty,
+        CutType::PvCycle | CutType::PvChainInfork | CutType::PvChainOutfork
+      )
+    {
       error!("shouldn't need to add PV-cuts with PVCG");
       panic!("bugalug")
     }
@@ -361,10 +382,10 @@ impl<'a> Cb<'a> {
     let idx = self.stats.inc_cut_count(ty, 1);
     tracing::Span::current().record("idx", &idx);
 
-    #[cfg(debug_assertions)] {
+    #[cfg(debug_assertions)]
+    {
       self.cut_check(&cut, &ty);
     }
-
 
     let cut = CachedCut { ty, idx, expr: cut };
     if matches!(&self.phase, Phase::NoAvTTCost) && ty.is_opt_cut() {
@@ -377,7 +398,9 @@ impl<'a> Cb<'a> {
   }
 
   pub fn flush_cut_cache(&mut self, mp: &mut Model) -> Result<()> {
-    let cuts = self.added_lazy_constraints.drain(0..)
+    let cuts = self
+      .added_lazy_constraints
+      .drain(0..)
       .chain(self.stored_lazy_constraints.drain(0..));
 
     for CachedCut { ty, idx, expr, .. } in cuts {
@@ -389,21 +412,20 @@ impl<'a> Cb<'a> {
     Ok(())
   }
 
-
   #[tracing::instrument(level = "trace", skip(self))]
   fn av_cycle_cut(&mut self, cycle: &AvCycle) {
     // TODO: might be able to use the IIS stronger cut?
-    #[cfg(debug_assertions)] {
+    #[cfg(debug_assertions)]
+    {
       self.infeasibilities.av_cycle(self.lu, cycle);
     }
 
     let cycle_tasks = &cycle[..cycle.len() - 1];
 
-    let ysum = cycle_tasks.iter()
+    let ysum = cycle_tasks
+      .iter()
       .cartesian_product(cycle_tasks.iter())
-      .flat_map(|(&t1, &t2)|
-        self.mp_vars.y_sum_av_possibly_empty(self.lu, t1, t2)
-      )
+      .flat_map(|(&t1, &t2)| self.mp_vars.y_sum_av_possibly_empty(self.lu, t1, t2))
       .grb_sum();
 
     // cycle is a list of n+1 nodes (start = end), which form n arcs
@@ -413,25 +435,31 @@ impl<'a> Cb<'a> {
 
   #[inline]
   fn av_chain_fork_lhs(&self, chain: &[Task]) -> Expr {
-    chain.iter()
+    chain
+      .iter()
       .tuple_windows()
-      .flat_map(move |(&t1, &t2)|
-        self.mp_vars.y_sum_av(self.lu, t1, t2)
-      )
+      .flat_map(move |(&t1, &t2)| self.mp_vars.y_sum_av(self.lu, t1, t2))
       .grb_sum()
   }
 
   #[tracing::instrument(level = "trace", skip(self))]
   fn av_chain_infork_cut(&mut self, chain: &[Task]) {
     let chain = &chain[1..];
-    let first_task = *chain.first().expect("chain should have at least three tasks");
+    let first_task = *chain
+      .first()
+      .expect("chain should have at least three tasks");
     let n = chain.len() - 1; // number of arcs in legal chain
     let y = &self.mp_vars.y;
     debug_assert!(schedule::check_av_route(self.lu, chain));
 
-    let rhs_sum = chain.legal_before(self.lu)
+    let rhs_sum = chain
+      .legal_before(self.lu)
       .flat_map(|t| {
-        self.lu.sets.av_groups().filter_map(move |av| y.get(&(av, t, first_task)).copied())
+        self
+          .lu
+          .sets
+          .av_groups()
+          .filter_map(move |av| y.get(&(av, t, first_task)).copied())
       })
       .grb_sum();
 
@@ -443,15 +471,22 @@ impl<'a> Cb<'a> {
   #[tracing::instrument(level = "trace", skip(self))]
   fn av_chain_outfork_cut(&mut self, chain: &[Task]) {
     let chain = &chain[..chain.len() - 1];
-    let last_task = *chain.last().expect("chain should have at least three tasks");
-    let n = chain.len() - 1;  // number of arcs in legal chain
+    let last_task = *chain
+      .last()
+      .expect("chain should have at least three tasks");
+    let n = chain.len() - 1; // number of arcs in legal chain
     let y = &self.mp_vars.y;
 
     debug_assert!(schedule::check_av_route(self.lu, chain));
 
-    let rhs_sum = chain.legal_after(self.lu)
+    let rhs_sum = chain
+      .legal_after(self.lu)
       .flat_map(|t2| {
-        self.lu.sets.av_groups().filter_map(move |av| y.get(&(av, last_task, t2)).copied())
+        self
+          .lu
+          .sets
+          .av_groups()
+          .filter_map(move |av| y.get(&(av, last_task, t2)).copied())
       })
       .grb_sum();
 
@@ -489,13 +524,18 @@ impl<'a> Cb<'a> {
     }
 
     // Forward tournament
-    let mut lhs = chain.iter().enumerate()
+    let mut lhs = chain
+      .iter()
+      .enumerate()
       .flat_map(|(k, &t1)| chain[(k + 1)..].iter().map(move |&t2| (t1, t2)))
       .flat_map(|(t1, t2)| self.mp_vars.y_sum_av_possibly_empty(self.lu, t1, t2))
       .grb_sum();
 
     let mut add_similar_tasks_to_lhs = |i, j| {
-      for y in self.mp_vars.y_sum_av_possibly_empty(self.lu, chain[i], chain[j]) {
+      for y in self
+        .mp_vars
+        .y_sum_av_possibly_empty(self.lu, chain[i], chain[j])
+      {
         lhs += y;
       }
     };
@@ -600,7 +640,9 @@ impl<'a> Cb<'a> {
   #[tracing::instrument(level = "trace", skip(self))]
   fn pv_cycle_cut(&mut self, cycle: &PvCycle) {
     // TODO tournament?
-    let xsum = cycle.unique_tasks().iter()
+    let xsum = cycle
+      .unique_tasks()
+      .iter()
       .flat_map(|t| &self.lu.tasks.task_to_pvtasks[&self.lu.tasks.pvtask_to_task[t]])
       .map(|t| self.mp_vars.x[t])
       .grb_sum();
@@ -612,33 +654,36 @@ impl<'a> Cb<'a> {
   fn pv_chain_infork_cut(&mut self, chain: &[PvTask]) {
     // FIXME sum over all p?
     let chain = &chain[1..];
-    let rhs_sum = chain.legal_before(self.lu)
+    let rhs_sum = chain
+      .legal_before(self.lu)
       .map(|t| self.mp_vars.x[&t])
       .grb_sum();
 
-    let lhs_sum = chain.iter()
-      .map(|t| self.mp_vars.x[t])
-      .grb_sum();
+    let lhs_sum = chain.iter().map(|t| self.mp_vars.x[t]).grb_sum();
 
-    self.enqueue_cut(c!(lhs_sum <= chain.len() - 1 + rhs_sum), CutType::PvChainInfork);
+    self.enqueue_cut(
+      c!(lhs_sum <= chain.len() - 1 + rhs_sum),
+      CutType::PvChainInfork,
+    );
   }
 
   #[tracing::instrument(level = "trace", skip(self))]
   fn pv_chain_outfork_cut(&mut self, chain: &[PvTask]) {
     // FIXME sum over all p?
     let chain = &chain[..chain.len() - 1];
-    let rhs_sum = chain.legal_after(self.lu)
+    let rhs_sum = chain
+      .legal_after(self.lu)
       .flat_map(|t| &self.lu.tasks.pvtask_to_similar_pvtask[&t])
       .map(|t| self.mp_vars.x[t])
       .grb_sum();
 
-    let lhs_sum = chain.iter()
-      .map(|t| self.mp_vars.x[t])
-      .grb_sum();
+    let lhs_sum = chain.iter().map(|t| self.mp_vars.x[t]).grb_sum();
 
-    self.enqueue_cut(c!(lhs_sum <= chain.len() - 1 + rhs_sum), CutType::PvChainOutfork);
+    self.enqueue_cut(
+      c!(lhs_sum <= chain.len() - 1 + rhs_sum),
+      CutType::PvChainOutfork,
+    );
   }
-
 
   fn separate_pv_cuts(&mut self, routes: &[PvRoute], cycles: &[PvCycle]) -> Result<()> {
     if self.params.cycle_cuts {
@@ -675,7 +720,6 @@ impl<'a> Cb<'a> {
     }
   }
 
-
   #[instrument(level = "trace", skip(self))]
   fn endtime_cut(&mut self, finish_time: Time, route: &AvRoute) {
     let av_route_nd = route.without_depots();
@@ -687,15 +731,23 @@ impl<'a> Cb<'a> {
     for k in 0..n {
       let partial_finish_time = schedule::av_route_finish_time(self.lu, &av_route_nd[k + 1..]);
       if partial_finish_time != finish_time {
-        lhs += (finish_time - partial_finish_time) * (self.mp_vars.y[&(av, av_route_nd[k], av_route_nd[k + 1])] - 1)
+        lhs += (finish_time - partial_finish_time)
+          * (self.mp_vars.y[&(av, av_route_nd[k], av_route_nd[k + 1])] - 1)
       }
     }
 
-    self.enqueue_cut(c!( lhs <= self.mp_vars.theta[&(av, av_route_nd[n])] ), CutType::EndTime);
+    self.enqueue_cut(
+      c!(lhs <= self.mp_vars.theta[&(av, av_route_nd[n])]),
+      CutType::EndTime,
+    );
   }
 
-
-  fn separate_av_cuts(&mut self, theta: &Map<(Avg, Task), Time>, routes: &[AvRoute], cycles: &[AvCycle]) -> Result<()> {
+  fn separate_av_cuts(
+    &mut self,
+    theta: &Map<(Avg, Task), Time>,
+    routes: &[AvRoute],
+    cycles: &[AvCycle],
+  ) -> Result<()> {
     if self.params.cycle_cuts {
       for cycle in cycles {
         if let Some(chain) = self.illegal_av_chain_in_cycle(&cycle) {
@@ -713,7 +765,8 @@ impl<'a> Cb<'a> {
 
     if !self.params.av_fork_cuts.is_empty()
       || !self.params.av_tournament_cuts.is_empty()
-      || self.params.endtime_cuts {
+      || self.params.endtime_cuts
+    {
       for route in routes {
         if !schedule::check_av_route(self.lu, &route) {
           let chain = self.shorten_illegal_av_chain(route.without_depots());
@@ -741,19 +794,21 @@ impl<'a> Cb<'a> {
   #[allow(unused_variables)]
   fn update_var_values(&mut self, ctx: &MIPSolCtx) -> Result<()> {
     #[cfg(debug_assertions)]
-      {
-        let vars = self.mp_vars.x.values()
-          .chain(self.mp_vars.y.values())
-          .chain(self.mp_vars.theta.values());
+    {
+      let vars = self
+        .mp_vars
+        .x
+        .values()
+        .chain(self.mp_vars.y.values())
+        .chain(self.mp_vars.theta.values());
 
-        for (&var, val) in vars.clone().zip(ctx.get_solution(vars)?) {
-          self.var_vals.insert(var, val);
-        }
+      for (&var, val) in vars.clone().zip(ctx.get_solution(vars)?) {
+        self.var_vals.insert(var, val);
       }
+    }
 
     Ok(())
   }
-
 
   fn get_av_routes(&self, ctx: &MIPSolCtx) -> Result<(Vec<AvRoute>, Vec<AvCycle>)> {
     let task_pairs = get_var_values(ctx, &self.mp_vars.y)?.map(|(key, _)| key);
@@ -771,7 +826,10 @@ impl<'a> Cb<'a> {
       Some((sp, _)) => {
         let saved_obj = sp.objective.unwrap();
         if saved_obj < obj {
-          info!(saved_obj, "solution discarded: previously cached solution is better");
+          info!(
+            saved_obj,
+            "solution discarded: previously cached solution is better"
+          );
           return false;
         }
       }
@@ -786,14 +844,23 @@ impl<'a> Cb<'a> {
   fn suggest_solution(&self, ctx: &MIPNodeCtx, sol: &MpSolution, theta: &ThetaVals) -> Result<()> {
     debug_assert!(sol.av_cycles.is_empty());
     debug_assert!(sol.pv_cycles.is_empty());
-    let xvars = sol.pv_routes.iter().flat_map(|r| r.iter().map(|t| self.mp_vars.x[t]));
-    let yvars = sol.av_routes.iter().flat_map(|r| r.iter_y_vars().map(|key| self.mp_vars.y[&key]));
+    let xvars = sol
+      .pv_routes
+      .iter()
+      .flat_map(|r| r.iter().map(|t| self.mp_vars.x[t]));
+    let yvars = sol
+      .av_routes
+      .iter()
+      .flat_map(|r| r.iter_y_vars().map(|key| self.mp_vars.y[&key]));
 
-    let grb_soln = xvars.chain(yvars).map(|var| (var, 1.0))
-      .chain(theta.iter().map(|(key, val)| (self.mp_vars.theta[key], *val as f64)));
+    let grb_soln = xvars.chain(yvars).map(|var| (var, 1.0)).chain(
+      theta
+        .iter()
+        .map(|(key, val)| (self.mp_vars.theta[key], *val as f64)),
+    );
 
     #[allow(unused_variables)]
-      let obj = ctx.set_solution(grb_soln)?;
+    let obj = ctx.set_solution(grb_soln)?;
 
     #[cfg(debug_assertions)]
     match obj.map(|o| o.round() as Cost) {
@@ -804,7 +871,10 @@ impl<'a> Cb<'a> {
       Some(obj) => {
         debug!(grb_obj = obj, stored_obj = sol.objective.unwrap());
         if obj > sol.objective.unwrap() {
-          error!(gurobi_obj = obj, "Gurobi-computed objective implies dodgy optimality cuts");
+          error!(
+            gurobi_obj = obj,
+            "Gurobi-computed objective implies dodgy optimality cuts"
+          );
           panic!("bugalug");
         }
       }
@@ -814,7 +884,6 @@ impl<'a> Cb<'a> {
   }
 }
 
-
 impl<'a> Callback for Cb<'a> {
   fn callback(&mut self, w: Where) -> CbResult {
     // TODO - save best global solution in no-AVTT-cost phase
@@ -823,11 +892,11 @@ impl<'a> Callback for Cb<'a> {
     match w {
       Where::MIPSol(ctx) => {
         let icu = self.stats.inc_n_mipsol();
-        let _span = info_span!("cb", icu, ph=self.phase.idx()).entered();
+        let _span = info_span!("cb", icu, ph = self.phase.idx()).entered();
         debug!("integer MP solution found");
 
         #[cfg(debug_assertions)]
-          self.update_var_values(&ctx)?;
+        self.update_var_values(&ctx)?;
 
         let new_lazy_constr_start = self.added_lazy_constraints.len();
 
@@ -835,38 +904,54 @@ impl<'a> Callback for Cb<'a> {
         self.separate_pv_cuts(&pv_routes, &pv_cycles)?;
 
         if self.added_lazy_constraints.len() > new_lazy_constr_start {
-          info!(ncuts = self.added_lazy_constraints.len() - new_lazy_constr_start, "heuristic cuts added (PV only)");
+          info!(
+            ncuts = self.added_lazy_constraints.len() - new_lazy_constr_start,
+            "heuristic cuts added (PV only)"
+          );
         } else {
           let (av_routes, av_cycles) = self.get_av_routes(&ctx)?;
-          let theta: Map<_, _> = get_var_values_mapped(&ctx, &self.mp_vars.theta, |t| t.round() as Time)?.collect();
+          let theta: Map<_, _> =
+            get_var_values_mapped(&ctx, &self.mp_vars.theta, |t| t.round() as Time)?.collect();
           self.separate_av_cuts(&theta, &av_routes, &av_cycles)?;
 
           if self.added_lazy_constraints.len() > new_lazy_constr_start {
-            info!(ncuts = self.added_lazy_constraints.len() - new_lazy_constr_start, "heuristic cuts added");
+            info!(
+              ncuts = self.added_lazy_constraints.len() - new_lazy_constr_start,
+              "heuristic cuts added"
+            );
           } else {
             let sp_idx = self.stats.inc_n_sp();
-            let _span = error_span!("sp", sp_idx, estimate=tracing::field::Empty).entered();
+            let _span = error_span!("sp", sp_idx, estimate = tracing::field::Empty).entered();
             info!("no heuristic cuts found, solving LP subproblem");
-            let sol = MpSolution { objective: None, av_cycles, av_routes, pv_routes, pv_cycles };
+            let sol = MpSolution {
+              objective: None,
+              av_cycles,
+              av_routes,
+              pv_routes,
+              pv_cycles,
+            };
             if let Some(sol_log) = self.sol_log.as_mut() {
               serde_json::to_writer(&mut *sol_log, &sol.to_serialisable())?; // need to re-borrow here
               write!(sol_log, "\n")?;
             }
             let active_vars: Set<_> = sol.mp_vars().collect();
             let mut active_sp_cons = self.inference_model.implied_constraints(&active_vars);
-            self.inference_model.remove_dominated_constraints(&mut active_sp_cons);
-
+            self
+              .inference_model
+              .remove_dominated_constraints(&mut active_sp_cons);
 
             debug!(?theta);
             let estimate: Time = theta.values().sum();
             tracing::span::Span::current().record("estimate", &estimate);
             let correct_theta = match self.params.sp {
               SpSolverKind::Dag => {
-                let mut sp = dag::GraphModel::build(self.lu, &active_sp_cons, sol.sp_objective_tasks());
+                let mut sp =
+                  dag::GraphModel::build(self.lu, &active_sp_cons, sol.sp_objective_tasks());
                 sp.solve_subproblem_and_add_cuts(self, &active_vars, &theta, estimate)?
               }
               SpSolverKind::Lp => {
-                let mut sp = lp::TimingSubproblem::build(self.lu, &active_sp_cons, sol.sp_objective_tasks())?;
+                let mut sp =
+                  lp::TimingSubproblem::build(self.lu, &active_sp_cons, sol.sp_objective_tasks())?;
                 sp.solve_subproblem_and_add_cuts(self, &active_vars, &theta, estimate)?
               }
             };
@@ -878,7 +963,6 @@ impl<'a> Callback for Cb<'a> {
               } else if estimate > sp_obj {
                 warn!(sp_obj, "estimate is too large")
               }
-
 
               if matches!(self.phase, Phase::NoAvTTCost) {
                 let obj = ctx.obj()?.round() as Cost + sp_obj;

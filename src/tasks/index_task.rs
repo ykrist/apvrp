@@ -1,7 +1,7 @@
 use crate::*;
-use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
+use std::str::FromStr;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, Ord, PartialOrd)]
 pub enum IdxPvTask {
@@ -46,7 +46,7 @@ impl From<(Pv, IdxTask)> for IdxPvTask {
       IdxTask::End(_, r) => IdxPvTask::End(p, r),
       IdxTask::Direct(_) => IdxPvTask::Direct(p),
       IdxTask::Transfer(r1, r2) => IdxPvTask::Transfer(p, r1, r2),
-      IdxTask::DDepot | IdxTask::ODepot => panic!("not valid for AV depot tasks")
+      IdxTask::DDepot | IdxTask::ODepot => panic!("not valid for AV depot tasks"),
     }
   }
 }
@@ -101,8 +101,8 @@ impl TaskIndex for PvTask {
 }
 
 impl<T> TaskIndex for [T]
-  where
-    T: TaskIndex,
+where
+  T: TaskIndex,
 {
   type Index = Vec<T::Index>;
 
@@ -110,7 +110,6 @@ impl<T> TaskIndex for [T]
     self.iter().map(|t| t.index()).collect()
   }
 }
-
 
 mod parsers {
   use super::*;
@@ -144,15 +143,15 @@ mod parsers {
     };
   }
 
-  parser!{   odp : r"ODp" }
-  parser!{   ddp : r"DDp" }
-  parser!{   dir : r"Dir\((\d+)\)" => Pv }
-  parser!{   trn : r"Trn\((\d+),(\d+)\)" => Req, Req }
-  parser!{   req : r"Req\((\d+)\)" => Req }
-  parser!{   end : r"End\((\d+),(\d+)\)" => Pv, Req }
-  parser!{   srt : r"Srt\((\d+),(\d+)\)" => Pv, Req }
-  parser!{ trn_p : r"Trn\((\d+),(\d+),(\d+)\)" => Pv, Req, Req }
-  parser!{ req_p : r"Req\((\d+),(\d+)\)" => Pv, Req }
+  parser! {   odp : r"ODp" }
+  parser! {   ddp : r"DDp" }
+  parser! {   dir : r"Dir\((\d+)\)" => Pv }
+  parser! {   trn : r"Trn\((\d+),(\d+)\)" => Req, Req }
+  parser! {   req : r"Req\((\d+)\)" => Req }
+  parser! {   end : r"End\((\d+),(\d+)\)" => Pv, Req }
+  parser! {   srt : r"Srt\((\d+),(\d+)\)" => Pv, Req }
+  parser! { trn_p : r"Trn\((\d+),(\d+),(\d+)\)" => Pv, Req, Req }
+  parser! { req_p : r"Req\((\d+),(\d+)\)" => Pv, Req }
 
   macro_rules! one_of {
       ($target:ident => $([$($branch:tt)+])+) => {
@@ -192,7 +191,6 @@ mod parsers {
     }
   }
 
-
   impl FromStr for IdxTask {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
@@ -212,7 +210,5 @@ mod parsers {
     }
   }
 }
-
-
 
 // TODO add some parsing tests

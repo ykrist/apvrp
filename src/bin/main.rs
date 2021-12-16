@@ -1,25 +1,26 @@
 use anyhow::Result;
-use tracing::{info, error};
-use grb::prelude::*;
-use slurm_harray::{Experiment, handle_slurm_args};
-use apvrp::model::{Phase, mp::{ObjWeights, TaskModelMaster}, sp};
-use std::io::Write;
-use instances::dataset::apvrp::LocSetStarts;
-use apvrp::*;
-use apvrp::test::test_data_dir;
 use apvrp::experiment::*;
-use apvrp::solution::MpSolution;
-use std::time::Duration;
-use sawmill::InferenceModel;
 use apvrp::model::mp::MpVar;
 use apvrp::model::sp::SpConstr;
-
+use apvrp::model::{
+  mp::{ObjWeights, TaskModelMaster},
+  sp, Phase,
+};
+use apvrp::solution::MpSolution;
+use apvrp::test::test_data_dir;
+use apvrp::*;
+use grb::prelude::*;
+use instances::dataset::apvrp::LocSetStarts;
+use sawmill::InferenceModel;
+use slurm_harray::{handle_slurm_args, Experiment};
+use std::io::Write;
+use std::time::Duration;
+use tracing::{error, info};
 
 fn infeasibility_analysis(mp: &mut TaskModelMaster) -> Result<()> {
   mp.model.update()?;
   mp.model.write("debug.lp")?;
   mp.model.optimize()?;
-
 
   match mp.model.status()? {
     Status::Infeasible => {
@@ -29,9 +30,13 @@ fn infeasibility_analysis(mp: &mut TaskModelMaster) -> Result<()> {
       mp.model.compute_iis()?;
 
       let constrs = mp.model.get_constrs()?;
-      let iis_constrs: Vec<_> = constrs.iter()
+      let iis_constrs: Vec<_> = constrs
+        .iter()
         .copied()
-        .zip(mp.model.get_obj_attr_batch(attr::IISConstr, constrs.iter().copied())?)
+        .zip(
+          mp.model
+            .get_obj_attr_batch(attr::IISConstr, constrs.iter().copied())?,
+        )
         .filter(|(_, is_iis)| *is_iis > 0)
         .map(|(c, _)| c)
         .collect();
@@ -60,7 +65,7 @@ fn infeasibility_analysis(mp: &mut TaskModelMaster) -> Result<()> {
   Ok(())
 }
 
-fn get_total_cost(mp: &TaskModelMaster, vars: impl Iterator<Item=Var>) -> Result<f64> {
+fn get_total_cost(mp: &TaskModelMaster, vars: impl Iterator<Item = Var>) -> Result<f64> {
   let mut total = 0.;
   let obj_constr = mp.model.get_constr_by_name("Obj")?.unwrap();
 
@@ -91,9 +96,9 @@ fn evalutate_full_objective(
   mp: &TaskModelMaster,
   inference_model: &InferenceModel<MpVar, SpConstr>,
   obj_weights: &ObjWeights,
-  sol: &MpSolution
+  sol: &MpSolution,
 ) -> Result<Cost> {
-  let mp_vars : Set<_> = sol.mp_vars().collect();
+  let mp_vars: Set<_> = sol.mp_vars().collect();
   let mut sp_cons = inference_model.implied_constraints(&mp_vars);
   inference_model.remove_dominated_constraints(&mut sp_cons);
 
@@ -105,13 +110,11 @@ fn evalutate_full_objective(
 
 fn run(exp: ApvrpExp) -> Result<()> {
   #[allow(non_snake_case)]
-    let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
+  let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
 
   info!(inputs=?exp.inputs, params=?exp.parameters);
   let mut stopwatch = Stopwatch::new();
-  let time_deadline = Deadline::start(
-    Duration::from_secs(exp.parameters.timelimit)
-  );
+  let time_deadline = Deadline::start(Duration::from_secs(exp.parameters.timelimit));
   let mut phase_info = Vec::new();
 
   stopwatch.start(String::from("task_generation"));
@@ -130,8 +133,14 @@ fn run(exp: ApvrpExp) -> Result<()> {
   stopwatch.lap(String::from("mp_build"));
   let obj_weights = ObjWeights::default();
   let mut mp = model::mp::TaskModelMaster::build(&lookups)?;
-  mp.set_objective(&lookups,
-                   if exp.parameters.two_phase { obj_weights.without_av_finish_time() } else { obj_weights })?;
+  mp.set_objective(
+    &lookups,
+    if exp.parameters.two_phase {
+      obj_weights.without_av_finish_time()
+    } else {
+      obj_weights
+    },
+  )?;
 
   mp.model.update()?;
 
@@ -140,15 +149,18 @@ fn run(exp: ApvrpExp) -> Result<()> {
     &lookups,
     &LocSetStarts::new(lookups.data.n_passive, lookups.data.n_req),
   )
-    .map_err(|e| error!(error=%e, "unable to load solution"))
-    .ok();
+  .map_err(|e| error!(error=%e, "unable to load solution"))
+  .ok();
 
-  mp.model.set_obj_attr_batch(attr::BranchPriority, mp.vars.u.values().map(|&u| (u, 100)))?;
-  mp.model.set_obj_attr_batch(attr::UB, mp.vars.u.values().map(|&u| (u, 0.0)))?;
+  mp.model
+    .set_obj_attr_batch(attr::BranchPriority, mp.vars.u.values().map(|&u| (u, 100)))?;
+  mp.model
+    .set_obj_attr_batch(attr::UB, mp.vars.u.values().map(|&u| (u, 0.0)))?;
 
   mp.model.set_param(&MIN_BP_FORBID, 1)?;
   mp.model.set_param(param::BranchDir, 1)?;
-  mp.model.set_param(param::Threads, exp.parameters.cpus as i32)?;
+  mp.model
+    .set_param(param::Threads, exp.parameters.cpus as i32)?;
   mp.model.set_param(param::LazyConstraints, 1)?;
   mp.apply_gurobi_parameters(&exp)?;
 
@@ -158,15 +170,26 @@ fn run(exp: ApvrpExp) -> Result<()> {
   phase_info.push(PhaseInfo::new_init(&mp.model)?);
 
   let mut callback = {
-    let initial_phase = if exp.parameters.two_phase { Phase::NoAvTTCost } else { Phase::Final };
-    model::cb::Cb::new(&lookups, &exp, &mp, &inference_model, initial_phase, obj_weights)?
+    let initial_phase = if exp.parameters.two_phase {
+      Phase::NoAvTTCost
+    } else {
+      Phase::Final
+    };
+    model::cb::Cb::new(
+      &lookups,
+      &exp,
+      &mp,
+      &inference_model,
+      initial_phase,
+      obj_weights,
+    )?
   };
-
 
   let mut solution = None;
   while !time_deadline.reached() {
     stopwatch.lap(callback.phase.name());
-    mp.model.set_param(param::TimeLimit, time_deadline.sec_remaining().max(0.0))?;
+    mp.model
+      .set_param(param::TimeLimit, time_deadline.sec_remaining().max(0.0))?;
     let mut bounds = Bounds::new();
     mp.relax_integrality()?;
     mp.model.update()?;
@@ -193,7 +216,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
       }
       Status::Optimal => true,
       Status::TimeLimit => false,
-      status => anyhow::bail!("unexpected master problem status: {:?}", status)
+      status => anyhow::bail!("unexpected master problem status: {:?}", status),
     };
 
     let solution_found = mp.model.get_attr(attr::SolCount)? > 0;
@@ -214,13 +237,24 @@ fn run(exp: ApvrpExp) -> Result<()> {
         Ok(sol) => sol,
         Err(e) => {
           callback.flush_cut_cache(&mut mp.model)?;
-          mp.model.write(&exp.get_output_path_prefixed("model_debug.lp").to_str().unwrap())?;
+          mp.model.write(
+            &exp
+              .get_output_path_prefixed("model_debug.lp")
+              .to_str()
+              .unwrap(),
+          )?;
           return Err(e);
         }
       };
 
       if matches!(&callback.phase, Phase::NoAvTTCost) {
-        bounds.record_ub_full_obj(evalutate_full_objective(&lookups, &mp, &inference_model, &obj_weights, &sol)?);
+        bounds.record_ub_full_obj(evalutate_full_objective(
+          &lookups,
+          &mp,
+          &inference_model,
+          &obj_weights,
+          &sol,
+        )?);
       }
       solution = Some(sol);
     }
@@ -235,7 +269,12 @@ fn run(exp: ApvrpExp) -> Result<()> {
     callback.flush_cut_cache(&mut mp.model)?;
     mp.model.update()?;
     if exp.aux_params.model_file {
-      mp.model.write(exp.get_output_path_prefixed("master_problem.lp").to_str().unwrap())?;
+      mp.model.write(
+        exp
+          .get_output_path_prefixed("master_problem.lp")
+          .to_str()
+          .unwrap(),
+      )?;
     }
 
     match callback.phase {
@@ -245,7 +284,8 @@ fn run(exp: ApvrpExp) -> Result<()> {
       Phase::NoAvTTCost => {
         if optimal {
           println!("-------------------------------------------------------------------------------------------------");
-          #[cfg(debug_assertions)] {
+          #[cfg(debug_assertions)]
+          {
             if callback.cached_solution.is_none() {
               error!("solved to optimality but no solution has been saved");
               panic!("bugalug")
@@ -256,7 +296,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
         callback.phase.set_next();
       }
     }
-  };
+  }
 
   stopwatch.stop();
 
@@ -265,7 +305,6 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
   let info = experiment::Info::new(phase_info, stopwatch.into_laps());
   info.to_json_file(exp.get_output_path(&exp.outputs.info))?;
-
 
   if let Some(sol) = solution {
     let json_sol = sol.to_serialisable();
@@ -284,15 +323,18 @@ fn run(exp: ApvrpExp) -> Result<()> {
         let obj = sol.objective.unwrap();
         let true_obj = true_soln.objective.unwrap();
         if obj != true_obj {
-          true_soln.to_serialisable().to_json_file(exp.get_output_path_prefixed("true_soln.json"))?;
+          true_soln
+            .to_serialisable()
+            .to_json_file(exp.get_output_path_prefixed("true_soln.json"))?;
           error!(correct = true_obj, obj, "objective mismatch");
-          true_soln.solve_for_times(&lookups)?.print_objective_breakdown(&lookups, &obj_weights);
+          true_soln
+            .solve_for_times(&lookups)?
+            .print_objective_breakdown(&lookups, &obj_weights);
           mp.fix_solution(&true_soln)?;
           infeasibility_analysis(&mut mp)?;
           anyhow::bail!("bugalug");
         }
-      }
-      else if bounds.lower > bounds.upper {
+      } else if bounds.lower > bounds.upper {
         error!(?bounds, "invalid bounds");
         anyhow::bail!("bugalug")
       }
@@ -309,7 +351,10 @@ fn main() -> Result<()> {
   println!("Running on data index {}", exp.inputs.index);
   exp.write_index_file()?;
   exp.write_parameter_file()?;
-  let _g = logging::init_logging(Some(exp.get_output_path(&exp.outputs.trace_log)), !exp.aux_params.quiet)?;
+  let _g = logging::init_logging(
+    Some(exp.get_output_path(&exp.outputs.trace_log)),
+    !exp.aux_params.quiet,
+  )?;
 
   let result = run(exp);
   if let Err(err) = result.as_ref() {
