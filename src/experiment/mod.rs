@@ -199,7 +199,7 @@ impl NewOutput for Outputs {
   fn new(inputs: &Inputs, _params: &Params, _aux_params: &AuxParams) -> Self {
     Outputs{
       solution_log: format!("{}-sollog.ndjson", inputs.index).into(),
-      trace_log: format!("{}-log.ndjson", inputs.index).into(),
+      trace_log: format!("{}-log.msgpack", inputs.index).into(),
       info: format!("{}-info.json", inputs.index).into(),
     }
   }

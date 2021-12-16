@@ -1,14 +1,16 @@
 use tracing_subscriber::{EnvFilter, fmt, registry, prelude::*};
-use tracing_appender::{non_blocking, non_blocking::WorkerGuard};
+use tracing_subscriber_serde::{SerdeLayer, format::{Json, MessagePack}, writer::{NonBlocking, FlushGuard}, WriteEvent};
+use std::{io::{BufWriter, Write}, sync::{Arc, Mutex}};
 use std::fs::{OpenOptions, File};
 use std::path::Path;
 use std::env;
 use std::fmt::Debug;
 use crate::Result;
 
-const LOG_BUFFER_LINES: usize = 4_194_304; // 2 ** 22; should be < 2GiB with <= 512 bytes per log entry
+const LOG_BUFFER_LINES: usize = 1 << 22; // 2 ** 22 should be < 2GiB with <= 512 bytes per log entry
 
-pub fn init_logging(logfile: Option<impl AsRef<Path>>, stderr: bool) -> Result<Option<WorkerGuard>> {
+
+pub fn init_logging(logfile: Option<impl AsRef<Path>>, stderr: bool) -> Result<Option<FlushGuard>> {
   let env_filter = EnvFilter::from_default_env();
 
   let stderr_log = if stderr {
@@ -21,16 +23,17 @@ pub fn init_logging(logfile: Option<impl AsRef<Path>>, stderr: bool) -> Result<O
   };
 
   let (json_log, guard) = if let Some(p) = logfile {
-    let (writer, guard) = non_blocking::NonBlockingBuilder::default()
-      .lossy(false)
-      .buffered_lines_limit(LOG_BUFFER_LINES)
-      .finish(File::create(p)?);
+    let (writer, guard) = NonBlocking::new()
+        .buf_size(LOG_BUFFER_LINES)
+        .finish(BufWriter::new(File::create(p)?));
 
-    let layer = fmt::layer()
-      .json()
-      .with_span_list(true)
-      .with_current_span(false)
-      .with_writer(writer);
+    let layer = SerdeLayer::new()
+        .with_source_location(true)
+        .with_format(Json)
+        .with_span_ids(true)
+        .with_writer(writer.warn_on_error())
+        .finish();
+
     (Some(layer), Some(guard))
   } else {
     (None, None)

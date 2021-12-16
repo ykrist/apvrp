@@ -108,7 +108,6 @@ fn run(exp: ApvrpExp) -> Result<()> {
     let MIN_BP_FORBID = grb::parameter::Undocumented::new("GURO_PAR_MINBPFORBID")?;
 
   info!(inputs=?exp.inputs, params=?exp.parameters);
-
   let mut stopwatch = Stopwatch::new();
   let time_deadline = Deadline::start(
     Duration::from_secs(exp.parameters.timelimit)
