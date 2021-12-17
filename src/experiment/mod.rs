@@ -326,6 +326,11 @@ impl ResourcePolicy for ApvrpExp {
       _ => None,
     }
   }
+
+  fn exclude(&self) -> Option<String> { 
+    // the nerve of this fucking node
+    Some("smp-7-3".into())
+  }
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
