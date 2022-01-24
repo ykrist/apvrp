@@ -639,7 +639,6 @@ impl<'a> Cb<'a> {
 
   #[tracing::instrument(level = "trace", skip(self))]
   fn pv_cycle_cut(&mut self, cycle: &PvCycle) {
-    // TODO tournament?
     let xsum = cycle
       .unique_tasks()
       .iter()
