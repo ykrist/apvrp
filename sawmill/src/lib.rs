@@ -1,6 +1,5 @@
 #![allow(unused)]
 #![feature(hash_set_entry)]
-#![feature(entry_insert)]
 
 mod unordered_pair;
 mod viz;
