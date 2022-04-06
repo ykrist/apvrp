@@ -8,3 +8,4 @@ dbg.filter
 .gdb_history
 /target
 Cargo.lock
+/logs
