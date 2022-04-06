@@ -1,14 +1,10 @@
-scrap
 *.logfilter
 *.log
 *.ndjson
 *.lp
 dbg.filter
-routes.json
 *.svg
 *.dot
-**~
-.idea/
 .gdb_history
-archive/
-debug.py
+/target
+Cargo.lock

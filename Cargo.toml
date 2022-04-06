@@ -9,7 +9,7 @@ default-run="apvrp"
 anyhow = { version = "^1.0", features = ["backtrace"] }
 grb = { path = "./grb"}
 itertools = "^0.10"
-instances = {path = "../instances"}
+instances = {path = "./instances"}
 fnv = "^1.0"
 serde = { version= "^1.0", features = ["derive"] }
 serde_json = "^1.0"

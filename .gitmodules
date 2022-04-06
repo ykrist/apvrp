@@ -1,0 +1,15 @@
+[submodule "grb"]
+	path = grb
+	url = https://github.com/ykrist/rust-grb
+[submodule "daggylp"]
+	path = daggylp
+	url = git@bitbucket.org:yannik_rist/daggylp.git
+[submodule "slurm-utils-rs"]
+	path = slurm-utils-rs
+	url = git@bitbucket.org:yannik_rist/slurm-utils-rs.git
+[submodule "gvdot"]
+	path = gvdot
+	url = git@bitbucket.org:yannik_rist/gvdot.git
+[submodule "instances"]
+	path = instances
+	url = git@bitbucket.org:yannik_rist/instances.git
