@@ -430,11 +430,11 @@ impl<'a> Cb<'a> {
 
     // cycle is a list of n+1 nodes (start = end), which form n arcs
     self.enqueue_cut(c!(ysum <= cycle.len() - 2), CutType::AvCycle);
-    // panic!()
   }
 
   #[inline]
   fn av_chain_fork_lhs(&self, chain: &[Task]) -> Expr {
+    // TODO: could forward-tournament here.
     chain
       .iter()
       .tuple_windows()
