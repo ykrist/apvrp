@@ -1,3 +1,5 @@
+use self::dag::GraphModel;
+
 use super::mp::MpVar;
 use super::{cb, cb::CutType};
 use crate::logging::*;
@@ -18,6 +20,7 @@ use sawmill::lift::LiftedCover;
 use sawmill::InferenceModel;
 
 pub mod dag;
+pub mod cuts;
 
 #[derive(Debug, Clone)]
 pub enum Iis {
@@ -194,6 +197,15 @@ impl<'a, 'b> CriticalPathVisitor<'a, 'b> {
     );
   }
 }
+
+pub trait GenIisCut {
+  fn cut(cb: &mut cb::Cb, iis: &Iis) -> Result<()>;
+}
+
+pub trait GenOptimalityCut {
+  fn cut(cb: &mut cb::Cb, subproblem: &mut GraphModel, constr: &Set<SpConstr>) -> Result<()>;
+}
+
 
 pub trait Subproblem<'a>: Sized {
   // Solve the subproblem and return status
