@@ -42,6 +42,5 @@ fn current_commit() -> Result<String> {
 fn main() -> Result<()> {
   extract_data()?;
   println!("cargo:rustc-env=COMMIT_HASH={}", current_commit()?);
-  println!("cargo:rustc-env=DATA_ROOT={}", DATA_ROOT);
   Ok(())
 }

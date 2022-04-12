@@ -1,15 +1,15 @@
 [submodule "grb"]
-	path = grb
+	path = pkgs/grb
 	url = https://github.com/ykrist/rust-grb
 [submodule "daggylp"]
-	path = daggylp
+	path = pkgs/daggylp
 	url = git@bitbucket.org:yannik_rist/daggylp.git
 [submodule "slurm-utils-rs"]
-	path = slurm-utils-rs
+	path = pkgs/slurm-utils-rs
 	url = git@bitbucket.org:yannik_rist/slurm-utils-rs.git
 [submodule "gvdot"]
-	path = gvdot
+	path = pkgs/gvdot
 	url = git@bitbucket.org:yannik_rist/gvdot.git
 [submodule "instances"]
-	path = instances
+	path = pkgs/instances
 	url = git@bitbucket.org:yannik_rist/instances.git

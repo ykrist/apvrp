@@ -7,9 +7,7 @@ default-run="apvrp"
 
 [dependencies]
 anyhow = { version = "^1.0", features = ["backtrace"] }
-grb = { path = "./grb"}
 itertools = "^0.10"
-instances = {path = "./instances"}
 fnv = "^1.0"
 serde = { version= "^1.0", features = ["derive"] }
 serde_json = "^1.0"
@@ -18,18 +16,21 @@ tracing-subscriber = { version = "^0.3", features = ["json", "env-filter"] }
 tracing-subscriber-serde = { git = "ssh://git@bitbucket.org/yannik_rist/tracing-subscriber-json-full.git", features = ["messagepack"]}
 variant_count = "^1.1"
 prettytable-rs = "^0.8"
-slurm-harray = { path = "./slurm-utils-rs" }
+indicatif = "0.16.2"
 smallvec = { version = "^1.6", features = ["serde"] }
 regex = "^1.5"
 clap = "^2.33"
 lazy_static = "^1.4"
 dot = "^0.1"
-daggylp = { path = "./daggylp", features = ["arrayvec", "viz-extra"] }
 arrayvec = "^0.7"
 structopt = "^0.3"
 glob = "^0.3"
-sawmill = { path = "./sawmill" }
-indicatif = "0.16.2"
+grb = { path = "./pkgs/grb"}
+instances = {path = "./pkgs/instances"}
+slurm-harray = { path = "./pkgs/slurm-utils-rs" }
+daggylp = { path = "./pkgs/daggylp", features = ["arrayvec", "viz-extra"] }
+sawmill = { path = "./pkgs/sawmill" }
+
 
 
 [build-dependencies]

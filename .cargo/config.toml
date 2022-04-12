@@ -1,0 +1,6 @@
+[env]
+DATA_ROOT={ value = "data/uncompressed", relative = true }
+# GUROBI_PATH ={ value = "lib", relative = true }
+
+# [build]
+# [rustc-]
