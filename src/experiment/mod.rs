@@ -27,10 +27,10 @@ impl IdStr for Inputs {
 #[derive(Debug, Copy, Clone, ArgEnum, Serialize, Deserialize)]
 pub enum SpSolverKind {
   Dag,
-  Lp,
 }
 
-#[derive(Debug, Copy, Clone, ArgEnum, Serialize, Deserialize)]
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum CycleHandling {
   Cuts,
   Sp,

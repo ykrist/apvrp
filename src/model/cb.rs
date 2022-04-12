@@ -948,11 +948,6 @@ impl<'a> Callback for Cb<'a> {
                   dag::GraphModel::build(self.lu, &active_sp_cons, sol.sp_objective_tasks());
                 sp.solve_subproblem_and_add_cuts(self, &active_vars, &theta, estimate)?
               }
-              SpSolverKind::Lp => {
-                let mut sp =
-                  lp::TimingSubproblem::build(self.lu, &active_sp_cons, sol.sp_objective_tasks())?;
-                sp.solve_subproblem_and_add_cuts(self, &active_vars, &theta, estimate)?
-              }
             };
 
             if let Some(theta) = correct_theta {

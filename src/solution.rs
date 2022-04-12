@@ -1,7 +1,8 @@
 use crate::graph::DecomposableDigraph;
 use crate::model::mp::MpVar;
 use crate::model::mp::{MpVars, ObjWeights, TaskModelMaster};
-use crate::model::sp::{lp::TimingSubproblem, Subproblem};
+use crate::model::sp::Subproblem;
+use crate::model::sp::dag::GraphModel;
 use crate::utils::IoContext;
 use crate::*;
 use anyhow::Context;
@@ -510,24 +511,12 @@ impl MpSolution {
     })
   }
 
-  pub fn solve_for_times(&self, lu: &Lookups) -> Result<SpSolution> {
+  pub fn solve_for_times(&self, _lu: &Lookups) -> Result<SpSolution> {
     if !(self.pv_cycles.is_empty() && self.av_cycles.is_empty()) {
       anyhow::bail!("Cycles in solution")
     }
-    let mut sp = TimingSubproblem::from_mp_sol(lu, self)?;
-    sp.model.optimize()?;
-    use grb::Status::*;
-    match sp.model.status()? {
-      Optimal => SpSolution::from_sp(self, &sp),
-      Infeasible => {
-        sp.debug_infeasibility()?;
-        Err(anyhow::anyhow!("subproblem is infeasible"))
-      }
-      status => Err(anyhow::anyhow!(
-        "unexpected subproblem status: {:?}",
-        status
-      )),
-    }
+
+    todo!() // FIXME: implement
   }
 
   pub fn sp_objective_tasks(&self) -> Map<IdxTask, Avg> {
@@ -640,47 +629,8 @@ impl SpSolution {
     );
   }
 
-  pub fn from_sp(sol: &MpSolution, sp: &TimingSubproblem) -> Result<SpSolution> {
-    let task_start_times: Map<_, _> = get_var_values(&sp.model, &sp.task_to_var)?
-      .map(|(task, time)| (task, time.round() as Time))
-      .collect();
-
-    let av_routes: Vec<_> = sol
-      .av_routes
-      .iter()
-      .cloned()
-      .map(|route: AvRoute| {
-        let mut sched: Vec<_> = std::iter::once(0) // ODepot
-          .chain(
-            route
-              .without_depots()
-              .iter()
-              .map(|t| task_start_times[&t.index()]),
-          )
-          .collect();
-        // DDepot
-        sched.push(*sched.last().unwrap() + sp.lu.data.travel_time_to_ddepot(route.theta_task()));
-        (route, sched)
-      })
-      .collect();
-
-    let pv_routes: Vec<_> = sol
-      .pv_routes
-      .iter()
-      .cloned()
-      .map(|route| {
-        let sched = route
-          .iter()
-          .map(|t| task_start_times[&t.index().into()])
-          .collect();
-        (route, sched)
-      })
-      .collect();
-
-    Ok(SpSolution {
-      av_routes,
-      pv_routes,
-    })
+  pub fn from_sp(_sol: &MpSolution, _sp: &GraphModel) -> Result<SpSolution> {
+    todo!() // FIXME: implement
   }
 
   pub fn pretty_print(&self, data: impl AsRef<Data>) {

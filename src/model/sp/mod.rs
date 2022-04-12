@@ -18,7 +18,6 @@ use sawmill::lift::LiftedCover;
 use sawmill::InferenceModel;
 
 pub mod dag;
-pub mod lp;
 
 #[derive(Debug, Clone)]
 pub enum Iis {
@@ -532,83 +531,5 @@ impl sawmill::lift::Lift<MpVar, SpConstr> for CoverLift<'_> {
         }
       }
     }
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use crate::experiment::ApvrpExp;
-  use crate::solution::iter_solution_log;
-  use crate::test::*;
-  use crate::utils::IoContext;
-  use anyhow::Context;
-  use slurm_harray::Experiment;
-  use std::path::Path;
-
-  fn compare_one(
-    lu: &Lookups,
-    sp_constraints: &Set<SpConstr>,
-    obj_tasks: SmallVec<[IdxTask; NUM_AV_UB]>,
-  ) -> Result<()> {
-    let mut dagmodel = dag::GraphModel::build(lu, sp_constraints, obj_tasks.clone());
-    let mut lpmodel = lp::TimingSubproblem::build(lu, sp_constraints, obj_tasks)?;
-
-    let dag_result = dagmodel.solve()?;
-    let lp_result = lpmodel.solve()?;
-
-    match (dag_result, lp_result) {
-      (SpStatus::Infeasible(_), SpStatus::Infeasible(_)) => {}
-      (SpStatus::Optimal(dag_obj, _), SpStatus::Optimal(lp_obj, _)) => {
-        if dag_obj != lp_obj {
-          anyhow::bail!("objective mismatch: DAG = {} != {} = LP", dag_obj, lp_obj)
-        }
-      }
-      (dag_result, lp_result) => {
-        if !lp_result.is_optimal() {
-          lpmodel.debug_infeasibility()?;
-        }
-        anyhow::bail!(
-          "status mismatch:\nDAG = {:?}\n LP = {:?}",
-          dag_result,
-          lp_result
-        )
-      }
-    }
-    Ok(())
-  }
-
-  fn compare_for_instance(index_file: impl AsRef<Path>) -> Result<()> {
-    let exp = ApvrpExp::from_index_file(&index_file).read_context(&index_file)?;
-    println!("{:?}", &exp.inputs);
-    let lu = Lookups::load_data_and_build(exp.inputs.index)?;
-    let inf_model = build_inference_graph(&lu);
-    let sol_log = index_file
-      .as_ref()
-      .with_file_name(&exp.outputs.solution_log);
-    for (k, solution) in iter_solution_log(&sol_log)?.enumerate() {
-      let sol = solution.to_solution(&lu);
-      let mp_vars: Set<_> = sol.mp_vars().collect();
-      let mut sp_constraints = inf_model.implied_constraints(&mp_vars);
-      inf_model.remove_dominated_constraints(&mut sp_constraints);
-      compare_one(&lu, &sp_constraints, sol.sp_objective_tasks())
-        .with_context(|| format!("Failed for solution #{} of {:?}", k, &sol_log))?
-    }
-    Ok(())
-  }
-
-  #[test]
-  fn compare_subproblem_methods() -> Result<()> {
-    crate::logging::init_test_logging();
-    let mut patt = crate::test::test_data_dir()
-      .join("subproblems")
-      .into_os_string()
-      .into_string()
-      .unwrap();
-    patt.push_str("/*index.json");
-    for p in glob::glob(&patt)? {
-      compare_for_instance(p?)?
-    }
-    Ok(())
   }
 }
