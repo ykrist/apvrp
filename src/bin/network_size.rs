@@ -4,7 +4,7 @@ use anyhow::Context;
 use apvrp::{Map, Avg, Lookups, Pv};
 use instances::dataset::{apvrp::DSET, IdxNameMap};
 use serde::{Deserialize, Serialize};
-use structopt::StructOpt;
+use clap::Parser;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct Output<'a> {
@@ -18,18 +18,18 @@ struct Output<'a> {
   num_taskarcs_per_av: Map<Avg, usize>,
 }
 
-#[derive(StructOpt, Debug, Clone)]
+#[derive(Parser, Debug, Clone)]
 struct Args {
   /// Dataset index indicating which instance to use
   data_index: usize,
   /// Output to file instead of STDOUT
-  #[structopt(short="o")]
+  #[clap(short='o')]
   output: Option<PathBuf>
 }
 
 
 fn main() -> anyhow::Result<()> {
-  let args = Args::from_args();
+  let args = Args::parse();
   let mut lu = Lookups::load_data_and_build(args.data_index)?;
   lu.generate_pv_routes();
   let lu = lu;

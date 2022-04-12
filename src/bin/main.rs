@@ -12,7 +12,7 @@ use apvrp::*;
 use grb::prelude::*;
 use instances::dataset::apvrp::LocSetStarts;
 use sawmill::InferenceModel;
-use slurm_harray::{handle_slurm_args, Experiment};
+use labrat::{ResourcePolicy, Experiment};
 use std::io::Write;
 use std::time::Duration;
 use tracing::{error, info};
@@ -345,9 +345,9 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
 #[tracing::instrument(level = "error")]
 fn main() -> Result<()> {
-  // FIXME index 14 shows excessive time spent in callback
+  // FIXME: index 14 shows excessive time spent in callback
   apvrp::check_commit_hash()?;
-  let exp: experiment::ApvrpExp = handle_slurm_args()?;
+  let exp = experiment::ApvrpExp::from_cl_args_with_slurm()?;
   println!("Running on data index {}", exp.inputs.index);
   exp.write_index_file()?;
   exp.write_parameter_file()?;

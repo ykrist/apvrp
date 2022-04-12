@@ -3,8 +3,8 @@ use crate::model::mp::TaskModelMaster;
 use crate::{Cost, Map, Time};
 use anyhow::{Context, Result};
 use grb::prelude::*;
+use labrat::*;
 use serde::{Deserialize, Serialize};
-use slurm_harray::*;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -13,7 +13,7 @@ use std::time::Duration;
 mod stopwatch;
 pub use stopwatch::{Deadline, Stopwatch};
 
-#[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
+#[derive(Debug, Clone, Args, Serialize, Deserialize)]
 pub struct Inputs {
   pub index: usize,
 }
@@ -24,41 +24,31 @@ impl IdStr for Inputs {
   }
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, ArgEnum, Serialize, Deserialize)]
 pub enum SpSolverKind {
   Dag,
   Lp,
 }
 
-impl_arg_enum! { SpSolverKind;
-  Dag = "dag",
-  Lp = "lp",
-}
-
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, ArgEnum, Serialize, Deserialize)]
 pub enum CycleHandling {
   Cuts,
   Sp,
 }
 
-impl_arg_enum! { CycleHandling;
-  Cuts = "cuts",
-  Sp = "sp",
-}
-
-#[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
+#[derive(Debug, Clone, Args, Serialize, Deserialize)]
 pub struct AuxParams {
   /// Log incumbent solutions which generate a subproblem
-  #[structopt(long)]
+  #[clap(long)]
   pub soln_log: bool,
 
   /// Disable trace logging to STDOUT.
-  #[structopt(long, short = "q")]
+  #[clap(long, short = 'q')]
   pub quiet: bool,
 
   /// Save the final model of the master problem (with all lazy constraints included) to
   /// an LP file.
-  #[structopt(long)]
+  #[clap(long)]
   pub model_file: bool,
 }
 
@@ -86,60 +76,65 @@ fn cl_parse_range(s: &str) -> Result<RangeInclusive<u32>> {
   }
 }
 
-#[derive(Debug, Clone, StructOpt, Serialize, Deserialize)]
+#[derive(Debug, Clone, Args, Serialize, Deserialize)]
 pub struct Params {
   /// Give a time limit in second
-  #[structopt(long, short, default_value = "7200", value_name = "seconds")]
+  #[clap(long, short, default_value = "7200", value_name = "seconds")]
   pub timelimit: u64,
 
   /// Number of threads to use
-  #[structopt(long)]
-  #[cfg_attr(debug_assertions, structopt(default_value = "1"))]
-  #[cfg_attr(not(debug_assertions), structopt(default_value = "4"))]
+  #[clap(long, default_value = "1")]
   pub cpus: u32,
 
   /// Use the supplied string as a parameter name, instead of generating one from
   /// a parameter hash.
-  #[structopt(long)]
+  #[clap(long)]
   pub param_name: Option<String>,
 
   /// Subproblem algorithm
-  #[structopt(long, default_value="dag", possible_values=SpSolverKind::choices())]
+  #[clap(long, default_value="dag", arg_enum)]
   pub sp: SpSolverKind,
 
   /// Minimum and maximum infeasible chain length at which to add Active Vehicle Fork cuts.
   /// Set MIN > MAX to disable.
-  #[structopt(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
+  #[clap(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub av_fork_cuts: std::ops::RangeInclusive<u32>,
 
   /// Minimum and maximum infeasible chain length at which to add Active Vehicle Tournament cuts.
   /// Set MIN > MAX to disable.
-  #[structopt(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
+  #[clap(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub av_tournament_cuts: std::ops::RangeInclusive<u32>,
 
   /// Minimum and maximum infeasible chain length at which to add Passive Vehicle Fork cuts.
   /// Set MIN > MAX to disable.
-  #[structopt(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
+  #[clap(long, default_value="1,0", value_name="MIN,MAX", parse(try_from_str = cl_parse_range))]
   pub pv_fork_cuts: std::ops::RangeInclusive<u32>,
 
   /// Enable End-time optimality cuts
-  #[structopt(long)]
+  #[clap(long)]
   pub endtime_cuts: bool,
 
   /// Try to separate cycle cuts without solving the subproblem
-  #[structopt(long)]
+  #[clap(long)]
   pub cycle_cuts: bool,
 
   /// Solve a preliminary MIP first, which discards the Active Vehicle Travel-Time component of the objective.
-  #[structopt(long)]
+  #[clap(long)]
   pub two_phase: bool,
 
-  #[structopt(long, parse(try_from_str=parse_gurobi_param), require_delimiter=true)]
+  /// Pass a comma-separated list of gurobi parameters to set, eg: "PARAM1=VALUE1,PARAM2=VALUE2".
+  /// Only integer and float-valued parameters are supported.
+  #[clap(
+    long, 
+    parse(try_from_str=parse_gurobi_param),
+    use_value_delimiter(true),
+    require_value_delimiter(true)
+  )]
   pub gurobi: Vec<(String, GurobiParamVal)>,
 
   /// Enable Passive Vehicle Column Generation: generate all Passive Vehicle routes a-priori and use route-based variables
   /// to eliminate the need for Passive Vehicle feasibility cuts.
-  #[structopt(long)]
+  #[clap(long)]
   pub pvcg: bool,
 }
 
@@ -192,23 +187,9 @@ pub struct Outputs {
   pub info: String,
 }
 
-impl NewOutput for Outputs {
-  type Inputs = Inputs;
-  type Params = Params;
-  type AuxParams = AuxParams;
-
-  fn new(inputs: &Inputs, _params: &Params, _aux_params: &AuxParams) -> Self {
-    Outputs {
-      solution_log: format!("{}-sollog.ndjson", inputs.index).into(),
-      trace_log: format!("{}-log.msgpack", inputs.index).into(),
-      info: format!("{}-info.json", inputs.index).into(),
-    }
-  }
-}
-
 #[derive(Debug, Clone)]
 pub struct ApvrpExp {
-  profile: SlurmProfile,
+  profile: Profile,
   pub inputs: Inputs,
   pub parameters: Params,
   pub aux_params: AuxParams,
@@ -221,23 +202,60 @@ fn scale_time(t: u64, s: f64) -> u64 {
 }
 
 impl Experiment for ApvrpExp {
-  impl_experiment_helper! {
-    profile;
-    inputs: Inputs;
-    parameters: Params;
-    outputs: Outputs;
-    aux_params: AuxParams;
+  type Input = Inputs;
+  type Parameters = Params;
+  type Config = AuxParams;
+  type Output = Outputs;
+
+  fn input(&self) -> &Self::Input {
+    &self.inputs
   }
 
-  fn log_root_dir() -> PathBuf {
+  fn output(&self) -> &Self::Output {
+    &self.outputs
+  }
+
+  fn parameter(&self) -> &Self::Parameters {
+    &self.parameters
+  }
+
+  fn new(
+    profile: Profile,
+    config: Self::Config,
+    inputs: Self::Input,
+    parameters: Self::Parameters,
+    outputs: Self::Output,
+  ) -> Self {
+    ApvrpExp {
+      profile,
+      inputs,
+      parameters,
+      outputs,
+      aux_params: config,
+    }
+  }
+
+  fn new_output(
+    inputs: &Self::Input,
+    _params: &Self::Parameters,
+    _config: &Self::Config,
+  ) -> Self::Output {
+    Outputs {
+      solution_log: format!("{}-sollog.ndjson", inputs.index).into(),
+      trace_log: format!("{}-log.msgpack", inputs.index).into(),
+      info: format!("{}-info.json", inputs.index).into(),
+    }
+  }
+
+  fn root_dir() -> PathBuf {
     concat!(env!("CARGO_MANIFEST_DIR"), "/logs/").into()
   }
 
   fn post_parse(
-    prof: SlurmProfile,
-    _inputs: &Self::Inputs,
+    prof: Profile,
+    _inputs: &Self::Input,
     params: &mut Self::Parameters,
-    aux_params: &mut Self::AuxParameters,
+    aux_params: &mut Self::Config,
   ) {
     params.gurobi.sort_by_cached_key(|(s, _)| s.clone());
     if params.param_name.is_none() {
@@ -245,11 +263,11 @@ impl Experiment for ApvrpExp {
     }
     let s = params.param_name.as_mut().unwrap();
     match prof {
-      SlurmProfile::Test => {
+      Profile::Test => {
         s.push_str("-test");
         params.timelimit = scale_time(params.timelimit, 1.5);
       }
-      SlurmProfile::Trace => {
+      Profile::Trace => {
         s.push_str("-trace");
         aux_params.soln_log = true;
         params.timelimit = scale_time(params.timelimit, 2.5);
@@ -299,8 +317,8 @@ impl ResourcePolicy for ApvrpExp {
 
   fn script(&self) -> String {
     let script = match self.profile {
-      SlurmProfile::Test | SlurmProfile::Default => include_str!("slurm_job.sh"),
-      SlurmProfile::Trace => include_str!("slurm_job_trace.sh"),
+      Profile::Test | Profile::Default => include_str!("slurm_job.sh"),
+      Profile::Trace => include_str!("slurm_job_trace.sh"),
     };
     script.to_string()
   }
@@ -313,7 +331,7 @@ impl ResourcePolicy for ApvrpExp {
     use std::fmt::Write;
     let mut s = self.parameters.param_name.clone();
     if let Some(s) = s.as_mut() {
-      if self.profile == SlurmProfile::Trace {
+      if self.profile == Profile::Trace {
         write!(s, "-{}", self.inputs.index).unwrap();
       }
     }
@@ -322,12 +340,12 @@ impl ResourcePolicy for ApvrpExp {
 
   fn constraint(&self) -> Option<String> {
     match self.profile {
-      SlurmProfile::Default => Some("R640".to_string()),
+      Profile::Default => Some("R640".to_string()),
       _ => None,
     }
   }
 
-  fn exclude(&self) -> Option<String> { 
+  fn exclude(&self) -> Option<String> {
     // the nerve of this fucking node
     Some("smp-7-3".into())
   }

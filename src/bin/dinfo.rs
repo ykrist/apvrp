@@ -3,14 +3,14 @@ use apvrp::*;
 use prettytable::*;
 use serde::Serialize;
 use std::fmt::Display;
-use structopt::StructOpt;
+use clap::{Parser};
 
-#[derive(StructOpt)]
+#[derive(Parser)]
 struct Args {
   /// JSON output
-  #[structopt(long)]
+  #[clap(long)]
   json: bool,
-  #[structopt(flatten)]
+  #[clap(flatten)]
   input: Inputs,
 }
 
@@ -52,7 +52,7 @@ impl Output {
 }
 
 fn main() -> anyhow::Result<()> {
-  let args: Args = Args::from_args();
+  let args = Args::parse();
   let data = instances::dataset::apvrp::DSET.load_instance(args.input.index)?;
   let output = Output {
     index: args.input.index,

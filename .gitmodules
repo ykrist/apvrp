@@ -5,7 +5,7 @@
 	path = pkgs/daggylp
 	url = git@bitbucket.org:yannik_rist/daggylp.git
 [submodule "slurm-utils-rs"]
-	path = pkgs/slurm-utils-rs
+	path = pkgs/labrat
 	url = git@bitbucket.org:yannik_rist/slurm-utils-rs.git
 [submodule "gvdot"]
 	path = pkgs/gvdot

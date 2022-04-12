@@ -8,9 +8,9 @@ use daggylp::{viz::GraphViz, InfKind};
 use fnv::FnvHashSet;
 use indicatif::ProgressIterator;
 use serde::{Deserialize, Serialize};
-use slurm_harray::Experiment;
+use labrat::Experiment;
 use std::path::{Path, PathBuf};
-use structopt::*;
+use clap::Parser;
 
 type InferenceModel = sawmill::InferenceModel<MpVar, SpConstr>;
 
@@ -87,18 +87,17 @@ fn parse_selection_range(s: &str) -> anyhow::Result<SologSelection> {
   Ok(selection)
 }
 
-#[derive(Debug, Clone, StructOpt)]
+#[derive(Debug, Clone, Parser)]
 struct Args {
-  #[structopt(parse(from_os_str))]
   index_file: PathBuf,
   /// Select subproblems from the solution log.  Assumes a '*-sollog.ndjson' file
-  #[structopt(short="s", long="select", parse(try_from_str=parse_selection_range))]
+  #[clap(short='s', long="select", parse(try_from_str=parse_selection_range))]
   selection: Vec<SologSelection>,
   /// View the final solution.  Assumes a '*-soln.json' file
-  #[structopt(short = "f", long = "final")]
+  #[structopt(short = 'f', long = "final")]
   final_soln: bool,
   /// View the final solution.  Asssumes a '*-true_soln.json' file
-  #[structopt(short = "t", long = "true")]
+  #[structopt(short = 't', long = "true")]
   true_soln: bool,
 }
 
@@ -290,7 +289,7 @@ fn main() -> anyhow::Result<()> {
     None
   };
   let _g = apvrp::logging::init_logging(logfile, true)?;
-  let args: Args = Args::from_args();
+  let args = Args::parse();
   let exp = experiment::ApvrpExp::from_index_file(&args.index_file)?;
 
   let lookups = Lookups::load_data_and_build(exp.inputs.index)?;

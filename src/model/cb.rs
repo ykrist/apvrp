@@ -14,7 +14,7 @@ use experiment::{CycleHandling, Params, SpSolverKind};
 use grb::constr::IneqExpr;
 use sawmill::InferenceModel;
 use serde::{Deserialize, Serialize};
-use slurm_harray::Experiment;
+use labrat::Experiment;
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 use std::env::var;
