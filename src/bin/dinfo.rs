@@ -1,9 +1,9 @@
 use apvrp::experiment::Inputs;
 use apvrp::*;
+use clap::Parser;
 use prettytable::*;
 use serde::Serialize;
 use std::fmt::Display;
-use clap::{Parser};
 
 #[derive(Parser)]
 struct Args {

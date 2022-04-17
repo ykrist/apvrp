@@ -36,6 +36,86 @@ pub enum CycleHandling {
   Sp,
 }
 
+mod resource_limits {
+  use std::collections::HashMap;
+  use std::path::Path;
+  use std::sync::RwLock;
+  use lazy_static::lazy_static;
+  use super::*;
+  pub type Profile = Map<usize, f64>;
+
+  struct Cache(RwLock<HashMap<String, Profile>>);
+
+  impl Cache {
+    fn new() -> Self {
+      Cache(RwLock::new(HashMap::new()))
+    }
+
+    fn get<'a>(&'a self, key: &str) -> Option<Profile> {
+      self.0.read().unwrap().get(key).cloned()
+    }
+
+    fn insert<'a>(&'a self, key: String, value: Map<usize, f64>) {
+      self.0.write().unwrap().insert(key.to_string(), value);
+    }
+  }
+
+  lazy_static! {
+    static ref MEMORY_PROFILES: Cache = Cache::new();
+    static ref TIME_PROFILES: Cache = Cache::new();
+  }
+
+  fn choices(dir: impl AsRef<Path>) -> String {
+    let mut s = String::new();
+    for f in std::fs::read_dir(dir).unwrap() {
+      let p = f.unwrap().path();
+      s.push_str(p.file_stem().unwrap().to_str().unwrap());
+      s.push(' ');
+    }
+    s
+  }
+
+  fn find_profile(profile: &str, dir: &str, cache: &Cache) -> Result<Profile> {
+    if let Some(m) = cache.get(profile) {
+      return Ok(m);
+    }
+
+    let dir = Path::new(dir);
+    let mut path = dir.join(profile);
+    path.set_extension("json");
+
+    if !path.exists() {
+      anyhow::bail!(
+        "profile `{}` doesn't exist (valid choices: {})",
+        profile,
+        choices(dir)
+      )
+    }
+
+    let m: Profile = crate::utils::read_json(path)?;
+    cache.insert(profile.to_string(), m.clone());
+    Ok(m)
+  }
+
+  #[inline(always)]
+  pub fn time(profile: &str) -> Result<Profile> {
+    find_profile(
+      profile,
+      concat!(env!("CARGO_MANIFEST_DIR"), "/data/slurm/time"),
+      &TIME_PROFILES,
+    )
+  }
+
+  #[inline(always)]
+  pub fn memory(profile: &str) -> Result<Profile> {
+    find_profile(
+      profile,
+      concat!(env!("CARGO_MANIFEST_DIR"), "/data/slurm/memory"),
+      &MEMORY_PROFILES,
+    )
+  }
+}
+
 #[derive(Debug, Clone, Args, Serialize, Deserialize)]
 pub struct AuxParams {
   /// Log incumbent solutions which generate a subproblem
@@ -50,6 +130,14 @@ pub struct AuxParams {
   /// an LP file.
   #[clap(long)]
   pub model_file: bool,
+
+  /// Slurm memory profile (filenames in `data/slurm/memory` without `.json` extension)) to use
+  #[clap(long="slurm-mem", default_value="default", value_name="PROFILE", parse(try_from_str=resource_limits::memory))]
+  pub slurm_memory: resource_limits::Profile,
+
+  /// Slurm time limit profile (filenames in `data/slurm/time` without `.json` extension)) to use
+  #[clap(long="slurm-time", default_value="default", value_name="PROFILE", parse(try_from_str=resource_limits::time))]
+  pub slurm_time: resource_limits::Profile,
 }
 
 impl Default for AuxParams {
@@ -58,6 +146,8 @@ impl Default for AuxParams {
       soln_log: false,
       quiet: false,
       model_file: false,
+      slurm_memory: resource_limits::memory("default").unwrap(),
+      slurm_time: resource_limits::time("default").unwrap(),
     }
   }
 }
@@ -92,7 +182,7 @@ pub struct Params {
   pub param_name: Option<String>,
 
   /// Subproblem algorithm
-  #[clap(long, default_value="dag", arg_enum)]
+  #[clap(long, default_value = "dag", arg_enum)]
   pub sp: SpSolverKind,
 
   /// Minimum and maximum infeasible chain length at which to add Active Vehicle Fork cuts.
@@ -125,7 +215,7 @@ pub struct Params {
   /// Pass a comma-separated list of gurobi parameters to set, eg: "PARAM1=VALUE1,PARAM2=VALUE2".
   /// Only integer and float-valued parameters are supported.
   #[clap(
-    long, 
+    long,
     parse(try_from_str=parse_gurobi_param),
     use_value_delimiter(true),
     require_value_delimiter(true)
@@ -294,25 +384,18 @@ mod instance_groups {
 
 impl ResourcePolicy for ApvrpExp {
   fn time(&self) -> Duration {
-    use instance_groups::*;
     let i = self.inputs.index;
-    let timelimit = if A_TW25.contains(&i) || A_TW50.contains(&i) || A_TW100.contains(&i) {
-      Duration::from_secs(300)
-    } else {
-      Duration::from_secs(self.parameters.timelimit + 300)
-    };
-    timelimit
+    let mut limit = self.parameters.timelimit + 300;
+    if let Some(&seconds) = self.aux_params.slurm_time.get(&i) {
+      limit = limit.min(seconds.round() as u64);
+    }
+    Duration::from_secs(limit)
   }
 
   fn memory(&self) -> MemoryAmount {
-    use instance_groups::*;
-    let i = self.inputs.index;
-
-    if A_TW25.contains(&i) || A_TW50.contains(&i) || A_TW100.contains(&i) || A_TW200.contains(&i) {
-      return MemoryAmount::from_gb(4);
-    }
-
-    MemoryAmount::from_gb(8)
+    self.aux_params.slurm_memory.get(&self.inputs.index)
+      .map(|&m| MemoryAmount::from_bytes(m.round() as usize))
+      .unwrap_or(MemoryAmount::from_gb(8))
   }
 
   fn script(&self) -> String {

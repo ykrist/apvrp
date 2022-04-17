@@ -4,13 +4,13 @@ use apvrp::model::sp::{dag::GraphModel, SpConstr, SpStatus, Subproblem};
 use apvrp::solution::{MpSolution, SerialisableSolution};
 use apvrp::IoContext;
 use apvrp::*;
+use clap::Parser;
 use daggylp::{viz::GraphViz, InfKind};
 use fnv::FnvHashSet;
 use indicatif::ProgressIterator;
-use serde::{Deserialize, Serialize};
 use labrat::Experiment;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use clap::Parser;
 
 type InferenceModel = sawmill::InferenceModel<MpVar, SpConstr>;
 

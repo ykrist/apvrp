@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use apvrp::{Map, Avg, Lookups, Pv};
+use apvrp::{Avg, Lookups, Map, Pv};
+use clap::Parser;
 use instances::dataset::{apvrp::DSET, IdxNameMap};
 use serde::{Deserialize, Serialize};
-use clap::Parser;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct Output<'a> {
-  instance: &'a str, 
+  instance: &'a str,
   index: usize,
   num_tasks: usize,
   num_task_per_pv: Map<Pv, usize>,
@@ -23,23 +23,22 @@ struct Args {
   /// Dataset index indicating which instance to use
   data_index: usize,
   /// Output to file instead of STDOUT
-  #[clap(short='o')]
-  output: Option<PathBuf>
+  #[clap(short = 'o')]
+  output: Option<PathBuf>,
 }
-
 
 fn main() -> anyhow::Result<()> {
   let args = Args::parse();
   let mut lu = Lookups::load_data_and_build(args.data_index)?;
   lu.generate_pv_routes();
   let lu = lu;
-  
-  let mut num_task_per_pv : Map<_, _> = lu.sets.pvs().map(|p| (p,0)).collect();
+
+  let mut num_task_per_pv: Map<_, _> = lu.sets.pvs().map(|p| (p, 0)).collect();
   let mut num_routes_per_pv = num_task_per_pv.clone();
-  let mut num_taskarcs_per_av : Map<_, _> = lu.sets.av_groups().map(|a| (a,0)).collect();
+  let mut num_taskarcs_per_av: Map<_, _> = lu.sets.av_groups().map(|a| (a, 0)).collect();
 
   for (pv, _) in lu.tasks.pvtask.keys() {
-      *num_task_per_pv.get_mut(pv).unwrap() += 1;
+    *num_task_per_pv.get_mut(pv).unwrap() += 1;
   }
 
   for r in &lu.pv_routes.as_ref().unwrap().by_id {
@@ -49,7 +48,7 @@ fn main() -> anyhow::Result<()> {
   for (av, _, _) in lu.iter_yvars() {
     *num_taskarcs_per_av.get_mut(&av).unwrap() += 1;
   }
-  
+
   let output = Output {
     index: args.data_index,
     instance: &*DSET.index_to_name(args.data_index)?,
