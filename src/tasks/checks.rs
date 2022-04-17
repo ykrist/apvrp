@@ -171,7 +171,6 @@ pub fn cover(t1: &PvTask, t2: &PvTask) -> bool {
         && t1.start.req() != t2.end.req()
         && t1.end.req() != t2.end.req()
         && (t1.p == t2.p || t1.end.req() != t2.start.req())
-    }
-    // ---------------------------------------------------- end auto-generated code
+    } // ---------------------------------------------------- end auto-generated code
   }
 }

@@ -1,14 +1,13 @@
 #![feature(exit_status_error)]
 
+use anyhow::Result;
 use std::path::Path;
 use std::process::Command;
-use anyhow::Result;
 
-const DATA_ROOT : &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/uncompressed");
-
+const DATA_ROOT: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/uncompressed");
 
 fn extract_data() -> Result<()> {
-  let root = Path::new(DATA_ROOT);  
+  let root = Path::new(DATA_ROOT);
   let mut subdir = root.join("placeholder");
   let mut tarfile = root.parent().unwrap().join("placeholder");
 
@@ -17,7 +16,7 @@ fn extract_data() -> Result<()> {
     if !subdir.exists() {
       tarfile.set_file_name(name);
       tarfile.set_extension("tar.xz");
-      
+
       Command::new("tar")
         .arg("-C")
         .arg(root)

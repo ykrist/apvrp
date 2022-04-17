@@ -10,7 +10,9 @@ use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Debug, Write};
+use std::fs::File;
 use std::hash::{BuildHasher, Hash};
+use std::io::BufReader;
 use std::iter::{FromIterator, Peekable};
 use std::ops::AddAssign;
 use std::path::{Path, PathBuf};
@@ -237,6 +239,20 @@ where
 }
 
 impl<T: Serialize + DeserializeOwned> Json for T {}
+
+pub fn read_json<T, P>(path: P) -> anyhow::Result<T>
+where
+  T: DeserializeOwned,
+  P: AsRef<Path> + Debug,
+{
+  let file = File::open(&path)
+    .map(BufReader::new)
+    .with_context(|| format!("unable to read {:?}", &path))?;
+
+  let x: T = serde_json::from_reader(file)?;
+
+  Ok(x)
+}
 
 #[cfg(test)]
 pub(crate) fn test_data_file(filename: &str) -> PathBuf {
