@@ -434,11 +434,11 @@ impl<'a> Cb<'a> {
 
   #[inline]
   fn av_chain_fork_lhs(&self, chain: &[Task]) -> Expr {
-    // TODO: could forward-tournament here.
-    chain
-      .iter()
-      .tuple_windows()
-      .flat_map(move |(&t1, &t2)| self.mp_vars.y_sum_av(self.lu, t1, t2))
+    // We do forward-tournamenting here.
+    chain.iter()
+      .enumerate()
+      .flat_map(|(k, t)| chain[(k+1)..].iter().map(move |t2| (t, t2)))
+      .flat_map(move |(&t1, &t2)| self.mp_vars.y_sum_av_possibly_empty(self.lu, t1, t2))
       .grb_sum()
   }
 
