@@ -1,7 +1,7 @@
 {
   "timelimit": 7200,
-  "cpus": 1,
-  "param_name": "2p_vie_pcvg",
+  "cpus": 4,
+  "param_name": "2p_vie_pvcg",
   "sp": "Dag",
   "av_fork_cuts": {
     "start": 0,
