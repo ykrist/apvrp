@@ -1,6 +1,6 @@
 {
   "timelimit": 7200,
-  "cpus": 1,
+  "cpus": 4,
   "param_name": "extra_av_cuts",
   "sp": "Dag",
   "av_fork_cuts": {
