@@ -1,4 +1,5 @@
 #!/bin/bash
 
 source ~/.profile
-unset RUST_LOG
+export RUST_LOG=debug
+
