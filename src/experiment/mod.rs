@@ -400,7 +400,8 @@ impl ResourcePolicy for ApvrpExp {
 
   fn script(&self) -> String {
     let script = match self.profile {
-      Profile::Test | Profile::Default => include_str!("slurm_job.sh"),
+      Profile::Default => include_str!("slurm_job.sh"),
+      Profile::Test => include_str!("slurm_job_test.sh"),
       Profile::Trace => include_str!("slurm_job_trace.sh"),
     };
     script.to_string()
