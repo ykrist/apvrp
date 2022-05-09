@@ -29,7 +29,8 @@ instances = {path = "./pkgs/instances"}
 labrat = { path = "./pkgs/labrat" }
 daggylp = { path = "./pkgs/daggylp", features = ["arrayvec", "viz-extra"] }
 sawmill = { path = "./pkgs/sawmill" }
-
+slurm-tools = { git = "https://github.com/ykrist/slurm-tools.git" }
+posix-cli-utils = { git = "https://github.com/ykrist/posix-cli-utils" }
 
 [build-dependencies]
 anyhow = { version = "^1.0", features = ["backtrace"] }
@@ -37,3 +38,7 @@ anyhow = { version = "^1.0", features = ["backtrace"] }
 [[bin]]
 name = "apvrp"
 path = "src/bin/main.rs"
+
+[[bin]]
+name = "update-sres"
+path = "src/bin/update_slurm_resources.rs"
