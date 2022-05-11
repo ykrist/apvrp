@@ -1,0 +1,23 @@
+{
+  "timelimit": 7200,
+  "cpus": 4,
+  "param_name": "dropout_cycle",
+  "sp": "Dag",
+  "av_fork_cuts": {
+    "start": 0,
+    "end": 3
+  },
+  "av_tournament_cuts": {
+    "start": 4,
+    "end": 7
+  },
+  "pv_fork_cuts": {
+    "start": 0,
+    "end": 2
+  },
+  "endtime_cuts": false,
+  "cycle_cuts": false,
+  "two_phase": true,
+  "gurobi": [],
+  "pvcg": true
+}
