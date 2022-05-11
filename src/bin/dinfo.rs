@@ -15,14 +15,15 @@ struct Args {
 }
 
 #[derive(Serialize, Clone, Debug)]
-struct Output {
+struct Output<'a> {
+  name: &'a str,
   index: usize,
   n_req: RawReq,
   n_pv: RawPv,
   n_av: RawAv,
 }
 
-impl Output {
+impl<'a> Output<'a> {
   pub fn to_table(&self) -> Table {
     fn display_val(val: impl Display) -> String {
       format!("{}", val)
@@ -30,6 +31,7 @@ impl Output {
 
     let mut table = table!(
       ["Index", display_val(self.index)],
+      ["Instance", display_val(self.name)],
       ["Requests", display_val(self.n_req)],
       ["Passive vehicles", display_val(self.n_pv)],
       ["Active vehicles", display_val(self.n_av)]
@@ -55,6 +57,7 @@ fn main() -> anyhow::Result<()> {
   let args = Args::parse();
   let data = instances::dataset::apvrp::DSET.load_instance(args.input.index)?;
   let output = Output {
+    name: &*data.id,
     index: args.input.index,
     n_req: data.n_req,
     n_pv: data.n_passive,
