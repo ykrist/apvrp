@@ -29,6 +29,14 @@ pub enum SpSolverKind {
   Dag,
 }
 
+#[derive(Debug, Copy, Clone, ArgEnum, Serialize, Deserialize)]
+pub enum OptimalityCutKind {
+  #[clap(name="mrs-path")]
+  MrsPath,
+  #[clap(name="cp")]
+  CriticalPath,
+}
+
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum CycleHandling {
@@ -181,9 +189,9 @@ pub struct Params {
   #[clap(long)]
   pub param_name: Option<String>,
 
-  /// Subproblem algorithm
-  #[clap(long, default_value = "dag", arg_enum)]
-  pub sp: SpSolverKind,
+  /// What kind of optimality cuts to use
+  #[clap(long, default_value_t=OptimalityCutKind::CriticalPath, arg_enum)]
+  pub opt_cut: OptimalityCutKind,
 
   /// Minimum and maximum infeasible chain length at which to add Active Vehicle Fork cuts.
   /// Set MIN > MAX to disable.

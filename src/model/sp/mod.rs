@@ -2,6 +2,7 @@ use self::dag::GraphModel;
 
 use super::mp::MpVar;
 use super::{cb, cb::CutType};
+use crate::experiment::OptimalityCutKind;
 use crate::logging::*;
 use crate::model::{edge_constr_kind, EdgeConstrKind};
 use crate::solution::MpSolution;
@@ -19,8 +20,8 @@ use sawmill::cover::Cover;
 use sawmill::lift::LiftedCover;
 use sawmill::InferenceModel;
 
-pub mod dag;
 pub mod cuts;
+pub mod dag;
 
 #[derive(Debug, Clone)]
 pub enum Iis {
@@ -61,6 +62,15 @@ impl SpConstr {
       _ => panic!("unwrap on a non-Delta constraint"),
     }
   }
+
+  /// For a constraint o.t.f `x + d <= y`, returns `Some(d)`, otherwise `None`.
+  #[inline(always)]
+  pub fn d(self) -> Option<Time> {
+    match self {
+      SpConstr::Delta(_, _, d) => Some(d),
+      _ => None,
+    }
+  }
 }
 
 #[derive(Debug)]
@@ -85,210 +95,206 @@ pub struct MrsPath {
   edge_constraints: Vec<SpConstr>,
 }
 
-pub struct CriticalPathVisitor<'a, 'b> {
-  theta_estimate: &'a Map<(Avg, Task), Time>,
-  task_to_avg: Map<IdxTask, Avg>,
-  active_mp_vars: &'a Set<MpVar>,
-  cb: &'a mut cb::Cb<'b>,
-}
+// pub struct CriticalPathVisitor<'a, 'b> {
+//   theta_estimate: &'a Map<(Avg, Task), Time>,
+//   task_to_avg: Map<IdxTask, Avg>,
+//   active_mp_vars: &'a Set<MpVar>,
+//   cb: &'a mut cb::Cb<'b>,
+// }
 
-impl<'a, 'b> CriticalPathVisitor<'a, 'b> {
-  fn new(
-    cb: &'a mut cb::Cb<'b>,
-    active_mp_vars: &'a Set<MpVar>,
-    theta: &'a Map<(Avg, Task), Time>,
-  ) -> Self {
-    let task_to_avg = active_mp_vars
-      .iter()
-      .filter_map(|v| match v {
-        MpVar::Y(a, t, td) if td == &IdxTask::DDepot => Some((*t, *a)),
-        _ => None,
-      })
-      .collect();
-    trace!(?theta);
-    CriticalPathVisitor {
-      theta_estimate: theta,
-      active_mp_vars,
-      task_to_avg,
-      cb,
-    }
-  }
+// impl<'a, 'b> CriticalPathVisitor<'a, 'b> {
+//   fn new(
+//     cb: &'a mut cb::Cb<'b>,
+//     active_mp_vars: &'a Set<MpVar>,
+//     theta: &'a Map<(Avg, Task), Time>,
+//   ) -> Self {
+//     let task_to_avg = active_mp_vars
+//       .iter()
+//       .filter_map(|v| match v {
+//         MpVar::Y(a, t, td) if td == &IdxTask::DDepot => Some((*t, *a)),
+//         _ => None,
+//       })
+//       .collect();
+//     trace!(?theta);
+//     CriticalPathVisitor {
+//       theta_estimate: theta,
+//       active_mp_vars,
+//       task_to_avg,
+//       cb,
+//     }
+//   }
 
-  #[inline(always)]
-  fn optimality_cut_required(&self, t: Task, true_obj: Time) -> bool {
-    let a = self.active_vehicle(&t.index());
-    trace!(a = a.0, ?t, true_obj);
-    self.theta_estimate.get(&(a, t)).copied().unwrap_or(0) < true_obj
-  }
+//   #[inline(always)]
+//   fn optimality_cut_required(&self, t: Task, true_obj: Time) -> bool {
+//     let a = self.active_vehicle(&t.index());
+//     trace!(a = a.0, ?t, true_obj);
+//     self.theta_estimate.get(&(a, t)).copied().unwrap_or(0) < true_obj
+//   }
 
-  #[inline(always)]
-  pub fn active_vehicle(&self, t: &IdxTask) -> Avg {
-    trace!(?t);
-    self.task_to_avg[t]
-  }
+//   #[inline(always)]
+//   pub fn active_vehicle(&self, t: &IdxTask) -> Avg {
+//     trace!(?t);
+//     self.task_to_avg[t]
+//   }
 
-  pub fn add_optimality_cut(&mut self, mrs_path: MrsPath) {
-    #[inline]
-    fn subpath_objective(lbs: &[Time], delta: &[Time]) -> Time {
-      debug_assert_eq!(lbs.len(), delta.len());
-      let mut time = lbs[0] + delta[0];
-      for (&lb, &d) in lbs[1..].iter().zip(&delta[1..]) {
-        time = std::cmp::max(time, lb) + d;
-      }
-      time
-    }
+//   pub fn add_optimality_cut(&mut self, mrs_path: MrsPath) {
+//     #[inline]
+//     fn subpath_objective(lbs: &[Time], delta: &[Time]) -> Time {
+//       debug_assert_eq!(lbs.len(), delta.len());
+//       let mut time = lbs[0] + delta[0];
+//       for (&lb, &d) in lbs[1..].iter().zip(&delta[1..]) {
+//         time = std::cmp::max(time, lb) + d;
+//       }
+//       time
+//     }
 
-    debug_assert_eq!(mrs_path.tasks.len(), mrs_path.edge_constraints.len());
+//     debug_assert_eq!(mrs_path.tasks.len(), mrs_path.edge_constraints.len());
 
-    let last_task = *mrs_path.tasks.last().unwrap();
-    let a = self.active_vehicle(&last_task.index());
+//     let last_task = *mrs_path.tasks.last().unwrap();
+//     let a = self.active_vehicle(&last_task.index());
 
-    let implied_lbs: Vec<_> = mrs_path.tasks.iter().map(|t| t.t_release).collect();
-    let edge_weights: Vec<_> = mrs_path
-      .edge_constraints
-      .iter()
-      .map(|c| {
-        let (_, _, d) = c.unwrap_delta();
-        d
-      })
-      .collect();
+//     let implied_lbs: Vec<_> = mrs_path.tasks.iter().map(|t| t.t_release).collect();
+//     let edge_weights: Vec<_> = mrs_path
+//       .edge_constraints
+//       .iter()
+//       .map(|c| {
+//         let (_, _, d) = c.unwrap_delta();
+//         d
+//       })
+//       .collect();
 
-    let mut constraint_set: Set<_> = mrs_path.edge_constraints.iter().copied().collect();
-    constraint_set.insert(SpConstr::Lb(
-      mrs_path.tasks[0].index(),
-      mrs_path.lower_bound,
-    ));
+//     let mut constraint_set: Set<_> = mrs_path.edge_constraints.iter().copied().collect();
+//     constraint_set.insert(SpConstr::Lb(
+//       mrs_path.tasks[0].index(),
+//       mrs_path.lower_bound,
+//     ));
 
-    let cover = self
-      .cb
-      .inference_model
-      .cover(self.active_mp_vars, &constraint_set);
+//     let cover = self
+//       .cb
+//       .inference_model
+//       .cover(self.active_mp_vars, &constraint_set);
 
-    let mut lhs = Expr::default();
+//     let mut lhs = Expr::default();
 
-    for (var, constrs) in cover {
-      let grb_var = self.cb.mp_vars.get_grb_var(self.cb.lu, &var);
-      if constrs.contains(mrs_path.edge_constraints.last().unwrap()) {
-        lhs += grb_var * mrs_path.objective;
-        continue;
-      }
-      let start_idx = match constrs
-        .iter()
-        .filter_map(|c| mrs_path.edge_constraints.iter().rposition(|x| c == x))
-        .max()
-      {
-        None => {
-          debug_assert_eq!(constrs.len(), 1);
-          0
-        }
-        Some(k) => k + 1,
-      };
+//     for (var, constrs) in cover {
+//       let grb_var = self.cb.mp_vars.get_grb_var(self.cb.lu, &var);
+//       if constrs.contains(mrs_path.edge_constraints.last().unwrap()) {
+//         lhs += grb_var * mrs_path.objective;
+//         continue;
+//       }
+//       let start_idx = match constrs
+//         .iter()
+//         .filter_map(|c| mrs_path.edge_constraints.iter().rposition(|x| c == x))
+//         .max()
+//       {
+//         None => {
+//           debug_assert_eq!(constrs.len(), 1);
+//           0
+//         }
+//         Some(k) => k + 1,
+//       };
 
-      let new_obj = subpath_objective(&implied_lbs[start_idx..], &edge_weights[start_idx..]);
-      let coeff = new_obj - mrs_path.objective;
-      trace!(?var, ?constrs, new_obj, coeff);
-      debug_assert!(new_obj <= mrs_path.objective);
-      lhs += (1 - grb_var) * coeff;
-    }
+//       let new_obj = subpath_objective(&implied_lbs[start_idx..], &edge_weights[start_idx..]);
+//       let coeff = new_obj - mrs_path.objective;
+//       trace!(?var, ?constrs, new_obj, coeff);
+//       debug_assert!(new_obj <= mrs_path.objective);
+//       lhs += (1 - grb_var) * coeff;
+//     }
 
-    self.cb.enqueue_cut(
-      c!(lhs <= self.cb.mp_vars.theta[&(a, last_task)]),
-      CutType::LpOpt,
-    );
-  }
-}
+//     self.cb.enqueue_cut(
+//       c!(lhs <= self.cb.mp_vars.theta[&(a, last_task)]),
+//       CutType::LpOpt,
+//     );
+//   }
+// }
 
 pub trait GenIisCut {
   fn cut(cb: &mut cb::Cb, iis: &Iis) -> Result<()>;
 }
 
 pub trait GenOptimalityCut {
-  fn cut(cb: &mut cb::Cb, subproblem: &mut GraphModel, constr: &Set<SpConstr>) -> Result<()>;
+  fn cut(
+    cb: &mut cb::Cb,
+    subproblem: &mut GraphModel,
+    active_mp_vars: &Set<MpVar>,
+    theta_est: &ThetaVals,
+  );
 }
 
 
-pub trait Subproblem<'a>: Sized {
-  // Solve the subproblem and return status
-  fn solve(&mut self) -> Result<SpStatus>;
+pub fn solve_subproblem_and_add_cuts(
+  sp: &mut GraphModel,
+  cb: &mut cb::Cb,
+  active_mpvars: &Set<MpVar>,
+  theta: &Map<(Avg, Task), Time>,
+  estimate: Time,
+  opt_cut: OptimalityCutKind,
+) -> Result<Option<Map<(Avg, Task), Time>>> {
+  // TODO: stop early once the IIS covers start getting too big
+  //  Can use cb.params, will need find the size of the cover before constructing the constraint
 
-  fn calculate_theta(&mut self) -> Result<ThetaVals>;
+  let mut iis_covers = Vec::new();
+  let mut n_constraint_counts = SmallVec::<[u8; 15]>::new();
+  let mut subproblems_solved = 0u32;
 
-  // Find and remove one or more IIS when infeasible
-  fn extract_and_remove_iis(&mut self) -> Result<Iis>;
+  let sp_obj = loop {
+    let _s = debug_span!("solve_loop", iter = subproblems_solved).entered();
+    subproblems_solved += 1;
 
-  // Find the MRS paths
-  fn visit_critical_paths(&mut self, visitor: &mut CriticalPathVisitor) -> Result<()>;
-
-  fn solve_subproblem_and_add_cuts(
-    &mut self,
-    cb: &mut cb::Cb,
-    active_mpvars: &Set<MpVar>,
-    theta: &Map<(Avg, Task), Time>,
-    estimate: Time,
-  ) -> Result<Option<Map<(Avg, Task), Time>>> {
-    // TODO: stop early once the IIS covers start getting too big
-    //  Can use cb.params, will need find the size of the cover before constructing the constraint
-
-    let mut iis_covers = Vec::new();
-    let mut n_constraint_counts = SmallVec::<[u8; 15]>::new();
-    let mut subproblems_solved = 0u32;
-
-    let sp_obj = loop {
-      let _s = debug_span!("solve_loop", iter = subproblems_solved).entered();
-      subproblems_solved += 1;
-
-      match self.solve()? {
-        SpStatus::Optimal(sp_obj) => {
-          break sp_obj;
-        }
-
-        SpStatus::Infeasible => {
-          let iis = self.extract_and_remove_iis()?;
-          trace!(?iis);
-          #[cfg(debug_assertions)]
-          {
-            cb.infeasibilities.lp_iis(&iis);
-          }
-          n_constraint_counts.push(iis.constraints().len() as u8);
-          let cover = cb.inference_model.cover(active_mpvars, iis.constraints());
-          iis_covers.push((cover, iis.cut_type()));
-        }
+    match sp.solve() {
+      SpStatus::Optimal(sp_obj) => {
+        break sp_obj;
       }
-    };
 
-    // Feasibility cuts
-    cb.stats.subproblem_cover_sizes(
-      iis_covers
-        .iter()
-        .zip(n_constraint_counts)
-        .map(|((c, _), n_constraints)| (c.len() as u8, n_constraints)),
-    );
-
-    iis_covers.sort_unstable_by_key(|(c, _)| c.len());
-
-    for (cover, cut_ty) in iis_covers {
-      let lifted_cover = cb
-        .inference_model
-        .lift_cover(&cover, CoverLift { lookups: cb.lu });
-      cb.enqueue_cut(build_cut_from_lifted_cover(&cb, &lifted_cover), cut_ty);
+      SpStatus::Infeasible => {
+        let iis = sp.extract_and_remove_iis();
+        trace!(?iis);
+        #[cfg(debug_assertions)]
+        {
+          cb.infeasibilities.lp_iis(&iis);
+        }
+        n_constraint_counts.push(iis.constraints().len() as u8);
+        let cover = cb.inference_model.cover(active_mpvars, iis.constraints());
+        iis_covers.push((cover, iis.cut_type()));
+      }
     }
+  };
 
-    // Optimality cuts
-    if estimate < sp_obj {
-      trace!(?active_mpvars);
-      let mut visitor = CriticalPathVisitor::new(cb, active_mpvars, theta);
-      self.visit_critical_paths(&mut visitor)?;
-    }
+  // Feasibility cuts
+  cb.stats.subproblem_cover_sizes(
+    iis_covers
+      .iter()
+      .zip(n_constraint_counts)
+      .map(|((c, _), n_constraints)| (c.len() as u8, n_constraints)),
+  );
 
-    if subproblems_solved == 1 {
-      let new_theta = self.calculate_theta()?;
-      trace!(?new_theta, sp_obj);
-      Ok(Some(new_theta))
-    } else {
-      Ok(None)
+  iis_covers.sort_unstable_by_key(|(c, _)| c.len());
+
+  for (cover, cut_ty) in iis_covers {
+    let lifted_cover = cb
+      .inference_model
+      .lift_cover(&cover, CoverLift { lookups: cb.lu });
+    cb.enqueue_cut(build_cut_from_lifted_cover(&cb, &lifted_cover), cut_ty);
+  }
+
+  // Optimality cuts
+  if estimate < sp_obj {
+    trace!(?active_mpvars);
+    match opt_cut {
+      OptimalityCutKind::CriticalPath => cuts::CriticalPathCut::cut(cb, sp, active_mpvars, theta),
+      OptimalityCutKind::MrsPath => cuts::MrsPathCut::cut(cb, sp, active_mpvars, theta),
     }
   }
+
+  if subproblems_solved == 1 {
+    let new_theta = sp.calculate_theta()?;
+    trace!(?new_theta, sp_obj);
+    Ok(Some(new_theta))
+  } else {
+    Ok(None)
+  }
 }
+
 
 pub fn build_cut_from_lifted_cover(
   cb: &cb::Cb,
@@ -371,8 +377,8 @@ impl Lookups {
 
 #[instrument(level = "info", skip(lu))]
 pub fn build_inference_graph(lu: &Lookups) -> sawmill::InferenceModel<MpVar, SpConstr> {
-  // TODO move this to a new submodule called "inference"
-  // TODO use the non-Pv task deadlines/release times
+  // TODO: move this to a new submodule called "inference"
+  // TODO: use the non-Pv task deadlines/release times
   let mut model = sawmill::InferenceModel::<MpVar, SpConstr>::build();
 
   for pv_task in lu.tasks.pvtask_to_task.keys() {

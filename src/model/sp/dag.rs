@@ -94,9 +94,116 @@ impl<'a> GraphModel<'a> {
       .collect();
     Iis::Cycle(iis)
   }
-}
 
-impl<'a> GraphModel<'a> {
+  pub fn pv_task_to_var(&self, t: &PvTask)  -> Option<Var> {
+    self.task_to_var.get(&self.lu.tasks.pvtask_to_task[t].index()).copied()
+  }
+
+  #[tracing::instrument(level = "trace", skip(lu, s))]
+  pub fn build_from_solution(
+    lu: &'a Lookups,
+    s: &MpSolution,
+  ) -> Self {
+    assert!(s.pv_cycles.is_empty() && s.av_cycles.is_empty());
+
+    let obj_tasks = s.sp_objective_tasks();
+    trace!(?obj_tasks);
+
+    let mut ubs: Map<IdxTask, Time> = Map::default();
+    let mut lbs: Map<IdxTask, Time> = Map::default();
+    let mut model = Graph::new();
+    let mut var_to_task = map_with_capacity(ubs.len());
+    let mut task_to_var = map_with_capacity(ubs.len());
+
+    for route in s.pv_routes.iter() {
+      for t in route.0.iter() {
+        let av_t = lu.tasks.pvtask_to_task[t].index();
+        let lb = t.subproblem_lb();
+        let ub = t.subproblem_ub();
+
+        let none = lbs.insert(av_t, lb);
+        debug_assert_eq!(none, None);
+
+        let none = ubs.insert(av_t, ub);
+        debug_assert_eq!(none, None);
+
+        let obj = if obj_tasks.contains_key(&av_t) { 1 } else { 0 };
+        trace!(?t, lb, ub, obj, "add var");
+        
+        let var = model.add_var(obj, lb as Weight, ub as Weight);
+        
+        var_to_task.insert(var, av_t);
+        let none = task_to_var.insert(av_t, var);
+        debug_assert_eq!(none, None);
+      }
+    }
+    let mut edge_constraints: Map<(Var, Var), SpConstr> = Map::default();
+    let mut model = model.finish_nodes();
+
+    for route in &s.pv_routes {
+      for (k, t) in route.0.iter().enumerate() {
+        if t.ty == TaskType::Request {
+          let av_t = lu.tasks.pvtask_to_task[t].index();
+          let prev = &route.0[k-1];
+          let prev_t = lu.tasks.pvtask_to_task[prev].index();
+          let next = &route.0[k+1];
+          let next_t = lu.tasks.pvtask_to_task[next].index();
+
+          debug_assert_matches!(prev.ty, TaskType::Transfer | TaskType::Start);
+          debug_assert_matches!(next.ty, TaskType::Transfer | TaskType::End);
+          
+          let var = task_to_var[&av_t];
+          let prev_var = task_to_var[&prev_t];
+          let next_var = task_to_var[&next_t];
+
+          let d = prev.tt + lu.data.srv_time[&prev.end];
+          model.add_constr(prev_var, d as Weight, var);
+          let none = edge_constraints.insert((prev_var, var), SpConstr::Delta(prev_t, av_t, d));
+          debug_assert_eq!(none, None);
+        
+          let d = t.tt + lu.data.srv_time[&t.end];
+          model.add_constr(var, d as Weight, next_var);
+          let none = edge_constraints.insert((var, next_var), SpConstr::Delta(av_t, next_t, d));
+          debug_assert_eq!(none, None);
+
+          model.add_constr(prev_var, (prev.tt + lu.data.srv_time[&prev.end]) as Weight, var)
+        }
+      }
+    }
+
+    for route in &s.av_routes {
+      for (t1, t2) in route.iter_edges() {
+        if t1.is_depot() || t2.is_depot() {
+          continue
+        }
+        let v1 = task_to_var[&t1.index()];
+        let v2 = task_to_var[&t2.index()];
+        
+        if edge_constraints.contains_key(&(v1, v2)) {
+          continue;
+        }
+
+        let d = lu.av_task_travel_time(t1, t2);
+        edge_constraints.insert((v1, v2), SpConstr::Delta(t1.index(), t2.index(), d));
+        model.add_constr(v1, d as Weight, v2);
+      }
+    }
+
+
+    GraphModel {
+      model: model.finish(),
+      var_to_task,
+      task_to_var,
+      edge_constraints,
+      lbs,
+      ubs,
+      obj_tasks,
+      lu,
+      inf_kind: None,
+    }
+  }
+
+
   #[tracing::instrument(level = "trace", skip(lu, sp_constraints, obj_tasks))]
   pub fn build(
     lu: &'a Lookups,
@@ -163,14 +270,56 @@ impl<'a> GraphModel<'a> {
   }
 
   pub fn solve_for_obj(&mut self) -> Result<Time> {
-    match self.solve()? {
+    match self.solve() {
       SpStatus::Optimal(obj) => Ok(obj),
       SpStatus::Infeasible => anyhow::bail!("subproblem was infeasible"),
     }
   }
 
-  pub fn get_iis(&self, inf_kind: InfKind, graph_iis: &daggylp::Iis) -> Iis {
-    match inf_kind {
+
+  // Solve the subproblem and return status
+  pub fn solve(&mut self) -> SpStatus {
+    match self.model.solve() {
+      SolveStatus::Infeasible(kind) => {
+        self.inf_kind = Some(kind);
+        SpStatus::Infeasible
+      }
+      SolveStatus::Optimal => {
+        let obj = self.model.compute_obj().unwrap() as Time
+          + self
+            .obj_tasks
+            .keys()
+            .map(|t| {
+              self
+                .lu
+                .data
+                .travel_time_to_ddepot(&self.lu.tasks.by_index[t])
+            })
+            .sum::<Time>();
+        SpStatus::Optimal(obj)
+      }
+    }
+  }
+
+  pub(super) fn calculate_theta(&mut self) -> Result<ThetaVals> {
+    let theta = self
+      .obj_tasks
+      .iter()
+      .map(|(t, &a)| {
+        let task = self.lu.tasks.by_index[t];
+        let val = self.model.get_solution(&self.task_to_var[t])? as Time
+          + self.lu.data.travel_time_to_ddepot(&task);
+        Ok(((a, task), val))
+      })
+      .collect_ok()?;
+    Ok(theta)
+  }
+
+  // Find and remove one or more IIS when infeasible
+  pub fn extract_and_remove_iis(&mut self) -> Iis {
+    let graph_iis = self.model.compute_iis(true);
+    self.model.remove_iis(&graph_iis);
+    match self.inf_kind.expect("expected infeasible model") {
       InfKind::Path => {
         let (lb_var, ub_var) = graph_iis.bounds().unwrap();
         let lb_t = self.var_to_task[&lb_var];
@@ -190,97 +339,7 @@ impl<'a> GraphModel<'a> {
         Iis::Path(iis)
       }
 
-      InfKind::Cycle => self.try_reduce_cycle_iis(graph_iis),
+      InfKind::Cycle => self.try_reduce_cycle_iis(&graph_iis),
     }
-  }
-}
-
-impl<'a> Subproblem<'a> for GraphModel<'a> {
-  // Solve the subproblem and return status
-  fn solve(&mut self) -> Result<SpStatus> {
-    let s = match self.model.solve() {
-      SolveStatus::Infeasible(kind) => {
-        self.inf_kind = Some(kind);
-        SpStatus::Infeasible
-      }
-      SolveStatus::Optimal => {
-        let obj = self.model.compute_obj()? as Time
-          + self
-            .obj_tasks
-            .keys()
-            .map(|t| {
-              self
-                .lu
-                .data
-                .travel_time_to_ddepot(&self.lu.tasks.by_index[t])
-            })
-            .sum::<Time>();
-        SpStatus::Optimal(obj)
-      }
-    };
-    Ok(s)
-  }
-
-  fn calculate_theta(&mut self) -> Result<ThetaVals> {
-    let theta = self
-      .obj_tasks
-      .iter()
-      .map(|(t, &a)| {
-        let task = self.lu.tasks.by_index[t];
-        let val = self.model.get_solution(&self.task_to_var[t])? as Time
-          + self.lu.data.travel_time_to_ddepot(&task);
-        Ok(((a, task), val))
-      })
-      .collect_ok()?;
-    Ok(theta)
-  }
-
-  // Find and remove one or more IIS when infeasible
-  fn extract_and_remove_iis(&mut self) -> Result<Iis> {
-    let graph_iis = self.model.compute_iis(true);
-    self.model.remove_iis(&graph_iis);
-    Ok(self.get_iis(
-      self.inf_kind.expect("expected infeasible model"),
-      &graph_iis,
-    ))
-  }
-
-  // Find the critical paths which need an optimality cut
-  fn visit_critical_paths(&mut self, visitor: &mut CriticalPathVisitor) -> Result<()> {
-    let lu = self.lu;
-    let var_to_task = &self.var_to_task;
-    let edge_constraints = &self.edge_constraints;
-    let lbs = &self.lbs;
-
-    self.model.visit_critical_paths(|model, p| {
-      let last_var = p.last().unwrap();
-      let last_task = lu.tasks.by_index[&var_to_task[last_var]];
-      let mrs_objective =
-        model.get_solution(last_var).unwrap() as Time + lu.data.travel_time_to_ddepot(&last_task);
-      let tasks: Vec<_> = p
-        .iter()
-        .map(|v| lu.tasks.by_index[&var_to_task[v]])
-        .collect();
-      trace!(?tasks, mrs_objective);
-      if visitor.optimality_cut_required(last_task, mrs_objective) {
-        let mut edge_constraints: Vec<_> = iter_pairs(p)
-          .map(|(&v1, &v2)| edge_constraints[&(v1, v2)])
-          .collect();
-        let last_task = tasks.last().unwrap();
-        edge_constraints.push(SpConstr::Delta(
-          last_task.index(),
-          IdxTask::DDepot,
-          lu.data.travel_time_to_ddepot(last_task),
-        ));
-
-        visitor.add_optimality_cut(MrsPath {
-          objective: mrs_objective,
-          lower_bound: lbs[&tasks[0].index()],
-          tasks,
-          edge_constraints,
-        });
-      }
-    })?;
-    Ok(())
   }
 }

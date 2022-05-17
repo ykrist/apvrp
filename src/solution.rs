@@ -1,7 +1,6 @@
 use crate::graph::DecomposableDigraph;
 use crate::model::mp::MpVar;
 use crate::model::mp::{MpVars, ObjWeights, TaskModelMaster};
-use crate::model::sp::Subproblem;
 use crate::model::sp::dag::GraphModel;
 use crate::utils::IoContext;
 use crate::*;
@@ -21,7 +20,7 @@ mod route {
 
   /// A Passive vehicle route, beginning at a PV origin depot and ending at a PV destination depot
   #[derive(Debug, Clone, Eq, PartialEq)]
-  pub struct PvRoute(Vec<PvTask>);
+  pub struct PvRoute(pub Vec<PvTask>);
 
   impl PvRoute {
     pub fn new(path: Vec<PvTask>) -> Self {
@@ -86,8 +85,8 @@ mod route {
   /// A AV vehicle route, beginning at the AV origin depot and ending the AV destination depot
   #[derive(Debug, Clone, Eq, PartialEq)]
   pub struct AvRoute {
-    tasks: Vec<Task>,
-    av: Avg,
+    pub tasks: Vec<Task>,
+    pub av: Avg,
   }
 
   impl AvRoute {
@@ -485,6 +484,8 @@ impl MpSolution {
       }))
   }
 
+
+
   pub fn to_serialisable(&self) -> SerialisableSolution {
     SerialisableSolution {
       objective: self.objective,
@@ -511,12 +512,13 @@ impl MpSolution {
     })
   }
 
-  pub fn solve_for_times(&self, _lu: &Lookups) -> Result<SpSolution> {
+  pub fn solve_for_times(&self, lu: &Lookups) -> Result<SpSolution> {
     if !(self.pv_cycles.is_empty() && self.av_cycles.is_empty()) {
       anyhow::bail!("Cycles in solution")
     }
-
-    todo!() // FIXME: implement
+    let mut sp = GraphModel::build_from_solution(lu, self);
+    sp.solve();
+    SpSolution::from_sp(self, &sp)
   }
 
   pub fn sp_objective_tasks(&self) -> Map<IdxTask, Avg> {
@@ -629,8 +631,40 @@ impl SpSolution {
     );
   }
 
-  pub fn from_sp(_sol: &MpSolution, _sp: &GraphModel) -> Result<SpSolution> {
-    todo!() // FIXME: implement
+  pub fn from_sp(sol: &MpSolution, sp: &GraphModel) -> Result<SpSolution> {
+    if let Some(i) = sp.inf_kind {
+      anyhow::bail!("subproblem is infeasible ({:?})", i);
+    }
+
+    let mut pv_routes = Vec::with_capacity(sol.pv_routes.len());
+    let mut av_routes = Vec::with_capacity(sol.av_routes.len());
+
+    for route in &sol.pv_routes {
+      let mut schedule = Vec::with_capacity(route.0.len());
+      for &task in &route.0 {
+        let var = sp.pv_task_to_var(&task).unwrap();
+        schedule.push(sp.model.get_solution(&var)? as Time);
+      }
+      pv_routes.push((route.clone(), schedule));
+    }
+
+    for route in &sol.av_routes {
+      let mut schedule = Vec::with_capacity(route.tasks.len());
+
+      for (k, &task) in route.tasks.iter().enumerate() {
+        let time = match task.ty {
+          TaskType::ODepot => 0,
+          TaskType::DDepot => {
+            schedule[k-1] - sp.lu.data.travel_time_to_ddepot(&route.tasks[k-1])
+          },
+          _ => sp.model.get_solution(&sp.task_to_var[&task.index()])? as Time
+        };
+        schedule.push(time);
+      }
+      av_routes.push((route.clone(), schedule));
+    }
+
+    Ok(SpSolution{ av_routes, pv_routes })
   }
 
   pub fn pretty_print(&self, data: impl AsRef<Data>) {

@@ -435,9 +435,10 @@ impl<'a> Cb<'a> {
   #[inline]
   fn av_chain_fork_lhs(&self, chain: &[Task]) -> Expr {
     // We do forward-tournamenting here.
-    chain.iter()
+    chain
+      .iter()
       .enumerate()
-      .flat_map(|(k, t)| chain[(k+1)..].iter().map(move |t2| (t, t2)))
+      .flat_map(|(k, t)| chain[(k + 1)..].iter().map(move |t2| (t, t2)))
       .flat_map(move |(&t1, &t2)| self.mp_vars.y_sum_av_possibly_empty(self.lu, t1, t2))
       .grb_sum()
   }
@@ -942,12 +943,10 @@ impl<'a> Callback for Cb<'a> {
             debug!(?theta);
             let estimate: Time = theta.values().sum();
             tracing::span::Span::current().record("estimate", &estimate);
-            let correct_theta = match self.params.sp {
-              SpSolverKind::Dag => {
-                let mut sp =
-                  dag::GraphModel::build(self.lu, &active_sp_cons, sol.sp_objective_tasks());
-                sp.solve_subproblem_and_add_cuts(self, &active_vars, &theta, estimate)?
-              }
+            let correct_theta = {
+              let mut sp =
+                dag::GraphModel::build(self.lu, &active_sp_cons, sol.sp_objective_tasks());
+              solve_subproblem_and_add_cuts(&mut sp, self, &active_vars, &theta, estimate, self.params.opt_cut)?
             };
 
             if let Some(theta) = correct_theta {

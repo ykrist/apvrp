@@ -1,6 +1,6 @@
 use apvrp::logging::*;
 use apvrp::model::mp::MpVar;
-use apvrp::model::sp::{dag::GraphModel, SpConstr, SpStatus, Subproblem};
+use apvrp::model::sp::{dag::GraphModel, SpConstr, SpStatus};
 use apvrp::solution::{MpSolution, SerialisableSolution};
 use apvrp::IoContext;
 use apvrp::*;
@@ -223,13 +223,13 @@ fn process_solution(
   for _ in 0.. {
     graph.model.write_debug(out.get_filepath(".txt"))?;
 
-    let (status, iis) = match graph.solve()? {
+    let (status, iis) = match graph.solve() {
       SpStatus::Optimal(_) => {
         graph.model.compute_mrs()?;
         (Status::Optimal, None)
       }
       SpStatus::Infeasible => {
-        let iis = graph.extract_and_remove_iis()?;
+        let iis = graph.extract_and_remove_iis();
         let status = match graph.inf_kind.unwrap() {
           InfKind::Path => Status::PathIis,
           InfKind::Cycle => Status::Cycle,
