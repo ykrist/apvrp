@@ -270,10 +270,6 @@ impl Lookups {
           .map(move |(&t1, &t2)| (av, t1, t2))
       })
   }
-
-  // pub fn iter_xvars<'a>(&'a self) -> impl Iterator<Item=MpVar> + 'a {
-  //   todo!()
-  // }
 }
 
 impl AsRef<Data> for Lookups {
@@ -335,7 +331,6 @@ pub mod colgen;
 pub mod experiment;
 pub mod schedule;
 pub mod test;
-// TODO tests for encode and decode.
 
 pub const COMMIT_HASH: &'static str = env!("COMMIT_HASH");
 

@@ -114,7 +114,6 @@ impl GenOptimalityCut for MrsTreeCut {
       )
       .entered();
       if obj_tree_actual <= obj_tree_est as Time {
-        // FIXME: somehow this is wrong
         trace!("skip slack optimality cut");
         continue;
       }
