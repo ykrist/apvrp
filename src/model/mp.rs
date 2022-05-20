@@ -550,7 +550,7 @@ impl TaskModelMaster {
   }
 
   pub fn obj_bound(&self) -> Result<Cost> {
-    Ok(self.model.get_attr(attr::ObjBound)?.ceil() as Cost)
+    Ok(self.model.get_attr(attr::ObjBound)?.round() as Cost)
   }
 
   pub fn build(lu: &Lookups) -> Result<Self> {

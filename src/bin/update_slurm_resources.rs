@@ -1,9 +1,6 @@
-use std::{
-  io::{Read},
-  path::PathBuf,
-};
 use posix_cli_utils::*;
-use slurm_tools::{read_json, resource_limit, Job, IndexMap, JobId};
+use slurm_tools::{read_json, resource_limit, IndexMap, Job, JobId};
+use std::{io::Read, path::PathBuf};
 
 type Limits = IndexMap<usize, u64>;
 
@@ -36,7 +33,7 @@ impl ResourceKind {
         resource_limit::ResourceKind::Memory,
         MEMORY_LEVELS.to_vec(),
         margin,
-      ),      
+      ),
       ResourceKind::Time => resource_limit::Levels::new(
         resource_limit::ResourceKind::Time,
         TIME_LEVELS.to_vec(),
@@ -44,7 +41,6 @@ impl ResourceKind {
       ),
     }
   }
-
 
   fn profile_path(&self, name: &str) -> Result<PathBuf> {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -84,8 +80,8 @@ struct ClArgs {
   /// Input Sacct log file (cleaned), defaults to STDIN
   input: Option<PathBuf>,
   /// Dry-run (print changes only, do not save)
-  #[clap(short='n')]
-  dry_run: bool
+  #[clap(short = 'n')]
+  dry_run: bool,
 }
 
 fn run(i: impl Read, opts: &ClArgs) -> Result<()> {
@@ -97,42 +93,55 @@ fn run(i: impl Read, opts: &ClArgs) -> Result<()> {
   for job in serde_json::Deserializer::from_reader(i).into_iter::<Job>() {
     let job = job?;
     let (_, index) = match job.id {
-      JobId::Array { job_id, array_index } => (job_id, array_index as usize),
-      other => bail!("expected array jobs only: {:?}", other)
+      JobId::Array {
+        job_id,
+        array_index,
+      } => (job_id, array_index as usize),
+      other => bail!("expected array jobs only: {:?}", other),
     };
-    
+
     let new_limit = resource_limit::get_new_limit(&job, &levels).map(|l| l.round() as u64);
     match opts.resource {
       ResourceKind::Memory => match new_limit {
-        Ok(new) => { 
+        Ok(new) => {
           let l = limits.get_mut(&index).unwrap();
           *l = new.max(*l);
-         },
-        Err(e) => return Err(e).context(format!("error assigning limit to job with ID {:?}", job.id)),
+        }
+        Err(e) => {
+          return Err(e).context(format!("error assigning limit to job with ID {:?}", job.id))
+        }
       },
       ResourceKind::Time => match new_limit {
-        Ok(new) => { 
+        Ok(new) => {
           limits.entry(index).and_modify(|l| *l = new.max(*l));
-        },
+        }
         Err(resource_limit::AssignResourceError::ExceedsLimits { .. }) => {
           limits.remove(&index);
         }
-        Err(e) => return Err(e).context(format!("error assigning limit to job with ID {:?}", job.id)),
+        Err(e) => {
+          return Err(e).context(format!("error assigning limit to job with ID {:?}", job.id))
+        }
       },
     }
   }
 
   if opts.dry_run {
     for (i, old) in &old_limits {
-      match limits.get(i)  {
+      match limits.get(i) {
         None => println!("{}: removed", i),
-        Some(new) => if old != new {
-          if opts.resource == ResourceKind::Memory {
-            println!("{}: change {} GiB to {} GiB", i, *old as f64 / GiB, *new as f64 / GiB);
-          } else {
-            println!("{}: change {} to {}", i, old, new);
+        Some(new) => {
+          if old != new {
+            if opts.resource == ResourceKind::Memory {
+              println!(
+                "{}: change {} GiB to {} GiB",
+                i,
+                *old as f64 / GiB,
+                *new as f64 / GiB
+              );
+            } else {
+              println!("{}: change {} to {}", i, old, new);
+            }
           }
-          
         }
       }
     }

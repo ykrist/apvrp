@@ -659,6 +659,18 @@ impl Tasks {
       .iter()
       .flat_map(|(&t, pts)| pts.iter().map(move |&pt| (pt, t)))
       .collect();
+
+    #[cfg(debug_assertions)]
+    {
+      for t in task_to_pvtasks.keys() {
+        trace!(
+          ?t,
+          time_to_ddepot = data.travel_time_to_ddepot(t),
+          "create task"
+        )
+      }
+    }
+
     let pvtask: Map<_, _> = pvtask_to_task
       .iter()
       .map(|(&pt, &t)| ((pt.p, t), pt))
@@ -856,6 +868,7 @@ mod tests {
     }
   }
 
+  #[cfg(feature = "expensive-tests")]
   #[test]
   fn task_deadlines() -> anyhow::Result<()> {
     crate::logging::init_test_logging();

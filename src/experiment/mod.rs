@@ -31,12 +31,15 @@ pub enum SpSolverKind {
 
 #[derive(Debug, Copy, Clone, ArgEnum, Serialize, Deserialize)]
 pub enum OptimalityCutKind {
-  #[clap(name="mrs-path")]
+  #[clap(name = "mrs")]
+  Mrs,
+  #[clap(name = "mrs-tree")]
+  MrsTree,
+  #[clap(name = "mrs-path")]
   MrsPath,
-  #[clap(name="cp")]
+  #[clap(name = "cp")]
   CriticalPath,
 }
-
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum CycleHandling {
@@ -45,11 +48,11 @@ pub enum CycleHandling {
 }
 
 mod resource_limits {
+  use super::*;
+  use lazy_static::lazy_static;
   use std::collections::HashMap;
   use std::path::Path;
   use std::sync::RwLock;
-  use lazy_static::lazy_static;
-  use super::*;
   pub type Profile = Map<usize, f64>;
 
   struct Cache(RwLock<HashMap<String, Profile>>);
@@ -375,6 +378,24 @@ impl Experiment for ApvrpExp {
   }
 }
 
+impl ApvrpExp {
+  pub fn test(index: usize, params: Params) -> Self {
+    let outputs = Outputs {
+      trace_log: Default::default(),
+      solution_log: Default::default(),
+      info: Default::default(),
+    };
+
+    ApvrpExp {
+      profile: Profile::Test,
+      inputs: Inputs { index },
+      parameters: params,
+      aux_params: Default::default(),
+      outputs,
+    }
+  }
+}
+
 mod instance_groups {
   use std::ops::Range;
   pub const A_TW25: Range<usize> = 0..20;
@@ -401,7 +422,10 @@ impl ResourcePolicy for ApvrpExp {
   }
 
   fn memory(&self) -> MemoryAmount {
-    self.aux_params.slurm_memory.get(&self.inputs.index)
+    self
+      .aux_params
+      .slurm_memory
+      .get(&self.inputs.index)
       .map(|&m| MemoryAmount::from_bytes(m.round() as usize))
       .unwrap_or(MemoryAmount::from_gb(8))
   }

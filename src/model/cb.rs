@@ -946,7 +946,14 @@ impl<'a> Callback for Cb<'a> {
             let correct_theta = {
               let mut sp =
                 dag::GraphModel::build(self.lu, &active_sp_cons, sol.sp_objective_tasks());
-              solve_subproblem_and_add_cuts(&mut sp, self, &active_vars, &theta, estimate, self.params.opt_cut)?
+              solve_subproblem_and_add_cuts(
+                &mut sp,
+                self,
+                &active_vars,
+                &theta,
+                estimate,
+                self.params.opt_cut,
+              )?
             };
 
             if let Some(theta) = correct_theta {

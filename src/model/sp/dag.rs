@@ -95,15 +95,15 @@ impl<'a> GraphModel<'a> {
     Iis::Cycle(iis)
   }
 
-  pub fn pv_task_to_var(&self, t: &PvTask)  -> Option<Var> {
-    self.task_to_var.get(&self.lu.tasks.pvtask_to_task[t].index()).copied()
+  pub fn pv_task_to_var(&self, t: &PvTask) -> Option<Var> {
+    self
+      .task_to_var
+      .get(&self.lu.tasks.pvtask_to_task[t].index())
+      .copied()
   }
 
   #[tracing::instrument(level = "trace", skip(lu, s))]
-  pub fn build_from_solution(
-    lu: &'a Lookups,
-    s: &MpSolution,
-  ) -> Self {
+  pub fn build_from_solution(lu: &'a Lookups, s: &MpSolution) -> Self {
     assert!(s.pv_cycles.is_empty() && s.av_cycles.is_empty());
 
     let obj_tasks = s.sp_objective_tasks();
@@ -129,9 +129,9 @@ impl<'a> GraphModel<'a> {
 
         let obj = if obj_tasks.contains_key(&av_t) { 1 } else { 0 };
         trace!(?t, lb, ub, obj, "add var");
-        
+
         let var = model.add_var(obj, lb as Weight, ub as Weight);
-        
+
         var_to_task.insert(var, av_t);
         let none = task_to_var.insert(av_t, var);
         debug_assert_eq!(none, None);
@@ -144,14 +144,14 @@ impl<'a> GraphModel<'a> {
       for (k, t) in route.0.iter().enumerate() {
         if t.ty == TaskType::Request {
           let av_t = lu.tasks.pvtask_to_task[t].index();
-          let prev = &route.0[k-1];
+          let prev = &route.0[k - 1];
           let prev_t = lu.tasks.pvtask_to_task[prev].index();
-          let next = &route.0[k+1];
+          let next = &route.0[k + 1];
           let next_t = lu.tasks.pvtask_to_task[next].index();
 
           debug_assert_matches!(prev.ty, TaskType::Transfer | TaskType::Start);
           debug_assert_matches!(next.ty, TaskType::Transfer | TaskType::End);
-          
+
           let var = task_to_var[&av_t];
           let prev_var = task_to_var[&prev_t];
           let next_var = task_to_var[&next_t];
@@ -160,13 +160,11 @@ impl<'a> GraphModel<'a> {
           model.add_constr(prev_var, d as Weight, var);
           let none = edge_constraints.insert((prev_var, var), SpConstr::Delta(prev_t, av_t, d));
           debug_assert_eq!(none, None);
-        
+
           let d = t.tt + lu.data.srv_time[&t.end];
           model.add_constr(var, d as Weight, next_var);
           let none = edge_constraints.insert((var, next_var), SpConstr::Delta(av_t, next_t, d));
           debug_assert_eq!(none, None);
-
-          model.add_constr(prev_var, (prev.tt + lu.data.srv_time[&prev.end]) as Weight, var)
         }
       }
     }
@@ -174,11 +172,11 @@ impl<'a> GraphModel<'a> {
     for route in &s.av_routes {
       for (t1, t2) in route.iter_edges() {
         if t1.is_depot() || t2.is_depot() {
-          continue
+          continue;
         }
         let v1 = task_to_var[&t1.index()];
         let v2 = task_to_var[&t2.index()];
-        
+
         if edge_constraints.contains_key(&(v1, v2)) {
           continue;
         }
@@ -188,7 +186,6 @@ impl<'a> GraphModel<'a> {
         model.add_constr(v1, d as Weight, v2);
       }
     }
-
 
     GraphModel {
       model: model.finish(),
@@ -202,7 +199,6 @@ impl<'a> GraphModel<'a> {
       inf_kind: None,
     }
   }
-
 
   #[tracing::instrument(level = "trace", skip(lu, sp_constraints, obj_tasks))]
   pub fn build(
@@ -275,7 +271,6 @@ impl<'a> GraphModel<'a> {
       SpStatus::Infeasible => anyhow::bail!("subproblem was infeasible"),
     }
   }
-
 
   // Solve the subproblem and return status
   pub fn solve(&mut self) -> SpStatus {

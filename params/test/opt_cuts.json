@@ -1,0 +1,28 @@
+{
+  "timelimit": 0,
+  "cpus": 1,
+  "param_name": "test",
+  "opt_cut": "CriticalPath",
+  "av_fork_cuts": {
+    "start": 0,
+    "end": 3
+  },
+  "av_tournament_cuts": {
+    "start": 1,
+    "end": 0
+  },
+  "pv_fork_cuts": {
+    "start": 0,
+    "end": 2
+  },
+  "endtime_cuts": false,
+  "cycle_cuts": true,
+  "two_phase": true,
+  "gurobi": [    [
+    "Seed",
+    {
+      "Int": 1337
+    }
+  ]],
+  "pvcg": true
+}

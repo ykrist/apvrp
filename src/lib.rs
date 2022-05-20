@@ -1,6 +1,7 @@
 #![feature(generic_associated_types)]
 #![feature(fn_traits)]
 #![feature(assert_matches)]
+#![feature(custom_test_frameworks)]
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![deny(unused_must_use)]
@@ -9,6 +10,7 @@ pub use anyhow::Result;
 pub use fnv::{FnvHashMap as Map, FnvHashSet as Set};
 
 pub(crate) use std::assert_matches::*;
+use std::path::Path;
 
 use itertools::Itertools;
 use std::fmt;
@@ -354,4 +356,16 @@ pub fn check_commit_hash() -> Result<()> {
   }
   tracing::info!(git_commit=%hash);
   Ok(())
+}
+
+pub fn dataset_group(name: &str) -> Result<Vec<usize>> {
+  let mut path = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/group");
+  path.push(name);
+  let contents = std::fs::read_to_string(&path).read_context(&path)?;
+  let mut inds = Vec::new();
+  for l in contents.lines() {
+    let i: usize = l.parse()?;
+    inds.push(i);
+  }
+  Ok(inds)
 }

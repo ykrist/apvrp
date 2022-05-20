@@ -221,7 +221,6 @@ pub trait GenOptimalityCut {
   );
 }
 
-
 pub fn solve_subproblem_and_add_cuts(
   sp: &mut GraphModel,
   cb: &mut cb::Cb,
@@ -279,11 +278,19 @@ pub fn solve_subproblem_and_add_cuts(
 
   // Optimality cuts
   if estimate < sp_obj {
-    trace!(?active_mpvars);
     match opt_cut {
       OptimalityCutKind::CriticalPath => cuts::CriticalPathCut::cut(cb, sp, active_mpvars, theta),
       OptimalityCutKind::MrsPath => cuts::MrsPathCut::cut(cb, sp, active_mpvars, theta),
+      OptimalityCutKind::MrsTree => cuts::MrsTreeCut::cut(cb, sp, active_mpvars, theta),
+      OptimalityCutKind::Mrs => cuts::MrsCut::cut(cb, sp, active_mpvars, theta),
     }
+  } else {
+    trace!(
+      subproblems_solved,
+      estimate,
+      sp_obj,
+      "no optimality cut needed"
+    );
   }
 
   if subproblems_solved == 1 {
@@ -294,7 +301,6 @@ pub fn solve_subproblem_and_add_cuts(
     Ok(None)
   }
 }
-
 
 pub fn build_cut_from_lifted_cover(
   cb: &cb::Cb,

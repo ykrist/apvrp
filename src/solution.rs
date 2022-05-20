@@ -484,8 +484,6 @@ impl MpSolution {
       }))
   }
 
-
-
   pub fn to_serialisable(&self) -> SerialisableSolution {
     SerialisableSolution {
       objective: self.objective,
@@ -586,6 +584,7 @@ impl SerialisableSolution {
 
 #[derive(Clone, Debug)]
 pub struct SpSolution {
+  pub objective: Option<Cost>,
   pub av_routes: Vec<(AvRoute, Vec<Time>)>,
   pub pv_routes: Vec<(PvRoute, Vec<Time>)>,
 }
@@ -593,7 +592,7 @@ pub struct SpSolution {
 impl SpSolution {
   pub fn print_objective_breakdown(&self, data: impl AsRef<Data>, obj: &ObjWeights) {
     let data = data.as_ref();
-
+    trace!(sp=?self);
     let mut theta_costs = 0;
     let mut y_travel_costs = 0;
     let mut x_travel_costs = 0;
@@ -655,16 +654,20 @@ impl SpSolution {
         let time = match task.ty {
           TaskType::ODepot => 0,
           TaskType::DDepot => {
-            schedule[k-1] - sp.lu.data.travel_time_to_ddepot(&route.tasks[k-1])
-          },
-          _ => sp.model.get_solution(&sp.task_to_var[&task.index()])? as Time
+            schedule[k - 1] + sp.lu.data.travel_time_to_ddepot(&route.tasks[k - 1])
+          }
+          _ => sp.model.get_solution(&sp.task_to_var[&task.index()])? as Time,
         };
         schedule.push(time);
       }
       av_routes.push((route.clone(), schedule));
     }
 
-    Ok(SpSolution{ av_routes, pv_routes })
+    Ok(SpSolution {
+      objective: sol.objective,
+      av_routes,
+      pv_routes,
+    })
   }
 
   pub fn pretty_print(&self, data: impl AsRef<Data>) {
@@ -728,6 +731,8 @@ impl SpSolution {
 }
 
 mod debugging {
+  use crate::{test::test_data_dir, utils::read_json};
+
   use super::*;
 
   #[derive(Deserialize, Copy, Clone, Debug, Hash, Eq, PartialEq)]
@@ -779,14 +784,12 @@ mod debugging {
     }
   }
 
-  pub fn load_michael_soln(
-    path: impl AsRef<Path>,
-    tasks: impl AsRef<Tasks>,
-    lss: &LocSetStarts,
-  ) -> Result<MpSolution> {
-    let tasks = tasks.as_ref();
-    let s = std::fs::read_to_string(path)?;
-    let soln: JsonSolution = serde_json::from_str(&s)?;
+  pub fn load_test_solution(index: usize, lu: &Lookups) -> Result<MpSolution> {
+    let tasks = &lu.tasks;
+    let path = test_data_dir().join(format!("soln/{}.json", index));
+    let lss = LocSetStarts::new(lu.data.n_passive, lu.data.n_req);
+
+    let soln: JsonSolution = read_json(path)?;
 
     let mut av_routes = Vec::new();
     for (av, routes) in &soln.av_routes {
@@ -797,7 +800,7 @@ mod debugging {
         r.extend(
           route
             .iter()
-            .map(|t| tasks.by_index[&t.to_shorthand(lss).into()]),
+            .map(|t| tasks.by_index[&t.to_shorthand(&lss).into()]),
         );
         r.push(tasks.ddepot);
         av_routes.push(AvRoute::new(av, r));
@@ -824,7 +827,7 @@ mod debugging {
 }
 
 use crate::TaskIndex;
-pub use debugging::load_michael_soln;
+pub use debugging::load_test_solution;
 use smallvec::SmallVec;
 use std::fmt::Debug;
 use std::ops::Deref;
