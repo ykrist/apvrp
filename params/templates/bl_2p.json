@@ -2,7 +2,6 @@
   "timelimit": 7200,
   "cpus": 4,
   "param_name": "bl_2p",
-  "sp": "Dag",
   "av_fork_cuts": {
     "start": 1,
     "end": 0
@@ -19,5 +18,6 @@
   "cycle_cuts": false,
   "two_phase": true,
   "gurobi": [],
-  "pvcg": false
+  "pvcg": false,
+  "opt_cut": "CriticalPath"
 }
