@@ -265,6 +265,10 @@ mod builder {
     }
 
     #[instrument(level="debug", skip(self, one_of))]
+    /// Adds implications of the form `clause -> or(clause, clause, clause)`
+    /// 
+    /// This will add `clause -> constraint` where for any constraint which is implied by
+    /// all clauses inside `or`.
     pub fn add_implies_one_of(&mut self, predicate: A, one_of: impl IntoIterator<Item=A>) {
       let mut one_of = one_of.into_iter();
 
