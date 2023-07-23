@@ -1,4 +1,3 @@
-#![feature(generic_associated_types)]
 #![feature(fn_traits)]
 #![feature(assert_matches)]
 #![feature(custom_test_frameworks)]
