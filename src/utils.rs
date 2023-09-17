@@ -102,7 +102,7 @@ impl<T: Debug + Clone> Iterator for Permutator<T> {
           self.c[self.i - 1] += 1;
           self.i = 1;
 
-          return Some(self.objects.clone());
+          return Some(Rc::clone(&self.objects))
         } else {
           self.c[self.i - 1] = 0;
           self.i += 1;
