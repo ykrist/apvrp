@@ -27,21 +27,32 @@ impl IdStr for Inputs {
 #[derive(Debug, Copy, Clone, ArgEnum, Serialize, Deserialize)]
 pub enum SpSolverKind {
   Dag,
-  Lp,
 }
 
 #[derive(Debug, Copy, Clone, ArgEnum, Serialize, Deserialize)]
+pub enum OptimalityCutKind {
+  #[clap(name = "mrs")]
+  Mrs,
+  #[clap(name = "mrs-tree")]
+  MrsTree,
+  #[clap(name = "mrs-path")]
+  MrsPath,
+  #[clap(name = "cp")]
+  CriticalPath,
+}
+
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum CycleHandling {
   Cuts,
   Sp,
 }
 
 mod resource_limits {
+  use super::*;
+  use lazy_static::lazy_static;
   use std::collections::HashMap;
   use std::path::Path;
   use std::sync::RwLock;
-  use lazy_static::lazy_static;
-  use super::*;
   pub type Profile = Map<usize, f64>;
 
   struct Cache(RwLock<HashMap<String, Profile>>);
@@ -181,9 +192,9 @@ pub struct Params {
   #[clap(long)]
   pub param_name: Option<String>,
 
-  /// Subproblem algorithm
-  #[clap(long, default_value = "dag", arg_enum)]
-  pub sp: SpSolverKind,
+  /// What kind of optimality cuts to use
+  #[clap(long, default_value_t=OptimalityCutKind::CriticalPath, arg_enum)]
+  pub opt_cut: OptimalityCutKind,
 
   /// Minimum and maximum infeasible chain length at which to add Active Vehicle Fork cuts.
   /// Set MIN > MAX to disable.
@@ -367,6 +378,24 @@ impl Experiment for ApvrpExp {
   }
 }
 
+impl ApvrpExp {
+  pub fn test(index: usize, params: Params) -> Self {
+    let outputs = Outputs {
+      trace_log: Default::default(),
+      solution_log: Default::default(),
+      info: Default::default(),
+    };
+
+    ApvrpExp {
+      profile: Profile::Test,
+      inputs: Inputs { index },
+      parameters: params,
+      aux_params: Default::default(),
+      outputs,
+    }
+  }
+}
+
 mod instance_groups {
   use std::ops::Range;
   pub const A_TW25: Range<usize> = 0..20;
@@ -393,7 +422,10 @@ impl ResourcePolicy for ApvrpExp {
   }
 
   fn memory(&self) -> MemoryAmount {
-    self.aux_params.slurm_memory.get(&self.inputs.index)
+    self
+      .aux_params
+      .slurm_memory
+      .get(&self.inputs.index)
       .map(|&m| MemoryAmount::from_bytes(m.round() as usize))
       .unwrap_or(MemoryAmount::from_gb(8))
   }

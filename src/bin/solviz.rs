@@ -1,6 +1,6 @@
 use apvrp::logging::*;
 use apvrp::model::mp::MpVar;
-use apvrp::model::sp::{dag::GraphModel, SpConstr, SpStatus, Subproblem};
+use apvrp::model::sp::{dag::GraphModel, SpConstr, SpStatus};
 use apvrp::solution::{MpSolution, SerialisableSolution};
 use apvrp::IoContext;
 use apvrp::*;
@@ -223,13 +223,13 @@ fn process_solution(
   for _ in 0.. {
     graph.model.write_debug(out.get_filepath(".txt"))?;
 
-    let (status, iis) = match graph.solve()? {
+    let (status, iis) = match graph.solve() {
       SpStatus::Optimal(_) => {
         graph.model.compute_mrs()?;
         (Status::Optimal, None)
       }
       SpStatus::Infeasible => {
-        let iis = graph.extract_and_remove_iis()?;
+        let iis = graph.extract_and_remove_iis();
         let status = match graph.inf_kind.unwrap() {
           InfKind::Path => Status::PathIis,
           InfKind::Cycle => Status::Cycle,
@@ -289,7 +289,7 @@ fn main() -> anyhow::Result<()> {
     None
   };
   let _g = apvrp::logging::init_logging(logfile, true)?;
-  let args = Args::parse();
+  let mut args = Args::parse();
   let exp = experiment::ApvrpExp::from_index_file(&args.index_file)?;
 
   let lookups = Lookups::load_data_and_build(exp.inputs.index)?;
@@ -315,21 +315,23 @@ fn main() -> anyhow::Result<()> {
     process_single_file(&lookups, &inf_model, solution_file, out)?;
   }
 
-  if !args.selection.is_empty() {
-    let solog = args.index_file.with_file_name(&exp.outputs.solution_log);
-    let solog = std::fs::read_to_string(&solog).read_context(&solog)?;
-    let lines: Vec<_> = solog.lines().collect();
+  if args.selection.is_empty() {
+    args.selection.push(SologSelection::All)
+  }
 
-    let indices = get_indices(&args.selection, lines.len() - 1);
-    let bar = indicatif::ProgressBar::new(indices.len() as u64)
-      .with_message("rendering...")
-      .with_style(indicatif::ProgressStyle::default_bar().template("{msg} {bar} {pos}/{len}"));
+  let solog = args.index_file.with_file_name(&exp.outputs.solution_log);
+  let solog = std::fs::read_to_string(&solog).read_context(&solog)?;
+  let lines: Vec<_> = solog.lines().collect();
 
-    for k in indices.into_iter().progress_with(bar) {
-      let sol: SerialisableSolution = serde_json::from_str(lines[k])?;
-      let out = OutputFiles::new(&args.index_file, exp.inputs.index, SolutionSource::Solog(k))?;
-      process_solution(out, &lookups, &inf_model, sol)?;
-    }
+  let indices = get_indices(&args.selection, lines.len() - 1);
+  let bar = indicatif::ProgressBar::new(indices.len() as u64)
+    .with_message("rendering...")
+    .with_style(indicatif::ProgressStyle::default_bar().template("{msg} {bar} {pos}/{len}"));
+
+  for k in indices.into_iter().progress_with(bar) {
+    let sol: SerialisableSolution = serde_json::from_str(lines[k])?;
+    let out = OutputFiles::new(&args.index_file, exp.inputs.index, SolutionSource::Solog(k))?;
+    process_solution(out, &lookups, &inf_model, sol)?;
   }
 
   Ok(())

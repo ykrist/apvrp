@@ -119,10 +119,10 @@ mod tests {
       fn next_start(&self) -> Option<()> {
         None
       }
-      fn next_outgoing_arc(&self, node: &()) -> ((), (), f64) {
+      fn next_outgoing_arc(&self, _node: &()) -> ((), (), f64) {
         unreachable!()
       }
-      fn subtract_arc(&mut self, arc: &(), weight: f64) {
+      fn subtract_arc(&mut self, _arc: &(), _weight: f64) {
         unreachable!()
       }
     }
@@ -143,7 +143,7 @@ mod tests {
 
       fn next_start(&self) -> Option<usize> {
         let mut fallback = None;
-        for &(i, j) in self.0.keys() {
+        for &(i, _) in self.0.keys() {
           if i == 0 {
             return Some(0);
           }

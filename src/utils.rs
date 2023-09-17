@@ -102,7 +102,7 @@ impl<T: Debug + Clone> Iterator for Permutator<T> {
           self.c[self.i - 1] += 1;
           self.i = 1;
 
-          return Some(self.objects.clone());
+          return Some(Rc::clone(&self.objects))
         } else {
           self.c[self.i - 1] = 0;
           self.i += 1;
@@ -312,7 +312,7 @@ mod tests {
   #[should_panic]
   fn permutator_finish_fail() {
     let mut permutator = Permutator::new(vec![0, 1, 2]);
-    let q = permutator.next();
+    let _q = permutator.next();
     permutator.finish();
   }
 
@@ -320,8 +320,8 @@ mod tests {
   #[should_panic]
   fn permutator_next_fail() {
     let mut permutator = Permutator::new(vec![0, 1, 2]);
-    let x = permutator.next();
-    let y = permutator.next();
+    let _x = permutator.next();
+    let _y = permutator.next();
   }
 
   #[test]
@@ -329,7 +329,7 @@ mod tests {
     let mut permutator = Permutator::new(vec![0, 1, 2]);
     let x = permutator.next();
     drop(x);
-    let y = permutator.next();
+    let _y = permutator.next();
   }
 }
 

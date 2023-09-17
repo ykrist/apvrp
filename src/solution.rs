@@ -1,7 +1,7 @@
 use crate::graph::DecomposableDigraph;
 use crate::model::mp::MpVar;
 use crate::model::mp::{MpVars, ObjWeights, TaskModelMaster};
-use crate::model::sp::{lp::TimingSubproblem, Subproblem};
+use crate::model::sp::dag::GraphModel;
 use crate::utils::IoContext;
 use crate::*;
 use anyhow::Context;
@@ -20,7 +20,7 @@ mod route {
 
   /// A Passive vehicle route, beginning at a PV origin depot and ending at a PV destination depot
   #[derive(Debug, Clone, Eq, PartialEq)]
-  pub struct PvRoute(Vec<PvTask>);
+  pub struct PvRoute(pub Vec<PvTask>);
 
   impl PvRoute {
     pub fn new(path: Vec<PvTask>) -> Self {
@@ -85,8 +85,8 @@ mod route {
   /// A AV vehicle route, beginning at the AV origin depot and ending the AV destination depot
   #[derive(Debug, Clone, Eq, PartialEq)]
   pub struct AvRoute {
-    tasks: Vec<Task>,
-    av: Avg,
+    pub tasks: Vec<Task>,
+    pub av: Avg,
   }
 
   impl AvRoute {
@@ -514,20 +514,9 @@ impl MpSolution {
     if !(self.pv_cycles.is_empty() && self.av_cycles.is_empty()) {
       anyhow::bail!("Cycles in solution")
     }
-    let mut sp = TimingSubproblem::from_mp_sol(lu, self)?;
-    sp.model.optimize()?;
-    use grb::Status::*;
-    match sp.model.status()? {
-      Optimal => SpSolution::from_sp(self, &sp),
-      Infeasible => {
-        sp.debug_infeasibility()?;
-        Err(anyhow::anyhow!("subproblem is infeasible"))
-      }
-      status => Err(anyhow::anyhow!(
-        "unexpected subproblem status: {:?}",
-        status
-      )),
-    }
+    let mut sp = GraphModel::build_from_solution(lu, self);
+    sp.solve();
+    SpSolution::from_sp(self, &sp)
   }
 
   pub fn sp_objective_tasks(&self) -> Map<IdxTask, Avg> {
@@ -595,6 +584,7 @@ impl SerialisableSolution {
 
 #[derive(Clone, Debug)]
 pub struct SpSolution {
+  pub objective: Option<Cost>,
   pub av_routes: Vec<(AvRoute, Vec<Time>)>,
   pub pv_routes: Vec<(PvRoute, Vec<Time>)>,
 }
@@ -602,7 +592,7 @@ pub struct SpSolution {
 impl SpSolution {
   pub fn print_objective_breakdown(&self, data: impl AsRef<Data>, obj: &ObjWeights) {
     let data = data.as_ref();
-
+    trace!(sp=?self);
     let mut theta_costs = 0;
     let mut y_travel_costs = 0;
     let mut x_travel_costs = 0;
@@ -640,44 +630,41 @@ impl SpSolution {
     );
   }
 
-  pub fn from_sp(sol: &MpSolution, sp: &TimingSubproblem) -> Result<SpSolution> {
-    let task_start_times: Map<_, _> = get_var_values(&sp.model, &sp.task_to_var)?
-      .map(|(task, time)| (task, time.round() as Time))
-      .collect();
+  pub fn from_sp(sol: &MpSolution, sp: &GraphModel) -> Result<SpSolution> {
+    if let Some(i) = sp.inf_kind {
+      anyhow::bail!("subproblem is infeasible ({:?})", i);
+    }
 
-    let av_routes: Vec<_> = sol
-      .av_routes
-      .iter()
-      .cloned()
-      .map(|route: AvRoute| {
-        let mut sched: Vec<_> = std::iter::once(0) // ODepot
-          .chain(
-            route
-              .without_depots()
-              .iter()
-              .map(|t| task_start_times[&t.index()]),
-          )
-          .collect();
-        // DDepot
-        sched.push(*sched.last().unwrap() + sp.lu.data.travel_time_to_ddepot(route.theta_task()));
-        (route, sched)
-      })
-      .collect();
+    let mut pv_routes = Vec::with_capacity(sol.pv_routes.len());
+    let mut av_routes = Vec::with_capacity(sol.av_routes.len());
 
-    let pv_routes: Vec<_> = sol
-      .pv_routes
-      .iter()
-      .cloned()
-      .map(|route| {
-        let sched = route
-          .iter()
-          .map(|t| task_start_times[&t.index().into()])
-          .collect();
-        (route, sched)
-      })
-      .collect();
+    for route in &sol.pv_routes {
+      let mut schedule = Vec::with_capacity(route.0.len());
+      for &task in &route.0 {
+        let var = sp.pv_task_to_var(&task).unwrap();
+        schedule.push(sp.model.get_solution(&var)? as Time);
+      }
+      pv_routes.push((route.clone(), schedule));
+    }
+
+    for route in &sol.av_routes {
+      let mut schedule = Vec::with_capacity(route.tasks.len());
+
+      for (k, &task) in route.tasks.iter().enumerate() {
+        let time = match task.ty {
+          TaskType::ODepot => 0,
+          TaskType::DDepot => {
+            schedule[k - 1] + sp.lu.data.travel_time_to_ddepot(&route.tasks[k - 1])
+          }
+          _ => sp.model.get_solution(&sp.task_to_var[&task.index()])? as Time,
+        };
+        schedule.push(time);
+      }
+      av_routes.push((route.clone(), schedule));
+    }
 
     Ok(SpSolution {
+      objective: sol.objective,
       av_routes,
       pv_routes,
     })
@@ -744,6 +731,8 @@ impl SpSolution {
 }
 
 mod debugging {
+  use crate::{test::test_data_dir, utils::read_json};
+
   use super::*;
 
   #[derive(Deserialize, Copy, Clone, Debug, Hash, Eq, PartialEq)]
@@ -795,14 +784,12 @@ mod debugging {
     }
   }
 
-  pub fn load_michael_soln(
-    path: impl AsRef<Path>,
-    tasks: impl AsRef<Tasks>,
-    lss: &LocSetStarts,
-  ) -> Result<MpSolution> {
-    let tasks = tasks.as_ref();
-    let s = std::fs::read_to_string(path)?;
-    let soln: JsonSolution = serde_json::from_str(&s)?;
+  pub fn load_test_solution(index: usize, lu: &Lookups) -> Result<MpSolution> {
+    let tasks = &lu.tasks;
+    let path = test_data_dir().join(format!("soln/{}.json", index));
+    let lss = LocSetStarts::new(lu.data.n_passive, lu.data.n_req);
+
+    let soln: JsonSolution = read_json(path)?;
 
     let mut av_routes = Vec::new();
     for (av, routes) in &soln.av_routes {
@@ -813,7 +800,7 @@ mod debugging {
         r.extend(
           route
             .iter()
-            .map(|t| tasks.by_index[&t.to_shorthand(lss).into()]),
+            .map(|t| tasks.by_index[&t.to_shorthand(&lss).into()]),
         );
         r.push(tasks.ddepot);
         av_routes.push(AvRoute::new(av, r));
@@ -840,7 +827,7 @@ mod debugging {
 }
 
 use crate::TaskIndex;
-pub use debugging::load_michael_soln;
+pub use debugging::load_test_solution;
 use smallvec::SmallVec;
 use std::fmt::Debug;
 use std::ops::Deref;

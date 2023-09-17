@@ -7,89 +7,14 @@ use apvrp::model::{
   sp, Phase,
 };
 use apvrp::solution::MpSolution;
-use apvrp::test::test_data_dir;
+use apvrp::test::*;
 use apvrp::*;
 use grb::prelude::*;
-use instances::dataset::apvrp::LocSetStarts;
 use labrat::{Experiment, ResourcePolicy};
 use sawmill::InferenceModel;
 use std::io::Write;
 use std::time::Duration;
 use tracing::{error, info};
-
-fn infeasibility_analysis(mp: &mut TaskModelMaster) -> Result<()> {
-  mp.model.update()?;
-  mp.model.write("debug.lp")?;
-  mp.model.optimize()?;
-
-  match mp.model.status()? {
-    Status::Infeasible => {
-      let _s = tracing::error_span!("infeasible_model").entered();
-      mp.model.set_param(param::IISMethod, 1)?;
-      assert_eq!(mp.model.get_param(param::IISMethod)?, 1);
-      mp.model.compute_iis()?;
-
-      let constrs = mp.model.get_constrs()?;
-      let iis_constrs: Vec<_> = constrs
-        .iter()
-        .copied()
-        .zip(
-          mp.model
-            .get_obj_attr_batch(attr::IISConstr, constrs.iter().copied())?,
-        )
-        .filter(|(_, is_iis)| *is_iis > 0)
-        .map(|(c, _)| c)
-        .collect();
-
-      for name in mp.model.get_obj_attr_batch(attr::ConstrName, iis_constrs)? {
-        error!(constr=%name, "iis constr");
-      }
-
-      // for var in mp.model.get_vars()? {
-      //   if mp.model.get_obj_attr(attr::IISLB, var)? > 0 {
-      //     let name = mp.model.get_obj_attr(attr::VarName, var)?;
-      //     let lb = mp.model.get_obj_attr(attr::LB, var)?;
-      //     error!(var=%name, ?lb, "iis bound");
-      //   }
-      // }
-    }
-    status => {
-      if status == Status::Optimal {
-        print_obj_breakdown(mp)?;
-      }
-      let msg = "model was not infeasible";
-      error!(?status, "{}", msg);
-      anyhow::bail!("{}", msg)
-    }
-  }
-  Ok(())
-}
-
-fn get_total_cost(mp: &TaskModelMaster, vars: impl Iterator<Item = Var>) -> Result<f64> {
-  let mut total = 0.;
-  let obj_constr = mp.model.get_constr_by_name("Obj")?.unwrap();
-
-  for var in vars {
-    let x = mp.model.get_obj_attr(attr::X, &var)?;
-    let c = mp.model.get_coeff(&var, &obj_constr)?.abs();
-    total += x * c;
-  }
-
-  Ok(total)
-}
-
-fn print_obj_breakdown(mp: &TaskModelMaster) -> Result<Cost> {
-  let pv_costs = get_total_cost(mp, mp.vars.x.values().copied())?;
-  let av_costs = get_total_cost(mp, mp.vars.y.values().copied())?;
-  let theta_sum = get_total_cost(mp, mp.vars.theta.values().copied())?;
-
-  let obj = mp.model.get_attr(attr::ObjVal)?.round() as Cost;
-  println!("Obj = {}", obj);
-  println!("PV Costs = {:.2}", pv_costs);
-  println!("AV Costs = {:.2}", av_costs);
-  println!("Theta total = {:.2}", theta_sum);
-  Ok(obj)
-}
 
 fn evalutate_full_objective(
   lookups: &Lookups,
@@ -144,13 +69,9 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
   mp.model.update()?;
 
-  let true_soln = solution::load_michael_soln(
-    test_data_dir().join(format!("soln/{}.json", exp.inputs.index)),
-    &lookups,
-    &LocSetStarts::new(lookups.data.n_passive, lookups.data.n_req),
-  )
-  .map_err(|e| error!(error=%e, "unable to load solution"))
-  .ok();
+  let true_soln = solution::load_test_solution(exp.inputs.index, &lookups)
+    .map_err(|e| error!(error=%e, "unable to load solution"))
+    .ok();
 
   mp.model
     .set_obj_attr_batch(attr::BranchPriority, mp.vars.u.values().map(|&u| (u, 100)))?;
@@ -315,6 +236,7 @@ fn run(exp: ApvrpExp) -> Result<()> {
     json_sol.to_json_file(exp.get_output_path(&format!("{}-soln.json", exp.inputs.index)))?;
 
     let sol_with_times = sol.solve_for_times(&lookups)?;
+    // sol_with_times.pretty_print(&lookups);
     sol_with_times.print_objective_breakdown(&lookups, &obj_weights);
     let bounds = info.info.last().unwrap().bounds.as_ref().unwrap();
 
@@ -322,10 +244,11 @@ fn run(exp: ApvrpExp) -> Result<()> {
       if let Some(true_soln) = true_soln {
         let obj = sol.objective.unwrap();
         let true_obj = true_soln.objective.unwrap();
+        info!(obj, true_obj, "checking solution");
         if obj != true_obj {
           true_soln
             .to_serialisable()
-            .to_json_file(exp.get_output_path_prefixed("true_soln.json"))?;
+            .to_json_file(exp.get_output_path_prefixed("-true_soln.json"))?;
           error!(correct = true_obj, obj, "objective mismatch");
           true_soln
             .solve_for_times(&lookups)?
@@ -334,10 +257,10 @@ fn run(exp: ApvrpExp) -> Result<()> {
           infeasibility_analysis(&mut mp)?;
           anyhow::bail!("bugalug");
         }
-      } else if bounds.lower > bounds.upper {
-        error!(?bounds, "invalid bounds");
-        anyhow::bail!("bugalug")
       }
+    } else if bounds.lower > bounds.upper {
+      error!(?bounds, "invalid bounds");
+      anyhow::bail!("bugalug")
     }
   }
   Ok(())
@@ -345,7 +268,6 @@ fn run(exp: ApvrpExp) -> Result<()> {
 
 #[tracing::instrument(level = "error")]
 fn main() -> Result<()> {
-  // FIXME: index 14 shows excessive time spent in callback
   apvrp::check_commit_hash()?;
   let exp = experiment::ApvrpExp::from_cl_args_with_slurm()?;
   println!("Running on data index {}", exp.inputs.index);

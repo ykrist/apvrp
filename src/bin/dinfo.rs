@@ -36,7 +36,6 @@ impl<'a> Output<'a> {
       ["Passive vehicles", display_val(self.n_pv)],
       ["Active vehicles", display_val(self.n_av)]
     );
-
     let fmt = format::FormatBuilder::new()
       // .separators(&[format::LinePosition::Bottom, format::LinePosition::Top], format::LineSeparator::new('-', '-', '-', '-'))
       .padding(1, 1)

@@ -15,7 +15,7 @@ tracing =  {version = "^0.1",  features = ["max_level_trace", "release_max_level
 tracing-subscriber = { version = "^0.3", features = ["json", "env-filter"] }
 tracing-subscriber-serde = { git = "ssh://git@bitbucket.org/yannik_rist/tracing-subscriber-json-full.git", features = ["messagepack"]}
 variant_count = "^1.1"
-prettytable-rs = "^0.8"
+prettytable-rs = "^0.10"
 indicatif = "0.16.2"
 smallvec = { version = "^1.6", features = ["serde"] }
 regex = "^1.5"
@@ -31,6 +31,11 @@ daggylp = { path = "./pkgs/daggylp", features = ["arrayvec", "viz-extra"] }
 sawmill = { path = "./pkgs/sawmill" }
 slurm-tools = { git = "https://github.com/ykrist/slurm-tools.git" }
 posix-cli-utils = { git = "https://github.com/ykrist/posix-cli-utils" }
+rayon = { version = "1.5.3", optional = true }
+num_cpus = { version = "1.13.1", optional = true }
+
+[features]
+expensive-tests = [ "rayon",  "num_cpus"]
 
 [build-dependencies]
 anyhow = { version = "^1.0", features = ["backtrace"] }

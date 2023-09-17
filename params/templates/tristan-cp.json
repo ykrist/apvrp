@@ -1,23 +1,23 @@
 {
   "timelimit": 7200,
-  "cpus": 4,
-  "param_name": "dropout_2p",
+  "cpus": 1,
+  "param_name": "tristan-cp",
   "av_fork_cuts": {
-    "start": 0,
-    "end": 3
+    "start": 1,
+    "end": 0
   },
   "av_tournament_cuts": {
-    "start": 4,
-    "end": 7
+    "start": 1,
+    "end": 0
   },
   "pv_fork_cuts": {
-    "start": 0,
-    "end": 2
+    "start": 1,
+    "end": 0
   },
   "endtime_cuts": false,
-  "cycle_cuts": true,
+  "cycle_cuts": false,
   "two_phase": false,
   "gurobi": [],
-  "pvcg": true,
+  "pvcg": false,
   "opt_cut": "CriticalPath"
 }
