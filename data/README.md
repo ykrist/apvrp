@@ -17,3 +17,5 @@ cargo run --bin dinfo INDEX
 ```
 
 The APVRP code will automatically extract these archives into `data/uncompressed`.
+
+The format of these files is left unchanged from original files created by Meisel and Kopfer.
