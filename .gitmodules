@@ -3,13 +3,13 @@
 	url = https://github.com/ykrist/rust-grb
 [submodule "daggylp"]
 	path = pkgs/daggylp
-	url = git@bitbucket.org:yannik_rist/daggylp.git
+	url = https://github.com/ykrist/daggylp.git
 [submodule "gvdot"]
 	path = pkgs/gvdot
-	url = git@bitbucket.org:yannik_rist/gvdot.git
+	url = https://github.com/ykrist/gvdot.git
 [submodule "instances"]
 	path = pkgs/instances
-	url = git@bitbucket.org:yannik_rist/instances.git
-[submodule "pkgs/labrat"]
+	url = https://bitbucket.org/yannik_rist/instances.git
+[submodule "labrat"]
 	path = pkgs/labrat
-	url = git@github.com:ykrist/labrat.git
+	url = https://github.com/ykrist/labrat.git
