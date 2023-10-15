@@ -3,11 +3,20 @@
 This repository contains the code used for the paper _"Benders Decomposition with Delayed Disaggregation for the Active
 Passive Vehicle Routing Problem"_, which is currently under review.
 
+
 ## Instances and results
 
 Instances and results can be found in the `data/` and `results/` directories, respectively, and are documented there.
 
 ## Installation
+
+This repo should be cloned using:
+
+```bash
+git clone --recurse-submodules https://github.com/ykrist/apvrp
+cd apvrp/
+git lfs checkout
+```
 
 The repo requires the Rust build tool `cargo` to be installed.  You can do this using [__rustup__](https://rustup.rs/).
 
