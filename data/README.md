@@ -16,6 +16,15 @@ dinfo INDEX
 cargo run --bin dinfo INDEX
 ```
 
-The APVRP code will automatically extract these archives into `data/uncompressed`.
+The code expects the `.tar.xz` archives to have been extracted into `data/uncompressed`.
+
+```bash
+mkdir uncompressed/
+tar -C uncompressed -Jxf apvrp_tilk.tar.xz
+tar -C uncompressed -Jxf apvrp_tilk_b_part.tar.xz
+tar -C uncompressed -Jxf apvrp_meisel.tar.xz
+```
+
+Use the `dinfo` binary to validate that the files can be found.
 
 The format of these files is left unchanged from original files created by Meisel and Kopfer.
